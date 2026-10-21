@@ -2,8 +2,12 @@
 
 libOsiris can write a plain-text log of everything the rule engine does at runtime. We switch
 it on in the running game with `tools/osiris-trace/enable_log.py` (lldb: break on
-`COsiris::InitGame`, open the log with `COsiris::OpenLogFile`, set `_ParserFlags`), start a new
-game, and keep the log in `.cache/traces/` (gitignored, never committed). The parser lives in
+`COsiris::InitGame` or `COsiris::Load`, open the log with `COsiris::OpenLogFile`, set
+`_ParserFlags`), start a new game or load a save, and keep the log in `.cache/traces/`
+(gitignored, never committed). When loading a save, the flags are set again after `Load`
+returns. `osiris_trace_probes` additionally stays attached and logs a few engine functions
+(initiative rolls, `RollDie`, `ApplyDamage`) to a second file until `.cache/traces/STOP`
+exists. The parser lives in
 `crates/bg3-osiris/src/trace.rs`, the replay/compare in `crates/bg3-osiris/src/replay.rs`.
 This page describes the format in our own words; the format strings were checked against the
 strings of `libOsiris.dylib` (4.1.1.7631656, arm64 slice).
@@ -23,6 +27,7 @@ strings of `libOsiris.dylib` (4.1.1.7631656, arm64 slice).
 |------|---------|------|
 | `snapshot-early.log` | InitGame → `GameModeStarted` → character creation (`SYS_CC_I`), cut while the game ran | 64 k lines, 8 508 events |
 | `full-nautiloid.log` | the same session to the end: `CharacterCreationFinished`, `LevelUnloading("SYS_CC_I")`, `LevelLoaded`/`LevelGameplayStarted`/`LevelGameplayReady("TUT_Avernus_C")`, first Nautiloid dialogs | 135 k lines, 12 381 events |
+| `combat-<timestamp>.log` + `combat-probes-<timestamp>.log` | loaded save on the Nautiloid → the first imp fight (cleric avatar + Lae'zel vs 3 imps); probes for initiative, dice and damage; UI screenshots alongside | 3.4 MB |
 
 **Story.** The goal numbers in the log (`ModWrapper_Gustav (#904)`, `ZZZ_Tutorials (#941)`)
 only fit `Mods/GustavX/Story/story.div.osi` from `GustavX.pak` (941 goals, story version
