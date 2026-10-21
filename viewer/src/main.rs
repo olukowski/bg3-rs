@@ -3,6 +3,7 @@
 //! Current state: level objects rendered with their LOD0 GR2 meshes and textured materials
 //! (`materials.rs`); objects without a mesh (effects, …) are shown as small boxes.
 
+mod characters;
 mod fly_camera;
 mod level;
 mod lights;
@@ -99,11 +100,14 @@ fn main() -> Result<()> {
     for (id, err) in meshes.failed.iter().take(5) {
         eprintln!("  {id}: {err}");
     }
+    let characters = characters::LevelCharacters::load(&vfs, &level);
     let material_ids = meshes.by_visual.values().flatten();
     let materials = materials::PreparedMaterials::load(
         &vfs,
         &level.banks,
-        material_ids.filter_map(|(_, m)| m.as_deref()),
+        material_ids
+            .filter_map(|(_, m)| m.as_deref())
+            .chain(characters.material_ids()),
     );
 
     let mut app = App::new();
@@ -115,12 +119,14 @@ fn main() -> Result<()> {
         ..default()
     }))
     .add_plugins(fly_camera::FlyCameraPlugin)
+    .add_plugins(characters::CharactersPlugin)
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)
     .insert_resource(meshes)
     .insert_resource(terrain)
     .insert_resource(lights)
     .insert_resource(materials)
+    .insert_resource(characters)
     .insert_resource(CameraStart {
         position: args
             .camera

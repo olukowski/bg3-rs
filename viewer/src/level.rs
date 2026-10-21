@@ -59,12 +59,14 @@ pub fn to_bevy(t: &bg3_world::Transform) -> Transform {
     crate::space::transform(t)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_level(
     mut commands: Commands,
     start: Res<crate::CameraStart>,
     level: Res<LoadedLevel>,
     mut visual_meshes: ResMut<VisualMeshes>,
     level_materials: Res<crate::materials::LevelMaterials>,
+    characters: Option<Res<crate::characters::LevelCharacters>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -107,6 +109,9 @@ pub fn spawn_level(
     for obj in &level.level.objects {
         let transform = to_bevy(&obj.transform);
         sum += transform.translation;
+        if characters.as_ref().is_some_and(|c| c.handles(&obj.id)) {
+            continue; // drawn by `characters.rs`
+        }
         if let Some(parts) = level.visual_id(obj).and_then(|v| uploaded.get(v)) {
             commands
                 .spawn((

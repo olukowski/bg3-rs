@@ -373,6 +373,48 @@ pub struct ResolvedCharacter {
     pub idle: Option<AnimationResource>,
 }
 
+/// An item from a character's starting equipment, with the visual its template uses.
+#[derive(Debug, Clone)]
+pub struct EquippedItem {
+    /// Stats entry (e.g. `WPN_Imp_Handaxe`).
+    pub stats: String,
+    /// Stats `Slot` (`Melee Main Weapon`, `Melee Offhand Weapon`, `Ranged Main Weapon`, `Breast`, …).
+    pub slot: String,
+    /// Item root template (stats `RootTemplate`).
+    pub template: String,
+    pub visual: VisualResource,
+}
+
+/// Resolve a stats `new equipment` entry to item visuals: each `add equipmentgroup` contributes
+/// its first `add equipment entry` (assumption: the game may pick among a group's entries), whose
+/// stats `RootTemplate` gives the item template and so its `VisualTemplate`. Items whose template
+/// has no plain visual (armour uses per-race equipment visuals instead) are skipped.
+pub fn resolve_equipment(
+    equipment: &str,
+    stats: &bg3_stats::Stats,
+    templates: &RootTemplates,
+    banks: &ResourceBanks,
+) -> Vec<EquippedItem> {
+    let Some(eq) = stats.equipment.get(equipment) else {
+        return Vec::new();
+    };
+    eq.groups
+        .iter()
+        .filter_map(|g| g.first())
+        .filter_map(|entry| {
+            let obj = stats.get(entry)?;
+            let template = obj.get("RootTemplate")?.to_owned();
+            let visual = banks.visuals.get(templates.visual_for(&template)?)?.clone();
+            Some(EquippedItem {
+                stats: entry.clone(),
+                slot: obj.get("Slot").unwrap_or_default().to_owned(),
+                template,
+                visual,
+            })
+        })
+        .collect()
+}
+
 /// Why a character could not be resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CharacterError {
@@ -649,6 +691,9 @@ mod tests {
             .iter()
             .filter(|o| o.kind == "character")
             .collect();
+        let stats =
+            bg3_stats::install::load(vfs.packages(), bg3_vfs::modules::BASE_LOAD_ORDER).unwrap();
+        let mut equipped = 0;
         let mut resolved = 0;
         let mut with_skeleton = 0;
         let mut with_idle = 0;
@@ -664,6 +709,30 @@ mod tests {
                         .is_some_and(|f| vfs.exists(f));
                     with_skeleton += usize::from(skel_ok);
                     with_idle += usize::from(c.idle.is_some());
+                    let items = c.props.equipment.as_deref().map_or(Vec::new(), |e| {
+                        resolve_equipment(e, &stats, &templates, &banks)
+                    });
+                    equipped += items.len();
+                    if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
+                        for p in &c.parts {
+                            for o in p.visual.objects.iter().filter(|o| o.lod == 0) {
+                                let m = o
+                                    .material_id
+                                    .as_deref()
+                                    .and_then(|m| banks.materials.get(m));
+                                eprintln!(
+                                    "    {:10} {:40} {:40} {:?}",
+                                    p.slot,
+                                    p.visual.name,
+                                    m.map_or("-", |m| m.name.as_str()),
+                                    m.and_then(|m| m.source_file.as_deref())
+                                );
+                            }
+                        }
+                    }
+                    for i in &items {
+                        eprintln!("    equipment {} ({}) → {}", i.stats, i.slot, i.visual.name);
+                    }
                     let missing: Vec<_> = c
                         .parts
                         .iter()
@@ -689,7 +758,7 @@ mod tests {
             }
         }
         eprintln!(
-            "{} characters: {resolved} resolved, {with_skeleton} with skeleton GR2, {with_idle} with idle; failures {failures:?}",
+            "{} characters: {resolved} resolved, {with_skeleton} with skeleton GR2, {with_idle} with idle, {equipped} equipment visuals; failures {failures:?}",
             chars.len()
         );
         assert!(failures.is_empty());
