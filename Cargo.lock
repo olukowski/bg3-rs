@@ -2080,6 +2080,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bg3-vt"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bg3-install",
+ "bg3-lsf",
+ "bg3-pak",
+ "bg3-vfs",
+ "bg3-world",
+ "flate2",
+ "lz4_flex",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bg3-world"
 version = "0.0.0"
 dependencies = [

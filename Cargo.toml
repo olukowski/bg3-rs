@@ -16,6 +16,7 @@ bg3-pak = { path = "crates/bg3-pak" }
 bg3-stats = { path = "crates/bg3-stats" }
 bg3-story = { path = "crates/bg3-story" }
 bg3-vfs = { path = "crates/bg3-vfs" }
+bg3-vt = { path = "crates/bg3-vt" }
 bg3-world = { path = "crates/bg3-world" }
 
 anyhow = "1"
