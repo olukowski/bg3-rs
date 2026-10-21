@@ -2081,8 +2081,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bg3-install",
+ "bg3-loca",
  "bg3-lsf",
  "bg3-pak",
+ "bg3-stats",
  "bg3-vfs",
  "clap",
 ]

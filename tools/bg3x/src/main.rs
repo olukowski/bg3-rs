@@ -37,6 +37,23 @@ enum Command {
     Cat { pak: String, path: String },
     /// Dump an LSF/LSFX/LSX/LSJ resource as LSX. PATH is looked up across all paks if PAK is `-`.
     Lsx { pak: String, path: String },
+    /// Look up a localization handle (`h…` or `h…;version`) in a language pak.
+    Loca {
+        handle: String,
+        /// Language pak name in the install.
+        #[arg(short, long, default_value = "English")]
+        language: String,
+    },
+    /// Print a stats object with `using` inheritance resolved.
+    Stat {
+        name: String,
+        /// Also load the Honour-mode modules (Honour, HonourX).
+        #[arg(long)]
+        honour: bool,
+        /// Print only the object's own `data` lines instead of the effective fields.
+        #[arg(long)]
+        own: bool,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -83,6 +100,8 @@ fn main() -> Result<()> {
         }
         Command::Verify { pak } => verify(pak),
         Command::Dups => dups(),
+        Command::Loca { handle, language } => loca(&handle, &language),
+        Command::Stat { name, honour, own } => stat(&name, honour, own),
         Command::Lsx { pak, path } => {
             use std::io::Write;
             let data = read_file(&pak, &path)?;
@@ -205,6 +224,59 @@ fn resolve(name: &str) -> Result<PathBuf> {
         .into_iter()
         .find(|p| p.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(want)))
         .with_context(|| format!("no pak named {name} in the install"))
+}
+
+fn loca(handle: &str, language: &str) -> Result<()> {
+    let pak = open(language)?;
+    let mut table = bg3_loca::Loca::new();
+    for e in pak.entries().iter().filter(|e| e.name.ends_with(".loca")) {
+        table
+            .merge_bytes(&pak.read(e)?)
+            .with_context(|| e.name.clone())?;
+    }
+    let entry = table
+        .get(handle)
+        .with_context(|| format!("{handle} not found in {language}"))?;
+    println!("{}", entry.text);
+    eprintln!("(version {})", entry.version);
+    Ok(())
+}
+
+fn stat(name: &str, honour: bool, own: bool) -> Result<()> {
+    use bg3_stats::install::{BASE_LOAD_ORDER, HONOUR_MODULES, load};
+
+    let paks: Vec<Package> = Install::locate()?
+        .paks()?
+        .iter()
+        .map(Package::open)
+        .collect::<Result<_, _>>()?;
+    let mut order = BASE_LOAD_ORDER.to_vec();
+    if honour {
+        order.extend_from_slice(HONOUR_MODULES);
+    }
+    let stats = load(&paks, &order)?;
+    let obj = stats
+        .get(name)
+        .or_else(|| stats.kinds().find_map(|(_, t)| t.get(name)))
+        .with_context(|| format!("no stats object named {name}"))?;
+    println!("new {} \"{}\"", obj.kind, obj.name);
+    if let Some(t) = &obj.type_name {
+        println!("type \"{t}\"");
+    }
+    if let Some(u) = &obj.using {
+        println!("using \"{u}\"");
+    }
+    let fields = if own { &obj.own } else { &obj.fields };
+    for (k, v) in fields {
+        let inherited = !own && !obj.own.iter().any(|(ok, _)| ok == k);
+        let mark = if inherited { "  // inherited" } else { "" };
+        println!("data \"{k}\" \"{v}\"{mark}");
+    }
+    eprintln!("// defined at {} ({})", obj.source, obj.source.module);
+    for prev in &obj.previous {
+        eprintln!("// replaces {} ({})", prev, prev.module);
+    }
+    Ok(())
 }
 
 /// Read `path` from a named pak, or from the whole VFS when `pak` is `-`.

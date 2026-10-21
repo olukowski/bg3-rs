@@ -12,7 +12,7 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 
 ## M1 — Read everything
 - [x] `bg3-pak` + `bg3x list/extract/cat/verify` (verify against all paks in the install)
-- [ ] `bg3-lsf` (LSF/LSX), `bg3-loca`
+- [x] `bg3-lsf` (LSF/LSX/LSJ), `bg3-loca`
 - [x] `bg3-vfs` (case-insensitive, last-mount-wins; original precedence rule still TODO — see docs/research/vfs-load-order.md)
 - [ ] Format write-ups in `docs/formats/`
 
@@ -22,7 +22,8 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [ ] `bg3-viewer`: fly-cam through a Nautiloid level with basic materials (scaffold: window, fly cam, VFS mounted)
 
 ## M3 — Rules core (headless)
-- [ ] `bg3-stats` incl. functor/condition expressions
+- [x] `bg3-stats` parsing + `using` resolution (all 157 files)
+- [ ] Functor/condition expression parsing
 - [ ] Rolls, boosts, statuses, action resources — validated against traces from the original
 - [ ] Turn-based combat loop for a scripted encounter
 
