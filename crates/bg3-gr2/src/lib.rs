@@ -6,15 +6,21 @@
 //! * [`file`]: [`Gr2File`] — decompressed sections with relocated pointers.
 //! * [`reflect`]: Granny's embedded type descriptions and a generic object walker.
 //! * [`model`]: typed meshes / skeletons / models extracted on top of the walker.
+//! * [`anim`]: animations, tracks and the compressed curve formats.
 //!
 //! See `docs/formats/gr2.md`.
 
+pub mod anim;
 pub mod bitknit;
 pub mod file;
 pub mod header;
 pub mod model;
 pub mod reflect;
 
+pub use anim::{
+    Animation, Curve, CurveFormat, RawCurve, TrackGroup, TransformTrack, VectorTrack,
+    read_animations,
+};
 pub use file::{Gr2File, Ptr};
 pub use header::{Compression, Format, Header, SectionHeader, SectionRef};
 pub use model::{
@@ -54,6 +60,8 @@ pub enum Error {
     MissingMember(String),
     #[error("member {name:?} has unexpected type {found:?}")]
     WrongMemberType { name: String, found: MemberType },
+    #[error("unsupported curve format {0:?}")]
+    UnsupportedCurveFormat(String),
     #[error("unsupported vertex component {name:?} ({kind:?} x{count})")]
     UnsupportedVertexComponent {
         name: String,

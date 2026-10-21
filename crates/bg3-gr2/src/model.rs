@@ -18,7 +18,7 @@ pub struct Scene {
     pub skeletons: Vec<Skeleton>,
     pub meshes: Vec<Mesh>,
     pub models: Vec<Model>,
-    /// Number of track groups / animations present (not decoded yet).
+    /// Number of track groups / animations present (decode them with [`crate::anim`]).
     pub track_group_count: usize,
     pub animation_count: usize,
 }
