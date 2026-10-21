@@ -245,3 +245,65 @@ fn mini_encounter_main_hand_attack() {
     assert!(log.contains("casts Target_MainHandAttack"));
     assert!(log.contains("MeleeWeaponAttack roll"));
 }
+
+/// How far condition evaluation gets on the install's `TargetConditions`, with the shipped
+/// helpers and two synthetic combatants: counts evaluations that complete, and the missing
+/// natives/properties that stop the others. Informational; asserts only that some complete.
+#[test]
+#[ignore = "needs BG3 install"]
+fn evaluate_install_target_conditions() {
+    let Some(paks) = paks() else { return };
+    let stats = load(&paks, BASE_LOAD_ORDER).unwrap();
+    let mut world = TestWorld::new();
+    let a = world.spawn(Combatant::new("A").team(1));
+    let b = world.spawn(Combatant::new("B").team(2));
+    let mut engine = ConditionEngine::new();
+    let mut rng = RollStream::new(1);
+    for (_, path, src) in khn_files(&paks) {
+        if path.starts_with("Mods/Shared/Scripts/thoth/helpers/") {
+            engine
+                .load_helpers(&path, &src, &mut world, &mut rng)
+                .unwrap();
+        }
+    }
+    let data = ConditionContext {
+        source: Some(a),
+        target: Some(b),
+        ..Default::default()
+    };
+    let mut distinct = std::collections::BTreeSet::new();
+    for obj in stats.entries() {
+        if let Some(v) = obj.get("TargetConditions") {
+            distinct.insert(v.to_owned());
+        }
+    }
+    let (mut ok, mut failed) = (0, 0);
+    let mut reasons: std::collections::BTreeMap<String, usize> = Default::default();
+    for c in &distinct {
+        let Ok(cond) = Condition::parse(c) else {
+            continue;
+        };
+        match engine.evaluate(&cond, &mut world, &mut rng, &data) {
+            Ok(_) => ok += 1,
+            Err(e) => {
+                failed += 1;
+                let msg = e.to_string();
+                let key = msg
+                    .split('\'')
+                    .nth(1)
+                    .map_or(msg.clone(), |n| format!("'{n}'"));
+                *reasons.entry(key).or_default() += 1;
+            }
+        }
+    }
+    let mut top: Vec<_> = reasons.into_iter().collect();
+    top.sort_by_key(|x| std::cmp::Reverse(x.1));
+    eprintln!(
+        "distinct TargetConditions: {} evaluated, {} stopped",
+        ok, failed
+    );
+    for (r, n) in top.iter().take(25) {
+        eprintln!("  {n:>4}  {r}");
+    }
+    assert!(ok > 0);
+}

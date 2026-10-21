@@ -371,6 +371,11 @@ from the `ProficiencyBonusScaling` level map, so it's a query, not a formula.
 - **Ignored install tests:** parse every expression field and every `.khn`; check the condition
   rewrite against the shipped script; run a melee mini-encounter with `Target_MainHandAttack`'s
   real fields, the shipped helpers and a fixed seed.
+- **Evaluation coverage:** `evaluate_install_target_conditions` evaluates every distinct
+  `TargetConditions` value with the shipped helpers and two synthetic entities. 443 of 697
+  complete. The rest stop at natives we don't have yet; the most common is `CanStand` (needs world
+  geometry), then `IsImmuneToStatus`, `ConditionErrorData.MakeFromNumber`, `Grounded` and
+  `WieldingWeapon`.
 - **Not yet compared against runtime traces** of the original game. Roll outcomes need a
   captured roll stream (seed + counter) to verify.
 
