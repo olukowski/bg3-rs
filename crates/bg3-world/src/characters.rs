@@ -30,7 +30,20 @@ pub struct CharacterProps {
     pub equipment_race: Option<String>,
     /// `DefaultState` (observed 11 on dead thralls; meaning not yet traced).
     pub default_state: Option<i64>,
+    /// `MovementSpeedRun` in m/s (default [`DEFAULT_MOVEMENT_SPEED_RUN`]).
+    pub movement_speed_run: Option<f32>,
+    /// `MovementSpeedWalk` in m/s (default [`DEFAULT_MOVEMENT_SPEED_WALK`]).
+    pub movement_speed_walk: Option<f32>,
+    /// `MovementStepUpHeight` in metres (default [`DEFAULT_MOVEMENT_STEP_UP_HEIGHT`]).
+    pub movement_step_up_height: Option<f32>,
 }
+
+// bg3: eoc::CharacterTemplate::Visit (4.1.1.7631656) — defaults of the movement fields when a
+// template chain doesn't set them (Stroll 1.0, Walk 2.0, Run 3.75, Sprint 6.0, Dash 6.0,
+// StepUpHeight 0.6).
+pub const DEFAULT_MOVEMENT_SPEED_WALK: f32 = 2.0;
+pub const DEFAULT_MOVEMENT_SPEED_RUN: f32 = 3.75;
+pub const DEFAULT_MOVEMENT_STEP_UP_HEIGHT: f32 = 0.6;
 
 impl CharacterProps {
     pub fn read(n: &Node) -> Self {
@@ -41,8 +54,15 @@ impl CharacterProps {
             stats: str_attr(n, "Stats"),
             equipment_race: str_attr(n, "EquipmentRace").filter(|s| !is_null_guid(s)),
             default_state: n.attr("DefaultState").and_then(|v| v.as_i64()),
+            movement_speed_run: f32_attr(n, "MovementSpeedRun"),
+            movement_speed_walk: f32_attr(n, "MovementSpeedWalk"),
+            movement_step_up_height: f32_attr(n, "MovementStepUpHeight"),
         }
     }
+}
+
+fn f32_attr(n: &Node, name: &str) -> Option<f32> {
+    n.attr(name).and_then(|v| v.as_f64()).map(|v| v as f32)
 }
 
 pub(crate) fn is_null_guid(s: &str) -> bool {
@@ -326,6 +346,13 @@ pub const IDLE_STILL_PEACE: &str = "07e81afc-95c4-452b-ac68-5cbb74710cca";
 /// The common character animation blueprint (compiled "Genome" resource).
 pub const CHARACTER_BLUEPRINT: &str = "Public/Shared/Assets/Blueprints/Characters_Common.lsbs";
 
+/// Animation type of the forward run loop out of combat (reference build value; every animation
+/// set maps it to a `*_DFLT_LOCO_RUN_F_PEACE_01` clip).
+pub const RUN_PEACE: &str = "821aed88-e17b-4b85-b37a-533f90fbba84";
+
+/// Animation type of the forward walk loop out of combat (maps to `*_DFLT_LOCO_WALK_F_PEACE_01`).
+pub const WALK_PEACE: &str = "0532ad73-988e-4b70-bb96-434bb2532bad";
+
 /// Blueprint variable holding the idle animation type.
 pub const IDLE_BLUEPRINT_VARIABLE: &str = "IDLE_DesiredStillShortName";
 
@@ -473,6 +500,19 @@ pub fn effective_props(obj: &LevelObject, templates: &RootTemplates) -> Characte
         }
         None
     });
+    let pick_f32 = |mine: Option<f32>, f: fn(&CharacterProps) -> Option<f32>| {
+        mine.or_else(|| {
+            let mut cur = templates.get(t);
+            for _ in 0..32 {
+                let c = cur?;
+                if let Some(v) = c.character.as_ref().and_then(f) {
+                    return Some(v);
+                }
+                cur = templates.get(c.parent.as_deref()?);
+            }
+            None
+        })
+    };
     CharacterProps {
         character_visual: pick(own.character_visual, |p| p.character_visual.as_ref()),
         animation_set: pick(own.animation_set, |p| p.animation_set.as_ref()),
@@ -480,6 +520,24 @@ pub fn effective_props(obj: &LevelObject, templates: &RootTemplates) -> Characte
         stats: pick(own.stats, |p| p.stats.as_ref()),
         equipment_race: pick(own.equipment_race, |p| p.equipment_race.as_ref()),
         default_state,
+        movement_speed_run: pick_f32(own.movement_speed_run, |p| p.movement_speed_run),
+        movement_speed_walk: pick_f32(own.movement_speed_walk, |p| p.movement_speed_walk),
+        movement_step_up_height: pick_f32(own.movement_step_up_height, |p| {
+            p.movement_step_up_height
+        }),
+    }
+}
+
+impl ResolvedCharacter {
+    /// Look up an animation type in the character's animation sets (default subset), in the
+    /// same order as the idle.
+    pub fn animation(&self, banks: &ResourceBanks, simple_name: &str) -> Option<AnimationResource> {
+        self.animation_sets
+            .iter()
+            .filter_map(|s| banks.characters.animation_sets.get(s))
+            .find_map(|set| set.find("", simple_name))
+            .and_then(|id| banks.characters.animations.get(id))
+            .cloned()
     }
 }
 

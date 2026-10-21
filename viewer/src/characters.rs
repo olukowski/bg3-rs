@@ -22,7 +22,8 @@ use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::prelude::*;
 use bg3_vfs::Vfs;
 use bg3_world::characters::{
-    EquippedItem, ResolvedCharacter, idle_simple_name, resolve_character, resolve_equipment,
+    DEFAULT_MOVEMENT_SPEED_RUN, DEFAULT_MOVEMENT_STEP_UP_HEIGHT, EquippedItem, RUN_PEACE,
+    ResolvedCharacter, idle_simple_name, resolve_character, resolve_equipment,
 };
 use rayon::prelude::*;
 
@@ -187,6 +188,11 @@ pub struct PreparedCharacter {
     pub skeleton: Arc<Skeleton>,
     pub parts: Vec<PreparedPart>,
     pub animation: Option<Arc<PreparedAnimation>>,
+    /// Forward run loop, for characters that walk (`nav.rs`).
+    pub run: Option<Arc<PreparedAnimation>>,
+    /// `MovementSpeedRun` (m/s) and `MovementStepUpHeight` (m) from the template chain.
+    pub run_speed: f32,
+    pub step_height: f32,
 }
 
 /// Every character of the level that could be resolved and converted.
@@ -214,7 +220,8 @@ impl LevelCharacters {
                         }
                         _ => Vec::new(),
                     };
-                    resolved.push((obj.transform, c, items));
+                    let run = c.animation(&level.banks, RUN_PEACE);
+                    resolved.push((obj.transform, c, items, run));
                 }
                 Err(e) => out.failed.push((obj.name.clone(), e.to_string())),
             }
@@ -222,7 +229,16 @@ impl LevelCharacters {
         let cache = GrannyCache::default();
         let results: Vec<_> = resolved
             .par_iter()
-            .map(|(t, c, items)| (c.name.clone(), prepare(vfs, &cache, *t, c, items)))
+            .map(|(t, c, items, run)| {
+                let mut p = prepare(vfs, &cache, *t, c, items);
+                if let Ok(p) = &mut p {
+                    p.run = run
+                        .as_ref()
+                        .and_then(|a| a.source_file.as_deref())
+                        .and_then(|f| cache.animation(vfs, f));
+                }
+                (c.name.clone(), p)
+            })
             .collect();
         for (name, r) in results {
             match r {
@@ -335,7 +351,7 @@ impl GrannyCache {
             });
         match &anim {
             Some(a) => eprintln!(
-                "  idle {} ({:.2} s, {} tracks)",
+                "  animation {} ({:.2} s, {} tracks)",
                 a.name,
                 a.duration,
                 a.tracks.len()
@@ -433,6 +449,15 @@ fn prepare(
         skeleton,
         parts,
         animation,
+        run: None,
+        run_speed: c
+            .props
+            .movement_speed_run
+            .unwrap_or(DEFAULT_MOVEMENT_SPEED_RUN),
+        step_height: c
+            .props
+            .movement_step_up_height
+            .unwrap_or(DEFAULT_MOVEMENT_STEP_UP_HEIGHT),
     })
 }
 
@@ -534,6 +559,20 @@ pub fn skinned_mesh(m: &bg3_gr2::Mesh, skeleton: &Skeleton) -> (Mesh, Vec<String
     (mesh, missing)
 }
 
+/// An animation with its `(joint index, track index)` bindings.
+pub type BoundClip = (Arc<PreparedAnimation>, Vec<(usize, usize)>);
+
+/// Root entity of a spawned level character.
+#[derive(Component)]
+pub struct CharacterRoot {
+    pub name: String,
+    pub run_speed: f32,
+    pub step_height: f32,
+    /// Idle and run clips with their joint bindings, for swapping into [`CharacterAnimator`].
+    pub idle: Option<BoundClip>,
+    pub run: Option<BoundClip>,
+}
+
 /// Joint entities of a spawned character, plus its animation state.
 #[derive(Component)]
 pub struct CharacterAnimator {
@@ -628,6 +667,19 @@ pub fn spawn_characters(
                 ));
             }
         }
+        commands.entity(root).insert(CharacterRoot {
+            name: c.name.clone(),
+            run_speed: c.run_speed,
+            step_height: c.step_height,
+            idle: c.animation.clone().map(|a| {
+                let b = a.bind(&c.skeleton);
+                (a, b)
+            }),
+            run: c.run.clone().map(|a| {
+                let b = a.bind(&c.skeleton);
+                (a, b)
+            }),
+        });
         let animation = c
             .animation
             .filter(|_| std::env::var_os("BG3_NO_ANIM").is_none());

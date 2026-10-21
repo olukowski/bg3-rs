@@ -10,6 +10,7 @@ mod level;
 mod lights;
 mod materials;
 mod meshes;
+mod nav;
 mod space;
 mod terrain;
 
@@ -46,6 +47,16 @@ struct Args {
     /// Run this dialog in an on-screen panel (resource name, e.g. `TUT_Lab_TrappedDevourer`).
     #[arg(long)]
     dialog: Option<String>,
+    /// Draw the AI grid (walkable tiles green, blocked red/yellow).
+    #[arg(long)]
+    nav: bool,
+    /// Character to control with left clicks (name substring; default: nearest the camera
+    /// target).
+    #[arg(long)]
+    player: Option<String>,
+    /// Walk the controlled character to `x,y,z` (BG3 world coordinates) on start.
+    #[arg(long, value_parser = parse_vec3, allow_hyphen_values = true)]
+    walk_to: Option<Vec3>,
 }
 
 fn parse_vec3(s: &str) -> Result<Vec3, String> {
@@ -114,6 +125,14 @@ fn main() -> Result<()> {
             .chain(characters.material_ids()),
     );
 
+    let navigation = match nav::Navigation::load(&vfs, &args.level) {
+        Ok(n) => Some(n),
+        Err(e) => {
+            eprintln!("nav: no AI grid ({e}); click-to-move disabled");
+            None
+        }
+    };
+
     let dialog = match &args.dialog {
         Some(name) => Some(dialog::DialogPlugin::load(&install, name, &args.level)?),
         None => None,
@@ -156,6 +175,16 @@ fn main() -> Result<()> {
     .add_systems(PostStartup, lights::apply_exposure);
     if args.terrain_only {
         app.add_systems(PostStartup, terrain::hide_objects);
+    }
+    if let Some(navigation) = navigation {
+        app.add_plugins(nav::NavPlugin {
+            navigation,
+            options: nav::NavOptions {
+                overlay: args.nav,
+                player: args.player.clone(),
+                walk_to: args.walk_to.map(|v| v.to_array()),
+            },
+        });
     }
     if let Some(dialog) = dialog {
         app.add_plugins(dialog);
