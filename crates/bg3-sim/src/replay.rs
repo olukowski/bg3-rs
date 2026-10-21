@@ -79,6 +79,7 @@ pub const SIM_OWNED_EVENTS: &[&str] = &[
     "StatusAttempt",
     "StatusApplied",
     "StatusRemoved",
+    "BaseFactionChanged",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -179,6 +179,7 @@ pub fn load_templates(vfs: &Vfs) -> Result<HashMap<Guid, TemplateInfo>, LoadErro
                     race: guid_attr(n, "Race"),
                     stats: s(n, "Stats"),
                     statuses: status_list(n),
+                    faction: guid_attr(n, "Faction"),
                 },
             );
         }
@@ -225,6 +226,32 @@ pub fn stats_weights(stats: &bg3_stats::Stats) -> HashMap<String, f32> {
         .entries()
         .filter_map(|o| Some((o.name.clone(), o.get("Weight")?.trim().parse().ok()?)))
         .collect()
+}
+
+/// Faction names (`Public/<Module>/Factions/Factions.lsx`, region `FactionContainer`,
+/// `Faction` nodes with `Faction` (name) and `UUID`).
+pub fn load_factions(vfs: &Vfs) -> Result<HashMap<Guid, String>, LoadError> {
+    let mut out = HashMap::new();
+    for m in BASE_LOAD_ORDER {
+        let path = format!("Public/{m}/Factions/Factions.lsx");
+        if !vfs.exists(&path) {
+            continue;
+        }
+        let res = parse(vfs, &path)?;
+        let Some(root) = res.region("FactionContainer") else {
+            continue;
+        };
+        let list = root.children_named("Faction").chain(
+            root.children_named("root")
+                .flat_map(|r| r.children_named("Faction")),
+        );
+        for n in list {
+            if let (Some(id), Some(name)) = (guid_attr(n, "UUID"), s(n, "Faction")) {
+                out.insert(id, name);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Races (`Public/<Module>/Races/Races.lsx`, `Race` nodes with `Name`, `UUID`, `ParentGuid`
@@ -294,6 +321,7 @@ fn placed(n: &Node, level_dir: &str, global: bool) -> Option<PlacedObject> {
         stats: s(n, "Stats"),
         statuses: status_list(n),
         race: guid_attr(n, "Race"),
+        faction: guid_attr(n, "Faction"),
     })
 }
 
@@ -381,6 +409,7 @@ impl GameData {
             statuses: StatusDefs::from_stats(stats),
             templates: load_templates(vfs)?,
             races: load_races(vfs)?,
+            factions: load_factions(vfs)?,
             weight_categories: load_weight_categories(vfs)?,
             stats_weight: stats_weights(stats),
             stats_type: stats

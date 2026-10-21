@@ -29,6 +29,7 @@ pub const CALLS: &[(&str, usize)] = &[
     ("ApplyStatus", 5),
     ("RemoveStatus", 3),
     ("TeleportPartiesToLevelWithMovie", 3),
+    ("SetFaction", 2),
 ];
 
 pub const QUERIES: &[(&str, usize)] = &[
@@ -47,6 +48,7 @@ pub const QUERIES: &[(&str, usize)] = &[
     ("IsSummon", 2),
     ("IsWeapon", 2),
     ("IsPartyMember", 3),
+    ("GetFaction", 2),
     ("IsStatusFromGroup", 3),
     ("GetStatusType", 2),
     ("TimerExists", 2),
@@ -162,7 +164,10 @@ impl<'a> SimFunctions<'a> {
             }
             // bg3: esv::OsirisGameFunctions::RemoveStatus (4.1.1.7631656)
             ("RemoveStatus", 3) => sim.remove_status(g(0), &text(ctx, &args[1])),
+            // bg3: esv::OsirisCharacterFunctions::TeleportPartiesToLevelWithMovie (4.1.1.7631656)
             ("TeleportPartiesToLevelWithMovie", 3) => sim.request_level(&text(ctx, &args[0])),
+            // bg3: esv::OsirisGameFunctions::SetFaction (4.1.1.7631656)
+            ("SetFaction", 2) => sim.set_faction(g(0), g(1)),
             _ => return None,
         })
     }
@@ -200,10 +205,12 @@ impl<'a> SimFunctions<'a> {
             }
             // bg3: esv::OsirisGameFunctions::Exists (4.1.1.7631656)
             ("Exists", 2) => Some(bool_out(sim.exists(g(ctx, 0)))),
+            // bg3: esv::OsirisGameFunctions::IsCharacter / IsItem (4.1.1.7631656)
             ("IsCharacter", 2) => {
                 Some(bool_out(kind_query(sim, g(ctx, 0), EntityKind::Character)?))
             }
             ("IsItem", 2) => Some(bool_out(kind_query(sim, g(ctx, 0), EntityKind::Item)?)),
+            // bg3: esv::OsirisGameFunctions::GetTemplate (4.1.1.7631656)
             ("GetTemplate", 2) => {
                 let t = sim
                     .entity(g(ctx, 0))
@@ -212,6 +219,7 @@ impl<'a> SimFunctions<'a> {
                     .map(|t| crate::guid::osiris_name(&t.name, t.id))?;
                 Some(ctx.guid(&t))
             }
+            // bg3: esv::OsirisGameFunctions::GetRegion (4.1.1.7631656)
             ("GetRegion", 2) => {
                 let l = sim.region(g(ctx, 0))?.to_owned();
                 Some(ctx.string(&l))
@@ -229,6 +237,7 @@ impl<'a> SimFunctions<'a> {
                 let grp = text(ctx, &args[1]);
                 Some(bool_out(sim.has_status_in_group(g(ctx, 0), &grp)?))
             }
+            // bg3: esv::OsirisGameFunctions::IsSummon (4.1.1.7631656).
             // Summons are created by spells, which the sim does not run: no object it loaded
             // is one.
             ("IsSummon", 2) => {
@@ -238,6 +247,7 @@ impl<'a> SimFunctions<'a> {
                 }
                 Some(bool_out(false))
             }
+            // bg3: esv::OsirisItemFunctions::IsWeapon (4.1.1.7631656).
             // An item whose stats entry is of type `Weapon`.
             ("IsWeapon", 2) => {
                 let e = sim.entity(g(ctx, 0))?;
@@ -251,9 +261,15 @@ impl<'a> SimFunctions<'a> {
                 };
                 Some(bool_out(is))
             }
+            // bg3: esv::OsirisCharacterFunctions::IsPartyMember (4.1.1.7631656).
             // `IsPartyMember(character, include_followers)`: in the party as reported by
             // `CharacterJoinedParty` / `CharacterLeftParty`.
             ("IsPartyMember", 3) => Some(bool_out(sim.party.contains(&g(ctx, 0)))),
+            // bg3: esv::OsirisGameFunctions::GetFaction (4.1.1.7631656)
+            ("GetFaction", 2) => {
+                let f = sim.faction_text(g(ctx, 0))?;
+                Some(ctx.guid(&f))
+            }
 
             // bg3: esv::OsirisGameFunctions::IsStatusFromGroup (4.1.1.7631656)
             ("IsStatusFromGroup", 3) => {
@@ -292,7 +308,7 @@ impl<'a> SimFunctions<'a> {
                 let d = real(&args[1]);
                 (d != 0.0).then(|| Value::real(real(&args[0]) / d))
             }
-            // bg3: esv::OsirisGeneralFunctions (4.1.1.7631656)
+            // bg3: esv::OsirisGeneralFunctions::Concatenate & co. (4.1.1.7631656)
             ("Concatenate", 3) => {
                 let s = format!("{}{}", text(ctx, &args[0]), text(ctx, &args[1]));
                 Some(ctx.string(&s))

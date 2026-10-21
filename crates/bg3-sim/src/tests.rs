@@ -39,6 +39,7 @@ fn obj(id: &str, name: &str, kind: EntityKind, tags: &[&str]) -> PlacedObject {
         stats: None,
         statuses: Vec::new(),
         race: None,
+        faction: None,
     }
 }
 
@@ -66,6 +67,7 @@ fn data() -> GameData {
             parent: None,
             tags: vec![g(TAG_A)],
             race: None,
+            faction: None,
             stats: None,
             statuses: Vec::new(),
         },

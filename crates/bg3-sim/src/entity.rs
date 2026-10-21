@@ -78,6 +78,8 @@ pub struct Entity {
     pub holder: Option<Guid>,
     /// Stats entry (`Stats` of the object or its nearest template).
     pub stats: Option<String>,
+    /// Current faction.
+    pub faction: Option<Guid>,
 }
 
 impl Entity {
@@ -96,6 +98,7 @@ impl Entity {
             user: None,
             holder: None,
             stats: None,
+            faction: None,
         }
     }
 

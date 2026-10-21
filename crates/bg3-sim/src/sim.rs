@@ -28,6 +28,8 @@ pub struct TemplateInfo {
     pub stats: Option<String>,
     /// `StatusList`: statuses applied at spawn.
     pub statuses: Vec<String>,
+    /// `Faction`.
+    pub faction: Option<Guid>,
 }
 
 /// A race (`Public/<Module>/Races/Races.lsx`).
@@ -57,6 +59,8 @@ pub struct PlacedObject {
     pub statuses: Vec<String>,
     /// `Race` override.
     pub race: Option<Guid>,
+    /// `Faction` override.
+    pub faction: Option<Guid>,
 }
 
 /// A weight category (`Public/<Module>/WeightCategories/WeightCategories.lsx`).
@@ -76,6 +80,8 @@ pub struct GameData {
     pub statuses: StatusDefs,
     pub templates: HashMap<Guid, TemplateInfo>,
     pub races: HashMap<Guid, RaceInfo>,
+    /// Faction names (`Public/<Module>/Factions/Factions.lsx`).
+    pub factions: HashMap<Guid, String>,
     /// Ascending by `max_weight`.
     pub weight_categories: Vec<WeightCategory>,
     /// `Weight` (kg) of every stats entry that has one.
@@ -141,6 +147,15 @@ impl GameData {
             self.template_chain(obj.template)
                 .into_iter()
                 .find_map(|t| t.stats.as_deref())
+        })
+    }
+
+    /// The faction of an object: its own `Faction`, else the nearest template's.
+    pub fn faction(&self, obj: &PlacedObject) -> Option<Guid> {
+        obj.faction.or_else(|| {
+            self.template_chain(obj.template)
+                .into_iter()
+                .find_map(|t| t.faction)
         })
     }
 
@@ -240,6 +255,7 @@ impl Sim {
         e.global = o.global;
         e.position = o.position;
         e.stats = self.data.stats_name(o).map(str::to_owned);
+        e.faction = self.data.faction(o);
         for t in tags {
             e.tags.add(TagSource::Template, t);
         }
@@ -501,6 +517,7 @@ impl Sim {
                 stats: None,
                 statuses: Vec::new(),
                 race: None,
+                faction: None,
             };
             (e.origin == Origin::Observed).then(|| {
                 let mut t = self.data.initial_tags(&probe);
@@ -508,15 +525,16 @@ impl Sim {
                 t
             })
         };
-        let stats = self
-            .data
-            .template_chain(Some(template))
-            .into_iter()
-            .find_map(|t| t.stats.clone());
+        let chain = self.data.template_chain(Some(template));
+        let stats = chain.iter().find_map(|t| t.stats.clone());
+        let faction = chain.iter().find_map(|t| t.faction);
         if let Some(e) = self.entities.get_mut(id) {
             e.template = Some(template);
             if e.stats.is_none() {
                 e.stats = stats;
+            }
+            if e.faction.is_none() {
+                e.faction = faction;
             }
             for t in tags.into_iter().flatten() {
                 e.tags.add(TagSource::Template, t);
@@ -735,6 +753,43 @@ impl Sim {
                 );
             }
         }
+    }
+
+    // ---- factions ------------------------------------------------------------------------
+
+    /// `SetFaction(object, faction)`: queue `BaseFactionChanged(character, old, new)` (bare
+    /// faction UUIDs) if the faction changes. False if the object does not exist.
+    ///
+    /// *Verified by trace*: every `SetFaction` of the opening is followed by one
+    /// `BaseFactionChanged` whose old faction is the object's `Faction` from the level data.
+    // bg3: esv::OsirisGameFunctions::SetFaction (4.1.1.7631656)
+    pub fn set_faction(&mut self, object: Guid, faction: Guid) -> bool {
+        let Some(e) = self.entities.get_mut(object) else {
+            return false;
+        };
+        let old = e.faction;
+        if old == Some(faction) || faction.is_null() {
+            return true;
+        }
+        e.faction = Some(faction);
+        if e.kind == EntityKind::Character {
+            let who = e.osiris_name();
+            self.push_event(
+                "BaseFactionChanged",
+                vec![
+                    SimValue::Guid(who),
+                    SimValue::Guid(old.unwrap_or(Guid::NULL).to_string()),
+                    SimValue::Guid(faction.to_string()),
+                ],
+            );
+        }
+        true
+    }
+
+    /// `GetFaction`: `Name_<uuid>` of the object's faction; `None` if unknown.
+    pub fn faction_text(&self, object: Guid) -> Option<String> {
+        let f = self.entities.get(object)?.faction?;
+        Some(osiris_name(self.data.factions.get(&f)?, f))
     }
 
     // ---- statuses ------------------------------------------------------------------------

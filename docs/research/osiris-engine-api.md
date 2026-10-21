@@ -59,6 +59,7 @@ Which engine events the sim must raise itself and which come from outside. The h
 | `TagSet`, `TagCleared` | the merged tag set of an object changes: at spawn (template, race, weight tags) and after `SetTag`/`ClearTag` | `esv::TagSystem::Update` → `StoryGameEventManager::ThrowTagSet` / `ThrowTagCleared` |
 | `TimerFinished`, `ObjectTimerFinished` | a story timer runs out | `esv::GameTimerSystem`, `OsirisGameFunctions::OnGameTimerFinished` |
 | `StatusAttempt`, `StatusApplied`, `StatusRemoved` | `ApplyStatus`/`RemoveStatus` from the story (story action id -1), `StatusList` statuses at spawn (id 0) | the status machine (not modelled beyond this) |
+| `BaseFactionChanged` | `SetFaction` changes a character's faction (old and new faction as bare UUIDs) | trace: each of the 9 `SetFaction` calls is followed by one, the old faction being the level data's `Faction` |
 
 Some sim-owned events have causes the sim does not model yet; the report counts them as "fed,
 caused outside the sim", separately from real gaps:
@@ -82,7 +83,7 @@ source:
 | interaction | `UseStarted`/`Finished`, `RequestCanUse`, `Opened`, `Closed`, `TemplateOpening`, `EnteredTrigger`, `LeftTrigger`, `Activated`, `Deactivated`, `WentOnStage`, `ReposeAdded` |
 | dialog | `DialogStarted`/`Ended`, `AutomatedDialogStarted`/`Ended`, `DialogActorJoined`/`Left`, `DialogRollResult`, `DialogStartRequested` |
 | crime | `CrimeIsRegistered`, `CrimeProcessingStarted`, `OnCrimeRemoved` |
-| scripts and misc | `EntityEvent`, `UserEvent`, `TagEvent`, `CharacterTagEvent`, `OnStoryOverride`, `TutorialEvent`, `TutorialClosed`, `QuestAccepted`, `QuestUpdateUnlocked`, `BaseFactionChanged`, `RelationChanged`, `Teleported`, … |
+| scripts and misc | `EntityEvent`, `UserEvent`, `TagEvent`, `CharacterTagEvent`, `OnStoryOverride`, `TutorialEvent`, `TutorialClosed`, `QuestAccepted`, `QuestUpdateUnlocked`, `RelationChanged`, `Teleported`, … |
 
 Observing an external event updates the sim the way the engine's own state changed: objects
 named with a `CHARACTER`/`ITEM`/`TRIGGER` parameter exist (kind from the type),
@@ -114,6 +115,7 @@ and queue events; nothing is delivered to the story during a call, matching the 
 | root templates (25 550) | `Public/<Module>/RootTemplates/_merged.lsf`: `Name`, `Type`, `ParentTemplateId`, `Tags`, `Race`, `Stats`, `StatusList` |
 | races | `Public/<Module>/Races/Races.lsx`: `ParentGuid`, `Tags` |
 | weight categories | `Public/<Module>/WeightCategories/WeightCategories.lsx`: `MaxWeight` (g), `Tags`; stats `Weight` (kg) |
+| factions | `Public/<Module>/Factions/Factions.lsx`: `Faction` (name), `UUID`; objects' `Faction` |
 | global objects (759) | `Mods/<Module>/Globals/<Level>/{Characters,Items,Triggers}/_merged.lsf`, all levels: they exist all game |
 | level objects | `Mods/<Module>/Levels/<Level>/{Characters,Items,Triggers}/_merged.lsf`, while the level is loaded |
 
@@ -178,7 +180,7 @@ fires due timers in due-time order.
 (follows inventory holders), `GetFlag`, `GetFlagName`, `IsTagged`, `HasActiveStatus`,
 `HasAppliedStatus`, `HasActiveStatusWithGroup`, `HasAppliedStatusWithGroup`,
 `IsStatusFromGroup`, `GetStatusType`, `TimerExists`, `ObjectTimerExists`, `IsSummon`,
-`IsWeapon` (stats type `Weapon`), `IsPartyMember`, and the math/string functions
+`IsWeapon` (stats type `Weapon`), `IsPartyMember`, `GetFaction`, and the math/string functions
 (`IntegerSum` & co., `Concatenate`, `ConcatenateInteger`, `GUIDToString`, `StringToGUID`). A
 query the sim implements still falls back when it lacks the data: objects created outside the
 sim (their tags may come from character-creation choices), objects of unknown kind, statuses
@@ -186,7 +188,8 @@ without a stats entry.
 
 **Calls run by the sim:** `SetFlag`, `ClearFlag`, `SetTag`, `ClearTag`, `TimerLaunch`,
 `TimerCancel`, `ObjectTimerLaunch`, `ObjectTimerCancel`, `RealtimeObjectTimerLaunch`,
-`RealtimeObjectTimerCancel`, `ApplyStatus`, `RemoveStatus`, `TeleportPartiesToLevelWithMovie`.
+`RealtimeObjectTimerCancel`, `ApplyStatus`, `RemoveStatus`, `TeleportPartiesToLevelWithMovie`,
+`SetFaction`.
 
 **For other systems:** `bg3_sim::StoryState` (flags, tags, existence, kind, rendering, names);
 `Sim` implements it. Writes queue the same events as the Osiris calls.
@@ -211,10 +214,10 @@ Results on `full-nautiloid.log` (12 382 segments = `InitGame` + 12 381 events):
 |---|---|---|
 | segments identical to the game (every fact, rule, call, query, PROC, goal record) | 100.00% | **100.00%** |
 | databases with identical fact history | 1 133 / 1 133 | 1 133 / 1 133 |
-| queries answered by the sim | 11 616 / 13 543 (85.8%) | 11 616 / 13 543 (85.8%) |
+| queries answered by the sim | 11 702 / 13 543 (86.4%) | 11 702 / 13 543 (86.4%) |
 | sim answers that disagree with the game | 0 | 0 |
-| queries from the log: not implemented / implemented, no data | 1 481 / 446 | 1 481 / 446 |
-| calls run by the sim | 449 / 1 115 (40.3%) | 449 / 1 115 |
+| queries from the log: not implemented / implemented, no data | 1 395 / 446 | 1 395 / 446 |
+| calls run by the sim | 458 / 1 115 (41.1%) | 458 / 1 115 |
 
 Sim-owned events (both modes):
 
@@ -228,6 +231,7 @@ Sim-owned events (both modes):
 | `StatusAttempt` | 211 | 135 | 7 | 69 | 17 |
 | `StatusApplied` | 210 | 135 | 7 | 68 | 17 |
 | `StatusRemoved` | 7 | 4 | 0 | 3 | 0 |
+| `BaseFactionChanged` | 9 | 9 | 0 | 0 | 0 |
 
 Every event the sim raised for a story call (flags, tags, timers, statuses) matches the game;
 the gaps are all engine-side: two `FlagSet`s from `SetMagicPocketsFlag` (not implemented),
@@ -279,7 +283,7 @@ created outside the sim fell back to the log and the instance `Race` was read.
    immunities, stacking, turn durations; built-in status types from the binary.
 5. **Next queries by volume**: `GetHitpointsPercentage` 370 and `IsDead` (needs HP and death),
    `HasPassive` 182 (progressions), `GetInventoryOwner` 97 and `TemplateIsInInventory` 63
-   (inventory), `GetFaction` 86 (factions), `DialogIsAutomated` 71 and the other dialog
+   (inventory), `DialogIsAutomated` 71 and the other dialog
    queries (dialogue runner), `CharacterHasDLC` 66, `GetReservedUserID` 64, `IsGameLevel` 33.
 6. **Timing**: the trace has no timestamps; a capture with frame numbers or game time would let
    the sim drive timers and event batching itself instead of following the log's order.
@@ -299,7 +303,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | Subsystem | calls (uses) | queries (uses) | events (deliveries) | in bg3-sim |
 |---|---|---|---|---|
 | Character creation | 3 (12) | 1 (6) | 5 (5) | 0 of 9 |
-| Combat, AI & perception | 13 (168) | 8 (652) | 21 (1941) | 0 of 42 |
+| Combat, AI & perception | 13 (168) | 8 (652) | 21 (1941) | 3 of 42 |
 | Crime | 5 (51) | 10 (48) | 3 (9) | 0 of 18 |
 | Dialog | 5 (40) | 11 (177) | 8 (38) | 0 of 24 |
 | Entities & templates | 10 (180) | 12 (4518) | 9 (229) | 4 of 31 |
@@ -337,7 +341,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 |---|---|---:|---:|---|---|
 | call | `ClearRelation/2` | 104 |  |  | `ClearRelation((FACTION)ACT0_TUT_LabDevourer_…, (FACTION)Hero_Player1_…)` |
 | call | `RemoveSpell/3` | 36 |  |  | `RemoveSpell(Gnomes_Male_Deep_Player_…, "Shout_Bard_Perform_DOS2_1_Drum", 1)` |
-| call | `SetFaction/2` | 9 |  |  | `SetFaction((CHARACTER)S_Player_Karlach_…, (FACTION)Origin_Karlach_…)` |
+| call | `SetFaction/2` | 9 |  | yes | `SetFaction((CHARACTER)S_Player_Karlach_…, (FACTION)Origin_Karlach_…)` |
 | call | `SetCanFight/2` | 5 |  |  | `SetCanFight(S_TUT_Helm_MindFlayer_…, 0)` |
 | call | `SetRelation/3` | 4 |  |  | `SetRelation((FACTION)ACT0_TUT_LabDevourer_…, (FACTION)Hero_…, 0)` |
 | call | `SetAiHint/2` | 2 |  |  | `SetAiHint((CHARACTER)S_TUT_Helm_MindFlayer_…, (TAG)AI_HINT_UNIQUE_…)` |
@@ -350,7 +354,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | call | `UseSpell/5` | 1 |  |  | `UseSpell(S_TUT_Lab_TrappedDevourer_…, "Projectile_Jump", S_TUT_UsEscapePosition_Jump_…, NULL_…, 0)` |
 | query | `GetHitpointsPercentage/2` | 370 |  |  | `GetHitpointsPercentage(S_GLO_CharacterCreationDummy_003_…, [out] (REAL))` |
 | query | `HasPassive/3` | 182 |  |  | `HasPassive(S_GLO_GithKnight_…, "MagicArrow", [out] 1)` |
-| query | `GetFaction/2` | 86 |  |  | `GetFaction(S_OriginIntro_DarkUrgeDummy_…, [out] (GUIDSTRING))` |
+| query | `GetFaction/2` | 86 |  | yes | `GetFaction(S_OriginIntro_DarkUrgeDummy_…, [out] (GUIDSTRING))` |
 | query | `CanFight/2` | 5 |  |  | `CanFight(Gnomes_Male_Deep_Player_…, [out] 1)` |
 | query | `GetRelation/3` | 4 |  |  | `GetRelation((FACTION)ACT0_TUT_LabDevourer_…, (FACTION)Hero_…, [out] (INTEGER))` |
 | query | `CanLearnSpell/4` | 2 | 2 |  | `CanLearnSpell(Gnomes_Male_Deep_Player_…, LOOT_SCROLL_Revivify_…, 0, [out] 1)` |
@@ -364,7 +368,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | event | `CanBeLootedCapabilityChanged/2` | 31 |  | external | `CanBeLootedCapabilityChanged(S_GLO_BaneDummyForGortashSwD_…, 1)` |
 | event | `Died/1` | 31 |  | external | `Died(S_GLO_BaneDummyForGortashSwD_…)` |
 | event | `SwarmAIGroupJoined/2` | 17 | 17 | external | `SwarmAIGroupJoined/2` |
-| event | `BaseFactionChanged/3` | 9 |  | external | `BaseFactionChanged(S_Player_Karlach_…, …, …)` |
+| event | `BaseFactionChanged/3` | 9 |  | raises | `BaseFactionChanged(S_Player_Karlach_…, …, …)` |
 | event | `ObscuredStateChanged/2` | 8 |  | external | `ObscuredStateChanged(S_WYR_VampireSpawns_Dalyria_…, "HeavilyObscured")` |
 | event | `RollResult/6` | 6 |  | external | `RollResult("…_3", Gnomes_Male_Deep_Player_…, Gnomes_Male_Deep_Player_…, 0, 1, CRITICALITYTYPE.NONE)` |
 | event | `ShortRestCapable/2` | 6 | 6 | external | `ShortRestCapable/2` |
