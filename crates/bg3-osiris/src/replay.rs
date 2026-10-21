@@ -133,11 +133,13 @@ impl Category {
 
 /// A logged engine-query answer.
 #[derive(Clone, Debug)]
-struct Answer {
-    segment: usize,
-    ok: bool,
+pub struct Answer {
+    /// Segment the answer was logged in.
+    pub segment: usize,
+    /// False if the log marks the query failed.
+    pub ok: bool,
     /// Returned values, all parameters.
-    values: Vec<LogValue>,
+    pub values: Vec<LogValue>,
 }
 
 /// How a query was answered.
@@ -257,7 +259,7 @@ impl ReplayHost {
 }
 
 /// A logged value as a VM value of declared type `decl`.
-pub(crate) fn to_value(vm: &mut Vm, lv: &LogValue, decl: TypeId) -> Value {
+pub fn to_value(vm: &mut Vm, lv: &LogValue, decl: TypeId) -> Value {
     let root = vm.prog.types.root(decl);
     match &lv.v {
         LogData::Unset => Value::undef(decl, root),
@@ -329,6 +331,49 @@ fn host_to_value(ctx: &mut HostCtx<'_>, lv: &LogValue, decl: &Value) -> Value {
     }
 }
 
+impl ReplayHost {
+    /// The logged answer for a query with these inputs (out-parameters ignored), preferring
+    /// an unused one from the current segment; `None` if the log never asked it. Counts in
+    /// [`HostStats`]. `Answer::segment` tells whether it came from the current segment.
+    pub fn lookup(
+        &mut self,
+        ctx: &HostCtx<'_>,
+        name: &str,
+        args: &[Value],
+        out: &[bool],
+    ) -> Option<Answer> {
+        let key = query_key(
+            name,
+            args.iter()
+                .zip(out)
+                .filter(|(_, o)| !**o)
+                .map(|(a, _)| crate::vm::log_value_ctx(ctx, a).key()),
+        );
+        let ans = self.find(&key);
+        if ans.is_none() {
+            self.stats.unanswered += 1;
+            if self.unanswered.len() < 50 {
+                self.unanswered.push((self.segment, key));
+            }
+        }
+        ans
+    }
+
+    /// Fill the out-parameters from a logged answer; returns the logged success.
+    pub fn apply(ctx: &mut HostCtx<'_>, ans: &Answer, args: &mut [Value], out: &[bool]) -> bool {
+        if ans.ok {
+            for (i, a) in args.iter_mut().enumerate() {
+                if out.get(i).copied().unwrap_or(false)
+                    && let Some(v) = ans.values.get(i)
+                {
+                    *a = host_to_value(ctx, v, a);
+                }
+            }
+        }
+        ans.ok
+    }
+}
+
 impl Host for ReplayHost {
     fn call(&mut self, ctx: &mut HostCtx<'_>, name: &str, args: &[Value]) -> bool {
         let key = query_key(
@@ -351,30 +396,10 @@ impl Host for ReplayHost {
         args: &mut [Value],
         out: &[bool],
     ) -> bool {
-        let key = query_key(
-            name,
-            args.iter()
-                .zip(out)
-                .filter(|(_, o)| !**o)
-                .map(|(a, _)| crate::vm::log_value_ctx(ctx, a).key()),
-        );
-        let Some(ans) = self.find(&key) else {
-            self.stats.unanswered += 1;
-            if self.unanswered.len() < 50 {
-                self.unanswered.push((self.segment, key));
-            }
-            return false;
-        };
-        if ans.ok {
-            for (i, a) in args.iter_mut().enumerate() {
-                if out.get(i).copied().unwrap_or(false)
-                    && let Some(v) = ans.values.get(i)
-                {
-                    *a = host_to_value(ctx, v, a);
-                }
-            }
+        match self.lookup(ctx, name, args, out) {
+            Some(ans) => Self::apply(ctx, &ans, args, out),
+            None => false,
         }
-        ans.ok
     }
 }
 
@@ -619,53 +644,92 @@ pub fn replay(story: &Story, log: &str) -> Report {
 
 /// [`replay`], optionally keeping the VM's log text (for diffing against the game's).
 pub fn replay_with(story: &Story, log: &str, keep_vm_log: bool) -> Report {
-    let mut vm_text = keep_vm_log.then(String::new);
     let segs = segments(parse_log(log));
     let mut host = ReplayHost::new(&segs);
     let mut vm = Vm::new(story);
     vm.set_logging(true);
-    let mut report = Report {
-        segments: segs.len(),
-        ..Report::default()
-    };
-    let mut rates: HashMap<Category, Rate> = HashMap::new();
-    let mut db_trace: HashMap<String, Vec<String>> = HashMap::new();
-    let mut db_vm: HashMap<String, Vec<String>> = HashMap::new();
-
+    let mut cmp = Comparer::new(segs.len(), keep_vm_log);
     for (si, seg) in segs.iter().enumerate() {
         host.set_segment(si);
-        let vm_records: Vec<Record> = if si == 0 {
-            vm.init_game(&mut host);
-            vm.take_log()
-        } else if let Some((name, args)) = &seg.event {
-            if seg.ignored {
-                let mut out = vec![Record::EventCall];
-                if vm.event_has_rules(name, args.len()) != Some(false) {
-                    out.push(Record::Other(format!(
-                        "VM has rules for ignored event {name}/{}",
-                        args.len()
-                    )));
-                }
-                out
-            } else {
-                let params = vm.function_params(name, args.len()).unwrap_or_default();
-                let values: Vec<Value> = args
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| {
-                        let decl = params.get(i).copied().unwrap_or(0);
-                        to_value(&mut vm, a, decl)
-                    })
-                    .collect();
-                vm.event(&mut host, name, &values);
-                vm.take_log()
-            }
-        } else {
-            Vec::new()
-        };
+        let records = run_segment(&mut vm, &mut host, seg, si);
+        cmp.segment(si, seg, &records);
+    }
+    let mut report = cmp.finish(&vm);
+    report.host = host.stats;
+    report.unanswered = host.unanswered;
+    report
+}
 
-        if let Some(text) = vm_text.as_mut() {
-            text.push_str(&crate::trace::render_log(&vm_records));
+/// The logged arguments of an event as VM values of the declared parameter types.
+pub fn event_values(vm: &mut Vm, name: &str, args: &[LogValue]) -> Vec<Value> {
+    let params = vm.function_params(name, args.len()).unwrap_or_default();
+    args.iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let decl = params.get(i).copied().unwrap_or(0);
+            to_value(vm, a, decl)
+        })
+        .collect()
+}
+
+/// Run one segment's event (segment 0: `InitGame`) with `host` and return the VM's records.
+/// For an event the log marks as ignored, the VM only checks that it has no rules for it.
+pub fn run_segment(vm: &mut Vm, host: &mut dyn Host, seg: &Segment, index: usize) -> Vec<Record> {
+    if index == 0 {
+        vm.init_game(host);
+        return vm.take_log();
+    }
+    let Some((name, args)) = &seg.event else {
+        return Vec::new();
+    };
+    if seg.ignored {
+        return ignored_event(vm, name, args.len());
+    }
+    let values = event_values(vm, name, args);
+    vm.event(host, name, &values);
+    vm.take_log()
+}
+
+/// The records for an event the game logged as ignored (no rules use it): the VM only checks
+/// that it has no rules for it either.
+pub fn ignored_event(vm: &Vm, name: &str, arity: usize) -> Vec<Record> {
+    let mut out = vec![Record::EventCall];
+    if vm.event_has_rules(name, arity) != Some(false) {
+        out.push(Record::Other(format!(
+            "VM has rules for ignored event {name}/{arity}"
+        )));
+    }
+    out
+}
+
+/// Compares the VM's records with the log, segment by segment, and builds the [`Report`].
+pub struct Comparer {
+    report: Report,
+    rates: HashMap<Category, Rate>,
+    db_trace: HashMap<String, Vec<String>>,
+    db_vm: HashMap<String, Vec<String>>,
+    vm_text: Option<String>,
+}
+
+impl Comparer {
+    pub fn new(segments: usize, keep_vm_log: bool) -> Self {
+        Self {
+            report: Report {
+                segments,
+                ..Report::default()
+            },
+            rates: HashMap::new(),
+            db_trace: HashMap::new(),
+            db_vm: HashMap::new(),
+            vm_text: keep_vm_log.then(String::new),
+        }
+    }
+
+    /// Compare one segment; returns whether it matched.
+    pub fn segment(&mut self, si: usize, seg: &Segment, vm_records: &[Record]) -> bool {
+        let report = &mut self.report;
+        if let Some(text) = self.vm_text.as_mut() {
+            text.push_str(&crate::trace::render_log(vm_records));
         }
         let t: Vec<&Line> = seg.records.iter().filter(|l| compared(&l.record)).collect();
         let v: Vec<&Record> = vm_records.iter().filter(|r| compared(r)).collect();
@@ -682,8 +746,9 @@ pub fn replay_with(story: &Story, log: &str, keep_vm_log: bool) -> Report {
         let tk: Vec<String> = t.iter().map(|l| l.record.key()).collect();
         let vk: Vec<String> = v.iter().map(|r| r.key()).collect();
         let ignored_mismatch = vm_records.iter().any(|r| matches!(r, Record::Other(_)));
+        let matched = tk == vk && !ignored_mismatch;
 
-        if tk == vk && !ignored_mismatch {
+        if matched {
             report.segments_matched += 1;
             for (l, r) in t.iter().zip(&v) {
                 let (a, b) = (l.record.to_string(), r.to_string());
@@ -758,7 +823,7 @@ pub fn replay_with(story: &Story, log: &str, keep_vm_log: bool) -> Report {
                 .filter(|(r, _)| Category::of(r) == Some(c) && Category::counted(r))
                 .map(|(_, k)| k.as_str())
                 .collect();
-            let rate = rates.entry(c).or_default();
+            let rate = self.rates.entry(c).or_default();
             rate.trace += tc.len() as u64;
             rate.vm += vc.len() as u64;
             rate.matched += lcs(&tc, &vc) as u64;
@@ -771,7 +836,11 @@ pub fn replay_with(story: &Story, log: &str, keep_vm_log: bool) -> Report {
             .map(|l| (&l.record, true))
             .chain(v.iter().map(|r| (*r, false)))
         {
-            let map = if side { &mut db_trace } else { &mut db_vm };
+            let map = if side {
+                &mut self.db_trace
+            } else {
+                &mut self.db_vm
+            };
             match r {
                 Record::Action {
                     kind: kind @ (ActionKind::AddFact | ActionKind::DeleteFact),
@@ -804,35 +873,38 @@ pub fn replay_with(story: &Story, log: &str, keep_vm_log: bool) -> Report {
                 _ => {}
             }
         }
+        matched
     }
 
-    let mut names: Vec<&String> = db_trace.keys().chain(db_vm.keys()).collect();
-    names.sort();
-    names.dedup();
-    report.databases = names.len();
-    for n in names {
-        let (a, b) = (db_trace.get(n), db_vm.get(n));
-        if a == b {
-            report.databases_matched += 1;
-        } else {
-            report.databases_differing.push((
-                n.clone(),
-                a.map_or(0, Vec::len),
-                b.map_or(0, Vec::len),
-            ));
+    /// The report (host statistics are left to the caller).
+    pub fn finish(self, vm: &Vm) -> Report {
+        let mut report = self.report;
+        let mut names: Vec<&String> = self.db_trace.keys().chain(self.db_vm.keys()).collect();
+        names.sort();
+        names.dedup();
+        report.databases = names.len();
+        for n in names {
+            let (a, b) = (self.db_trace.get(n), self.db_vm.get(n));
+            if a == b {
+                report.databases_matched += 1;
+            } else {
+                report.databases_differing.push((
+                    n.clone(),
+                    a.map_or(0, Vec::len),
+                    b.map_or(0, Vec::len),
+                ));
+            }
         }
+        report
+            .databases_differing
+            .sort_by_key(|(_, a, b)| std::cmp::Reverse(a.abs_diff(*b)));
+        let mut rates: Vec<(Category, Rate)> = self.rates.into_iter().collect();
+        rates.sort_by_key(|(c, _)| *c);
+        report.rates = rates;
+        report.vm_log = self.vm_text;
+        let (errs, n) = vm.errors();
+        report.vm_errors = n;
+        report.vm_error_samples = errs.iter().take(20).map(|e| e.0.clone()).collect();
+        report
     }
-    report
-        .databases_differing
-        .sort_by_key(|(_, a, b)| std::cmp::Reverse(a.abs_diff(*b)));
-    let mut rates: Vec<(Category, Rate)> = rates.into_iter().collect();
-    rates.sort_by_key(|(c, _)| *c);
-    report.rates = rates;
-    report.vm_log = vm_text;
-    report.host = host.stats;
-    report.unanswered = host.unanswered;
-    let (errs, n) = vm.errors();
-    report.vm_errors = n;
-    report.vm_error_samples = errs.iter().take(20).map(|e| e.0.clone()).collect();
-    report
 }

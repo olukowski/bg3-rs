@@ -1,0 +1,47 @@
+//! Headless, deterministic Baldur's Gate 3 world simulation: the engine side of the Osiris
+//! story.
+//!
+//! The story (`bg3_osiris`) asks the engine questions (`Exists`, `IsTagged`, `GetFlag`, …),
+//! tells it to do things (`SetFlag`, `SetTag`, `ObjectTimerLaunch`, …) and is told what
+//! happened through events (`FlagSet`, `TagSet`, `ObjectTimerFinished`, …). This crate keeps
+//! the world state those functions work on and implements them with the original's
+//! semantics, as read in the game binary (each function cites its symbol) and checked
+//! against a runtime trace of the original (see `docs/research/osiris-engine-api.md`).
+//!
+//! * [`Sim`]: entities (from level/globals objects and root templates), flags, tags,
+//!   statuses, timers on a sim clock, and the queue of events for the story.
+//! * [`SimHost`] / [`SimFunctions`]: the `bg3_osiris::Host` over the sim. Calls change the
+//!   state and queue events; events are never delivered during a call (the engine doesn't).
+//! * [`StoryState`]: a small trait over flags, tags and entities for other systems (the
+//!   dialogue runner).
+//! * [`replay`]: runs a captured trace with the sim answering what it can, and reports how
+//!   much of the story's behaviour the sim reproduces.
+//! * [`load`]: [`GameData`] from the install.
+//!
+//! No Bevy, no I/O besides [`load`]; the same inputs give the same results.
+
+pub mod api;
+pub mod entity;
+pub mod events;
+pub mod flags;
+pub mod guid;
+pub mod host;
+pub mod load;
+pub mod replay;
+pub mod sim;
+pub mod status;
+pub mod tags;
+pub mod timers;
+
+pub use api::StoryState;
+pub use entity::{Entities, Entity, EntityKind, Origin};
+pub use events::{SimEvent, SimValue};
+pub use flags::{FlagDef, FlagDefs, FlagError, FlagUsage};
+pub use guid::Guid;
+pub use host::{SimFunctions, SimHost};
+pub use sim::{GameData, ObservedArg, PlacedObject, RaceInfo, Sim, TemplateInfo, WeightCategory};
+pub use status::{StatusDef, StatusDefs};
+pub use tags::{TagDef, TagDefs, TagSource};
+
+#[cfg(test)]
+mod tests;
