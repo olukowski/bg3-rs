@@ -25,7 +25,11 @@ fn trace_path() -> PathBuf {
     if let Some(p) = std::env::var_os("BG3_OSIRIS_TRACE") {
         return PathBuf::from(p);
     }
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/traces");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(".cache")
+        .join("traces");
     let full = dir.join("full-nautiloid.log");
     if full.exists() {
         full

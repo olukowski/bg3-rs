@@ -1,14 +1,32 @@
 name: CI
 on: [push, pull_request]
 jobs:
-  check:
-    runs-on: macos-latest
+  fmt:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
       - run: cargo fmt --all --check
+
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Bevy's Linux build deps (https://github.com/bevyengine/bevy/blob/v0.20.0/docs/linux_dependencies.md).
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ pkg-config libx11-dev \
+            libasound2-dev libudev-dev libxkbcommon-x11-0 libwayland-dev libxkbcommon-dev
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Install-free tests only; `--ignored` tests need a local BG3 install.
       - run: cargo test --workspace

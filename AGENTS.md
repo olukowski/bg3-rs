@@ -38,15 +38,25 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
 
 ## Working with the game install
 
+- Platforms: macOS (app bundle, the reference build), Windows and Linux via Steam Proton (both use
+  the Windows layout: `<root>/Data`, `<root>/bin/bg3.exe`). Windows/Linux are untested so far.
+  Details, default search paths and what's macOS-only: `docs/platforms.md`.
+- `bg3_install::Install::locate()` finds the game: `BG3_INSTALL` (or the older alias `BG3_APP`)
+  if set, else the platform's Steam roots, every library in their `steamapps/libraryfolders.vdf`,
+  and GOG defaults. `bg3x info --candidates` shows what it probed. Always go through `Install`
+  (`data_dir()`, `localization_dir()`, `binary()`, `osiris_library()`) rather than building
+  `Contents/...` or `bin/...` paths yourself.
 - Default macOS location:
   `~/Library/Application Support/Steam/steamapps/common/Baldurs Gate 3/Baldur's Gate 3.app`
   (`~/Applications/Baldur's Gate 3.app` is just a Steam launcher shim — ignore it).
-- Override with `BG3_APP=/path/to/Baldur's Gate 3.app`.
-- Data paks: `Contents/Data/*.pak` and `Contents/Data/Localization/*.pak`.
+- Override with `BG3_INSTALL=/path/to/Baldur's Gate 3.app` (macOS) or
+  `BG3_INSTALL=/path/to/Baldurs Gate 3` (the folder containing `Data` and `bin`).
+- Data paks: `Contents/Data/*.pak` and `Contents/Data/Localization/*.pak` (Windows: `Data/...`).
 - Main binary: `Contents/MacOS/Baldur's Gate 3` (unstripped, ~765k symbols).
-  Osiris VM: `Contents/Frameworks/libOsiris.dylib` (unstripped).
+  Osiris VM: `Contents/Frameworks/libOsiris.dylib` (unstripped). The macOS binaries are the RE
+  reference; the Windows `bin/bg3.exe` is only read for its version.
 - **Never write into the install.** Open everything read-only.
-- Build a local symbol index with `scripts/symbol-index.sh` (output in `.cache/symbols/`, gitignored).
+- Build a local symbol index with `scripts/symbol-index.sh` (macOS only; output in `.cache/symbols/`, gitignored).
   Grep it before reaching for REA — it's usually enough to find the right function.
 
 ## Tooling
