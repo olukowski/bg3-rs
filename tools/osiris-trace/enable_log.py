@@ -1,5 +1,7 @@
 """Turn on libOsiris' built-in runtime log in a running Baldur's Gate 3, then detach.
 
+macOS-only: drives lldb against the macOS build (see docs/platforms.md).
+
 Usage (game running, at the main menu):
 
     lldb -b -o "command script import tools/osiris-trace/enable_log.py" \

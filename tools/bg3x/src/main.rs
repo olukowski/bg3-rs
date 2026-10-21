@@ -18,8 +18,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Show the located install, its version, and its paks.
-    Info,
+    /// Show the located install (layout, root, version) and its paks.
+    Info {
+        /// List every location probed for the install and whether it is valid.
+        #[arg(long)]
+        candidates: bool,
+    },
     /// List files in a pak. PAK is a path or a pak name in the install (e.g. `Gustav`).
     List {
         pak: String,
@@ -121,7 +125,7 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Info => info(),
+        Command::Info { candidates } => info(candidates),
         Command::List { pak, filter } => {
             let pak = open(&pak)?;
             for e in matching(&pak, filter.as_deref()) {
@@ -192,15 +196,38 @@ fn main() -> Result<()> {
     }
 }
 
-fn info() -> Result<()> {
-    let install = Install::locate()?;
-    println!("app:     {}", install.app.display());
+fn info(show_candidates: bool) -> Result<()> {
+    if show_candidates {
+        print_candidates();
+    }
+    let install = match Install::locate() {
+        Ok(install) => install,
+        Err(e) => {
+            if !show_candidates && matches!(e, bg3_install::Error::NotFound(_)) {
+                eprintln!("(run `bg3x info --candidates` for details)");
+            }
+            return Err(e.into());
+        }
+    };
+    println!("layout:  {}", install.layout);
+    println!("root:    {}", install.root.display());
     let note = if install.is_reference_version() {
-        ""
+        String::new()
     } else {
-        " (not the reference build)"
+        format!(
+            " (not the reference build {})",
+            bg3_install::REFERENCE_VERSION
+        )
     };
     println!("version: {}{note}", install.version);
+    println!("binary:  {}", install.binary().display());
+    match install.osiris_library() {
+        Some(p) => println!("osiris:  {}", p.display()),
+        None => println!("osiris:  (not found)"),
+    }
+    for w in &install.warnings {
+        eprintln!("warning: {w}");
+    }
     for path in install.paks()? {
         let pak = Package::open(&path)?;
         let h = pak.header();
@@ -214,6 +241,26 @@ fn info() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Print the env overrides and every default location, with whether each holds a valid install.
+fn print_candidates() {
+    for var in [bg3_install::ENV_INSTALL, bg3_install::ENV_APP] {
+        match std::env::var_os(var) {
+            Some(v) => println!("${var} = {} (overrides the search)", v.to_string_lossy()),
+            None => println!("${var} not set"),
+        }
+    }
+    println!("default locations, in search order:");
+    for c in Install::candidates() {
+        let status = match Install::open(&c.path) {
+            Ok(i) => format!("OK: {} {}", i.layout, i.version),
+            Err(bg3_install::Error::Invalid(_, why)) => why,
+            Err(e) => e.to_string(),
+        };
+        println!("  {}\n    [{}] {status}", c.path.display(), c.reason);
+    }
+    println!();
 }
 
 fn verify(only: Option<String>) -> Result<()> {
@@ -420,11 +467,12 @@ fn osiris_replay(
     kinds: bool,
 ) -> Result<()> {
     let trace = trace.unwrap_or_else(|| {
-        let full = PathBuf::from(".cache/traces/full-nautiloid.log");
+        let dir = PathBuf::from(".cache").join("traces");
+        let full = dir.join("full-nautiloid.log");
         if full.exists() {
             full
         } else {
-            PathBuf::from(".cache/traces/snapshot-early.log")
+            dir.join("snapshot-early.log")
         }
     });
     let log = std::fs::read(&trace).with_context(|| trace.display().to_string())?;
@@ -572,14 +620,33 @@ fn matching<'a>(
         .filter(move |e| filter.is_none_or(|f| e.name.contains(f)))
 }
 
-/// Reject absolute paths and `..` so extraction can't escape the output directory.
+/// Turn an archive path (always `/`-separated) into a relative filesystem path, rejecting
+/// anything that could escape the output directory or isn't a plain name on every OS
+/// (`..`, absolute paths, drive prefixes, backslashes, empty segments).
 fn safe_relative(name: &str) -> Result<PathBuf> {
-    let path = PathBuf::from(name);
-    if path
-        .components()
-        .any(|c| !matches!(c, std::path::Component::Normal(_)))
-    {
-        bail!("refusing unsafe archive path {name:?}");
+    let mut path = PathBuf::new();
+    for seg in name.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains(['\\', ':']) {
+            bail!("refusing unsafe archive path {name:?}");
+        }
+        path.push(seg);
     }
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_relative;
+    use std::path::PathBuf;
+
+    #[test]
+    fn safe_relative_builds_native_paths() {
+        assert_eq!(
+            safe_relative("Public/Shared/x.lsf").unwrap(),
+            PathBuf::from("Public").join("Shared").join("x.lsf")
+        );
+        for bad in ["/abs", "a/../b", "a//b", "C:/x", "a\\b", "", "./a"] {
+            assert!(safe_relative(bad).is_err(), "{bad:?}");
+        }
+    }
 }

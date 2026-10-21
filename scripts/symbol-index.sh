@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build a demangled symbol index from the user's BG3 binaries (tier-2 extraction, see ADR 0001).
 # Output goes to .cache/symbols/ (gitignored) — never commit it.
+# macOS-only: indexes the macOS app bundle (the RE reference build); see docs/platforms.md.
 set -euo pipefail
 
 DEFAULT_APP="$HOME/Library/Application Support/Steam/steamapps/common/Baldurs Gate 3/Baldur's Gate 3.app"
