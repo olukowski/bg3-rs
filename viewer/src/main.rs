@@ -3,6 +3,7 @@
 //! Current state: level objects rendered with their LOD0 GR2 meshes and textured materials
 //! (`materials.rs`); objects without a mesh (effects, …) are shown as small boxes.
 
+mod dialog;
 mod fly_camera;
 mod level;
 mod lights;
@@ -41,6 +42,9 @@ struct Args {
     /// Hide level objects, leaving terrain and lights.
     #[arg(long)]
     terrain_only: bool,
+    /// Run this dialog in an on-screen panel (resource name, e.g. `TUT_Lab_TrappedDevourer`).
+    #[arg(long)]
+    dialog: Option<String>,
 }
 
 fn parse_vec3(s: &str) -> Result<Vec3, String> {
@@ -106,6 +110,11 @@ fn main() -> Result<()> {
         material_ids.filter_map(|(_, m)| m.as_deref()),
     );
 
+    let dialog = match &args.dialog {
+        Some(name) => Some(dialog::DialogPlugin::load(&install, name, &args.level)?),
+        None => None,
+    };
+
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
@@ -141,6 +150,9 @@ fn main() -> Result<()> {
     .add_systems(PostStartup, lights::apply_exposure);
     if args.terrain_only {
         app.add_systems(PostStartup, terrain::hide_objects);
+    }
+    if let Some(dialog) = dialog {
+        app.add_plugins(dialog);
     }
     if let Some(path) = args.shot {
         app.insert_resource(ShotRequest(path))
