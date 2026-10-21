@@ -15,7 +15,9 @@ thiserror.workspace = true
 [dev-dependencies]
 anyhow.workspace = true
 bg3-install.workspace = true
+bg3-world.workspace = true
 flate2.workspace = true
+rayon.workspace = true
 
 [lints]
 workspace = true

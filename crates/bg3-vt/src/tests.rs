@@ -310,7 +310,7 @@ fn fixture() -> Fixture {
                     ]),
                 )]),
             )]),
-        )]),
+        ), leaf(b"PROJ", FourCcValue::String(r#"<Project><LayerConfig><LayerDescription Name="Albedo" /><LayerDescription Name="Normal" /></LayerConfig></Project>"#.into()))]),
     )];
     let at = d.len();
     let mut fc = Vec::new();
@@ -386,6 +386,7 @@ fn parse_synthetic_tile_set() {
         k => panic!("{k:?}"),
     }
     assert_eq!(ts.bc_format(0), Some(BcFormat::Bc3));
+    assert_eq!(ts.layer_names(), ["Albedo", "Normal"]);
     assert_eq!(ts.finest_stored_level(tex, 0), Some(0));
     assert_eq!(ts.finest_stored_level(tex, 1), Some(1));
 }
@@ -466,11 +467,22 @@ fn extract_rgba_and_levels() {
         &BcFormat::Bc3.solid_block(block_color(30, 1, 1))[..]
     );
 
-    // Layer 1 is only stored at level 1.
+    // Layer 1 is only stored at level 1: BC output refuses, RGBA output upsamples.
     assert!(matches!(
         ts.extract(&f.pages, &tex, 1, 0, OutputFormat::Bc),
         Err(Error::NotFound(_))
     ));
+    assert_eq!(ts.fallback_source(0, 1, 1, 0), Some((1, 0, 0, 3)));
+    assert_eq!(ts.fallback_source(0, 0, 1, 0), Some((0, 1, 0, 1)));
+    let up = ts
+        .extract(&f.pages, &tex, 1, 0, OutputFormat::Rgba8)
+        .unwrap();
+    let decode = |c| BcFormat::Bc3.decode_block(&BcFormat::Bc3.solid_block(c))[0];
+    let upx = |x: usize, y: usize| &up.data[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4];
+    // Level-0 pixel (x, y) → level-1 content pixel (x/2, y/2) → tile pixel +4 border.
+    assert_eq!(upx(15, 7), &decode(block_color(40, 2, 1)));
+    assert_eq!(upx(0, 0), &decode(block_color(40, 1, 1)));
+    assert_eq!(upx(8, 0), &decode(block_color(40, 2, 1)));
     let mips = ts
         .extract_mips(&f.pages, &tex, 1, 0, OutputFormat::Bc)
         .unwrap();

@@ -45,6 +45,51 @@ fn main() -> Result<()> {
                 println!("  {t:?}");
             }
         }
+        Some("entries") => {
+            // Statistics of level-index entries: (stored/fallback, level delta, referenced codec).
+            let path = args.get(1).context("path")?;
+            let ts = vt.tile_set(path)?;
+            let pages = vt.pages(path);
+            let mut stats: std::collections::BTreeMap<String, usize> = Default::default();
+            let mut codec_of: std::collections::HashMap<u32, String> = Default::default();
+            for (li, lv) in ts.levels.iter().enumerate() {
+                for y in 0..lv.height {
+                    for x in 0..lv.width {
+                        for layer in 0..ts.layers.len() {
+                            let (kind, f) = match ts.tile(li, layer, x, y) {
+                                Some(bg3_vt::TileRef::Stored(f)) => ("stored", f),
+                                Some(bg3_vt::TileRef::Fallback(f)) => ("fallback", f),
+                                None => continue,
+                            };
+                            let p = ts.packed_tiles[ts.flat_tiles[f as usize].packed_tile as usize];
+                            let codec = codec_of
+                                .entry(f)
+                                .or_insert_with(|| match ts.read_tile(&pages, f) {
+                                    Ok(bg3_vt::TileData::Uniform(_)) => "uniform".into(),
+                                    Ok(bg3_vt::TileData::Bc { .. }) => "bc".into(),
+                                    Err(e) => format!("err {e}"),
+                                })
+                                .clone();
+                            let same_pos = (p.x(), p.y())
+                                == (
+                                    x >> (p.level() as usize).saturating_sub(li),
+                                    y >> (p.level() as usize).saturating_sub(li),
+                                );
+                            let key = format!(
+                                "{kind} layer {layer} dlevel {} same_layer {} covers {} -> {codec}",
+                                p.level() as i64 - li as i64,
+                                p.layer() as usize == layer,
+                                same_pos && p.level() as usize >= li
+                            );
+                            *stats.entry(key).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            for (k, v) in stats {
+                println!("{v:>9} {k}");
+            }
+        }
         Some("tree") => {
             let path = args.get(1).context("path")?;
             let depth = args.get(2).map(|d| d.parse()).transpose()?.unwrap_or(3);

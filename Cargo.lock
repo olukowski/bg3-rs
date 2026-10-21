@@ -2088,8 +2088,10 @@ dependencies = [
  "bg3-lsf",
  "bg3-pak",
  "bg3-vfs",
+ "bg3-world",
  "flate2",
  "lz4_flex",
+ "rayon",
  "thiserror 2.0.21",
 ]
 

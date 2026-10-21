@@ -175,11 +175,44 @@ impl TileSet {
         let mut cache = HashMap::new();
         for ty in y0..=y1 {
             for tx in x0..=x1 {
+                // Intersection of this tile's content with the texture, in level pixels.
+                let ix0 = rx.max(tx * cw);
+                let iy0 = ry.max(ty * ch);
+                let ix1 = (rx + rw).min((tx + 1) * cw);
+                let iy1 = (ry + rh).min((ty + 1) * ch);
                 let flat = match self.tile(level, layer, tx, ty) {
                     Some(TileRef::Stored(f)) => f,
+                    Some(TileRef::Fallback(_)) if out_format == ImageFormat::Rgba8 => {
+                        // Upsample (nearest) the covering tile of the coarser level, as a GPU
+                        // sampling the coarser mip would show it.
+                        let (anc_level, ax, ay, f) = self
+                            .fallback_source(level, layer, tx, ty)
+                            .ok_or_else(|| corrupt(format!("{}: dangling fallback", tex.name)))?;
+                        let s = (anc_level - level) as u32;
+                        let rgba = match self.read_tile_cached(pages, f, &mut cache)? {
+                            TileData::Bc { format: bc, data } => {
+                                bc.decode_image(&data, self.tile_width, self.tile_height)
+                            }
+                            TileData::Uniform(c) => {
+                                c.repeat((self.tile_width * self.tile_height) as usize)
+                            }
+                        };
+                        let (ox, oy) = ((tx - (ax << s)) * cw, (ty - (ay << s)) * ch);
+                        for py in iy0..iy1 {
+                            let sy = border + ((oy + py - ty * ch) >> s);
+                            for px in ix0..ix1 {
+                                let sx = border + ((ox + px - tx * cw) >> s);
+                                let si = ((sy * self.tile_width + sx) * 4) as usize;
+                                let di = (((py - ry) as usize) * out_w + (px - rx) as usize) * 4;
+                                data[di..di + 4].copy_from_slice(&rgba[si..si + 4]);
+                            }
+                        }
+                        continue;
+                    }
                     Some(TileRef::Fallback(_)) => {
                         return Err(Error::NotFound(format!(
-                            "{} layer {layer} is not stored at level {level} (try {:?})",
+                            "{} layer {layer} is not stored at level {level} (finest stored: {:?}; \
+                             RGBA output upsamples instead)",
                             tex.name,
                             self.finest_stored_level(tex, layer)
                         )));
@@ -192,11 +225,6 @@ impl TileSet {
                     }
                 };
                 let tile = self.read_tile_cached(pages, flat, &mut cache)?;
-                // Intersection of this tile's content with the texture, in level pixels.
-                let ix0 = rx.max(tx * cw);
-                let iy0 = ry.max(ty * ch);
-                let ix1 = (rx + rw).min((tx + 1) * cw);
-                let iy1 = (ry + rh).min((ty + 1) * ch);
                 let src_x = ((ix0 - tx * cw + border) / cell) as usize;
                 let src_y = ((iy0 - ty * ch + border) / cell) as usize;
                 let dst_x = ((ix0 - rx) / cell) as usize;

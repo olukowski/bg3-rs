@@ -430,6 +430,48 @@ impl TileSet {
         })
     }
 
+    /// Layer names (e.g. `["Albedo", "Normal", "Physical"]`) from the Granite build project XML
+    /// embedded in the metadata (`META/PROJ`, `<LayerDescription Name="…">`). Empty if absent.
+    pub fn layer_names(&self) -> Vec<String> {
+        let Some(xml) = self
+            .fourcc
+            .iter()
+            .flat_map(|n| std::iter::once(n).chain(n.children()))
+            .find(|n| &n.fourcc == b"PROJ")
+            .and_then(FourCcNode::as_str)
+        else {
+            return Vec::new();
+        };
+        xml.split("<LayerDescription ")
+            .skip(1)
+            .filter_map(|s| {
+                let rest = &s[s.find("Name=\"")? + 6..];
+                Some(rest[..rest.find('"')?].to_owned())
+            })
+            .collect()
+    }
+
+    /// For a tile that isn't stored at `level`, the tile that stands in for it:
+    /// `(level, x, y, flat tile)` of the nearest coarser level whose tile covering this position
+    /// is stored. That is exactly the tile the fallback entry references (verified for every
+    /// entry in the install), so `TileRef::Fallback(f)` means "sample `f`, upsampled".
+    /// Returns the tile itself for stored tiles.
+    pub fn fallback_source(
+        &self,
+        level: usize,
+        layer: usize,
+        x: u32,
+        y: u32,
+    ) -> Option<(usize, u32, u32, u32)> {
+        (level..self.levels.len()).find_map(|l| {
+            let s = (l - level) as u32;
+            match self.tile(l, layer, x >> s, y >> s)? {
+                TileRef::Stored(f) => Some((l, x >> s, y >> s, f)),
+                TileRef::Fallback(_) => None,
+            }
+        })
+    }
+
     /// Decode a chunk read from one of this tile set's page files.
     pub fn decode_chunk(&self, chunk: &Chunk<'_>) -> Result<TileData> {
         let block = self.parameter_block(chunk.parameter_block).ok_or_else(|| {
