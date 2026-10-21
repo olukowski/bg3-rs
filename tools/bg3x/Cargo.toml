@@ -8,7 +8,9 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 bg3-install.workspace = true
+bg3-lsf.workspace = true
 bg3-pak.workspace = true
+bg3-vfs.workspace = true
 clap.workspace = true
 
 [lints]

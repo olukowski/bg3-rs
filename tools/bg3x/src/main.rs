@@ -35,6 +35,8 @@ enum Command {
     },
     /// Write a single file from a pak to stdout.
     Cat { pak: String, path: String },
+    /// Dump an LSF/LSFX/LSX/LSJ resource as LSX. PATH is looked up across all paks if PAK is `-`.
+    Lsx { pak: String, path: String },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -81,6 +83,13 @@ fn main() -> Result<()> {
         }
         Command::Verify { pak } => verify(pak),
         Command::Dups => dups(),
+        Command::Lsx { pak, path } => {
+            use std::io::Write;
+            let data = read_file(&pak, &path)?;
+            let res = bg3_lsf::parse(&data).with_context(|| path.clone())?;
+            std::io::stdout().write_all(bg3_lsf::to_lsx(&res).as_bytes())?;
+            Ok(())
+        }
     }
 }
 
@@ -196,6 +205,19 @@ fn resolve(name: &str) -> Result<PathBuf> {
         .into_iter()
         .find(|p| p.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(want)))
         .with_context(|| format!("no pak named {name} in the install"))
+}
+
+/// Read `path` from a named pak, or from the whole VFS when `pak` is `-`.
+fn read_file(pak: &str, path: &str) -> Result<Vec<u8>> {
+    if pak == "-" {
+        let vfs = bg3_vfs::Vfs::from_install(&Install::locate()?)?;
+        return Ok(vfs.read(path)?);
+    }
+    let pak = open(pak)?;
+    let entry = pak
+        .find(path)
+        .with_context(|| format!("{path} not found"))?;
+    Ok(pak.read(entry)?)
 }
 
 fn open(name: &str) -> Result<Package> {
