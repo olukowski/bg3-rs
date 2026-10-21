@@ -19,7 +19,7 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 ## M2 — See a level
 - [ ] `bg3-gr2` static meshes
 - [ ] Level loading (level templates, terrain, static objects)
-- [ ] `bg3-viewer`: fly-cam through a Nautiloid level with basic materials
+- [ ] `bg3-viewer`: fly-cam through a Nautiloid level with basic materials (scaffold: window, fly cam, VFS mounted)
 
 ## M3 — Rules core (headless)
 - [ ] `bg3-stats` incl. functor/condition expressions

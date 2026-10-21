@@ -1,0 +1,78 @@
+//! `bg3-viewer` — fly through BG3 levels. Currently a scaffold: window, fly camera, and the
+//! mounted VFS as a resource. Level and mesh loading land once `bg3-lsf` and `bg3-gr2` exist.
+
+mod fly_camera;
+
+use anyhow::Result;
+use bevy::prelude::*;
+use bg3_install::Install;
+use bg3_vfs::Vfs;
+use clap::Parser;
+
+#[derive(Parser)]
+#[command(about)]
+struct Args {
+    /// Level to load, e.g. `TUT_Avernus_C` (not implemented yet).
+    level: Option<String>,
+}
+
+/// The game's files, mounted read-only.
+#[derive(Resource)]
+pub struct GameData {
+    pub install: Install,
+    pub vfs: Vfs,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let install = Install::locate()?;
+    if !install.is_reference_version() {
+        eprintln!(
+            "warning: BG3 {} is not the reference build {}",
+            install.version,
+            bg3_install::REFERENCE_VERSION
+        );
+    }
+    let vfs = Vfs::from_install(&install)?;
+    eprintln!("mounted {} files from BG3 {}", vfs.len(), install.version);
+    if let Some(level) = &args.level {
+        eprintln!("level loading not implemented yet ({level})");
+    }
+
+    App::new()
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "bg3-viewer".into(),
+                ..default()
+            }),
+            ..default()
+        }))
+        .add_plugins(fly_camera::FlyCameraPlugin)
+        .insert_resource(GameData { install, vfs })
+        .add_systems(Startup, setup)
+        .run();
+    Ok(())
+}
+
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 8.0, 16.0).looking_at(Vec3::ZERO, Vec3::Y),
+        fly_camera::FlyCamera::default(),
+    ));
+    commands.spawn((
+        DirectionalLight {
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(4.0, 10.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(50.0, 50.0))),
+        MeshMaterial3d(materials.add(Color::srgb(0.3, 0.32, 0.3))),
+    ));
+}
