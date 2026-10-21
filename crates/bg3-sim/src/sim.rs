@@ -80,6 +80,8 @@ pub struct GameData {
     pub weight_categories: Vec<WeightCategory>,
     /// `Weight` (kg) of every stats entry that has one.
     pub stats_weight: HashMap<String, f32>,
+    /// Stats `type` of every stats entry (`Weapon`, `Armor`, `Character`, `StatusData`, …).
+    pub stats_type: HashMap<String, String>,
     /// Objects from every level's `Globals` directory: they exist for the whole game.
     pub globals: Vec<PlacedObject>,
     /// Per-level objects (`Levels/<Level>/{Characters,Items,Triggers}`), by level name.
@@ -237,6 +239,7 @@ impl Sim {
         e.level = o.level.clone();
         e.global = o.global;
         e.position = o.position;
+        e.stats = self.data.stats_name(o).map(str::to_owned);
         for t in tags {
             e.tags.add(TagSource::Template, t);
         }
@@ -434,6 +437,9 @@ impl Sim {
                 }
             }
             ("HitpointsChanged", 2) => {
+                // Hit points and death are not modelled: the engine's state moves before
+                // its event arrives (`GetHitpointsPercentage` reports 0 and `IsDead` 1 before
+                // `HitpointsChanged`/`Died` are delivered), so mirroring events would lag.
                 self.observe_entity(text(0), EntityKind::Unknown);
             }
             ("CharacterReservedUserIDChanged", 3) => {
@@ -502,8 +508,16 @@ impl Sim {
                 t
             })
         };
+        let stats = self
+            .data
+            .template_chain(Some(template))
+            .into_iter()
+            .find_map(|t| t.stats.clone());
         if let Some(e) = self.entities.get_mut(id) {
             e.template = Some(template);
+            if e.stats.is_none() {
+                e.stats = stats;
+            }
             for t in tags.into_iter().flatten() {
                 e.tags.add(TagSource::Template, t);
             }
@@ -786,6 +800,19 @@ impl Sim {
         self.entities
             .get(object)
             .is_some_and(|e| e.statuses.iter().any(|s| s.id == status))
+    }
+
+    /// `HasActiveStatusWithGroup` / `HasAppliedStatusWithGroup`: some active status of the
+    /// object is in the group. `None` if the object has a status the sim has no definition
+    /// for (engine statuses like `DYING`), or the object is unknown.
+    pub fn has_status_in_group(&self, object: Guid, group: &str) -> Option<bool> {
+        let e = self.entities.get(object)?;
+        let mut found = false;
+        for s in &e.statuses {
+            let def = self.data.statuses.get(&s.id)?;
+            found |= def.groups.iter().any(|g| g == group);
+        }
+        Some(found)
     }
 
     /// `IsStatusFromGroup(status, group)`: the group is in the status' `StatusGroups`.

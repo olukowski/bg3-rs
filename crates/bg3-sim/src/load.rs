@@ -383,6 +383,10 @@ impl GameData {
             races: load_races(vfs)?,
             weight_categories: load_weight_categories(vfs)?,
             stats_weight: stats_weights(stats),
+            stats_type: stats
+                .entries()
+                .filter_map(|o| Some((o.name.clone(), o.type_name.clone()?)))
+                .collect(),
             globals: load_globals(vfs)?,
             levels: HashMap::new(),
         };

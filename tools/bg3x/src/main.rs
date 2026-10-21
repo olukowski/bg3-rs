@@ -142,6 +142,9 @@ enum Command {
         /// Write every disagreement / missing / extra event to this file (`.cache/` only).
         #[arg(long)]
         dump: Option<PathBuf>,
+        /// Print the inventory of engine calls/queries/events in the log (Markdown) instead.
+        #[arg(long)]
+        inventory: bool,
     },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
@@ -218,6 +221,7 @@ fn main() -> Result<()> {
             levels,
             vm_log,
             dump,
+            inventory,
         } => sim::run(sim::Args {
             trace,
             pak,
@@ -227,6 +231,7 @@ fn main() -> Result<()> {
             levels,
             vm_log,
             dump,
+            inventory,
         }),
         Command::Materials { level, verbose } => materials::survey(&level, verbose),
         Command::Loca { handle, language } => loca(&handle, &language),

@@ -41,6 +41,12 @@ pub const QUERIES: &[(&str, usize)] = &[
     ("GetTemplate", 2),
     ("GetRegion", 2),
     ("HasActiveStatus", 3),
+    ("HasAppliedStatus", 3),
+    ("HasActiveStatusWithGroup", 3),
+    ("HasAppliedStatusWithGroup", 3),
+    ("IsSummon", 2),
+    ("IsWeapon", 2),
+    ("IsPartyMember", 3),
     ("IsStatusFromGroup", 3),
     ("GetStatusType", 2),
     ("TimerExists", 2),
@@ -210,11 +216,45 @@ impl<'a> SimFunctions<'a> {
                 let l = sim.region(g(ctx, 0))?.to_owned();
                 Some(ctx.string(&l))
             }
-            // bg3: esv::OsirisGameFunctions::HasActiveStatus (4.1.1.7631656)
-            ("HasActiveStatus", 3) => {
+            // bg3: esv::OsirisGameFunctions::HasActiveStatus / HasAppliedStatus
+            // (4.1.1.7631656). The trace shows `HasAppliedStatus` true right after
+            // `ApplyStatus`, before the engine raises `StatusAttempt`/`StatusApplied`.
+            ("HasActiveStatus" | "HasAppliedStatus", 3) => {
                 let s = text(ctx, &args[1]);
                 Some(bool_out(sim.has_active_status(g(ctx, 0), &s)))
             }
+            // bg3: esv::OsirisGameFunctions::HasActiveStatusWithGroup /
+            // HasAppliedStatusWithGroup (4.1.1.7631656)
+            ("HasActiveStatusWithGroup" | "HasAppliedStatusWithGroup", 3) => {
+                let grp = text(ctx, &args[1]);
+                Some(bool_out(sim.has_status_in_group(g(ctx, 0), &grp)?))
+            }
+            // Summons are created by spells, which the sim does not run: no object it loaded
+            // is one.
+            ("IsSummon", 2) => {
+                let e = sim.entity(g(ctx, 0))?;
+                if e.origin != Origin::Data {
+                    return None;
+                }
+                Some(bool_out(false))
+            }
+            // An item whose stats entry is of type `Weapon`.
+            ("IsWeapon", 2) => {
+                let e = sim.entity(g(ctx, 0))?;
+                let is = match e.kind {
+                    EntityKind::Character | EntityKind::Trigger => false,
+                    EntityKind::Item => {
+                        let s = e.stats.as_deref()?;
+                        sim.data.stats_type.get(s)? == "Weapon"
+                    }
+                    _ => return None,
+                };
+                Some(bool_out(is))
+            }
+            // `IsPartyMember(character, include_followers)`: in the party as reported by
+            // `CharacterJoinedParty` / `CharacterLeftParty`.
+            ("IsPartyMember", 3) => Some(bool_out(sim.party.contains(&g(ctx, 0)))),
+
             // bg3: esv::OsirisGameFunctions::IsStatusFromGroup (4.1.1.7631656)
             ("IsStatusFromGroup", 3) => {
                 let (s, grp) = (text(ctx, &args[0]), text(ctx, &args[1]));

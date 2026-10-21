@@ -76,6 +76,8 @@ pub struct Entity {
     pub user: Option<i32>,
     /// The inventory holding an item, if known.
     pub holder: Option<Guid>,
+    /// Stats entry (`Stats` of the object or its nearest template).
+    pub stats: Option<String>,
 }
 
 impl Entity {
@@ -93,6 +95,7 @@ impl Entity {
             statuses: Vec::new(),
             user: None,
             holder: None,
+            stats: None,
         }
     }
 

@@ -17,6 +17,7 @@ pub struct Args {
     pub levels: Vec<String>,
     pub vm_log: Option<PathBuf>,
     pub dump: Option<PathBuf>,
+    pub inventory: bool,
 }
 
 /// Load the sim's game data from the install.
@@ -40,6 +41,14 @@ pub fn run(a: Args) -> Result<()> {
     let log = std::fs::read(&trace).with_context(|| trace.display().to_string())?;
     let log = String::from_utf8_lossy(&log).into_owned();
     let story = crate::read_file(&a.pak, &a.path)?;
+    if a.inventory {
+        let story = bg3_story::Story::parse(&story)?;
+        print!(
+            "{}",
+            bg3_sim::inventory::Inventory::from_log(&story, &log).markdown()
+        );
+        return Ok(());
+    }
     let t = Instant::now();
     let data = load_data(&a.levels)?;
     eprintln!(

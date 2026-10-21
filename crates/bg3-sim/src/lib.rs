@@ -26,6 +26,7 @@ pub mod events;
 pub mod flags;
 pub mod guid;
 pub mod host;
+pub mod inventory;
 pub mod load;
 pub mod replay;
 pub mod sim;
