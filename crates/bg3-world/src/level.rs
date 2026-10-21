@@ -41,6 +41,8 @@ pub struct LevelObject {
     /// Instance-level visual override, if any.
     pub visual_template: Option<String>,
     pub transform: Transform,
+    /// Character fields set on the object itself (`character` objects only).
+    pub character: Option<crate::characters::CharacterProps>,
     /// Module the (winning) definition came from.
     pub module: String,
 }
@@ -98,10 +100,13 @@ fn read_objects<'a>(
         .into_iter()
         .flat_map(|n| n.children.iter().filter(|c| c.name == "GameObjects"))
         .filter_map(move |n| {
+            let kind = str_attr(n, "Type").unwrap_or_default();
             Some(LevelObject {
                 id: str_attr(n, "MapKey")?,
                 name: str_attr(n, "Name").unwrap_or_default(),
-                kind: str_attr(n, "Type").unwrap_or_default(),
+                character: (kind == "character")
+                    .then(|| crate::characters::CharacterProps::read(n)),
+                kind,
                 template: str_attr(n, "TemplateName"),
                 visual_template: str_attr(n, "VisualTemplate"),
                 transform: n.child("Transform").map(read_transform).unwrap_or_default(),

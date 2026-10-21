@@ -4,6 +4,7 @@
 //! level object → root template → visual resource → GR2 + materials.
 
 pub mod banks;
+pub mod characters;
 pub mod level;
 pub mod lights;
 pub mod templates;
@@ -12,6 +13,10 @@ pub mod terrain;
 pub use banks::{
     MaterialResource, MeshObject, ResourceBanks, TextureResource, VirtualTextureResource,
     VisualResource,
+};
+pub use characters::{
+    AnimationResource, AnimationSetResource, CharacterProps, CharacterVisualResource,
+    ResolvedCharacter, SkeletonResource, resolve_character,
 };
 pub use level::{Level, LevelObject, Transform};
 pub use lights::{LevelLighting, Light, LightKind};

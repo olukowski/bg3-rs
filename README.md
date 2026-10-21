@@ -18,12 +18,13 @@ straight from **your own installed copy** of Baldur's Gate 3, without modifying 
 |---|---|
 | **Game archives** (`.pak`) | All 27 paks in the install read and verified: 1.07 M files, 159 GiB decompressed, zero failures |
 | **Resource files** (LSF / LSX / LSJ) | All ~103,000 parse, and survive a write-and-reparse round trip |
-| **3D models** (Granny `.GR2`) | All 285,055 parse, including the BitKnit2 compression; meshes and skeletons decoded |
+| **3D models** (Granny `.GR2`) | All 285,055 parse, including the BitKnit2 compression; meshes, skeletons and animations decoded |
 | **Textures** | DDS plus the game's streamed *virtual textures*, all tile sets decode |
 | **Levels** | Objects, templates, meshes, materials, terrain and lights are loaded and rendered |
 | **Stats & localization** | All stats files with inheritance resolved; 237k English strings |
 | **Quest scripting (Osiris)** | The compiled story loads, and our VM **replays a recorded session of the real game's opening with 100% matching behaviour**: 8,434 rule firings, 15,722 database changes, 16,511 queries, in the same order |
-| Characters, animation, dialogue, combat, UI | Not started yet; see the roadmap |
+| **Characters** | All 54 Nautiloid characters assembled from their visuals, skinned, holding their weapons and playing their idle animation; all 228,541 animations decode |
+| Dialogue, combat, UI | Not started yet; see the roadmap |
 
 More screenshots: [the Nautiloid doorway](docs/media/nautiloid-doorway.jpg) ·
 [Act 1 terrain from above](docs/media/act1-terrain.jpg).

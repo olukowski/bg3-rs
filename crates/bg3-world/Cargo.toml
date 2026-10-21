@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 bg3-material.workspace = true
+bg3-stats.workspace = true
 bg3-vt.workspace = true
 bg3-lsf.workspace = true
 bg3-vfs.workspace = true

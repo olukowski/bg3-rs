@@ -591,3 +591,222 @@ fn half_floats() {
     assert_eq!(f16_to_f32(0x7C00), f32::INFINITY);
     assert!(f16_to_f32(0x7E00).is_nan());
 }
+
+/// A file with one animation: a bone with a quantised quaternion curve, a constant position and
+/// an identity scale/shear, plus a float vector track. Types in section 1, data in section 0.
+fn build_animation() -> Vec<u8> {
+    const UINT16: u32 = 16;
+    let mut t = Section::default();
+    let mut d = Section::default();
+    const T: u32 = 1;
+    const D: u32 = 0;
+
+    let header_t = t.ty(T, &[(UINT8, "Format", None, 0), (UINT8, "Degree", None, 0)]);
+    let u16_t = t.ty(T, &[(UINT16, "UInt16", None, 0)]);
+    let f32_t = t.ty(T, &[(REAL32, "Real32", None, 0)]);
+    let d4n_t = t.ty(
+        T,
+        &[
+            (INLINE, "CurveDataHeader_D4nK16uC15u", Some(header_t), 0),
+            (UINT16, "ScaleOffsetTableEntries", None, 0),
+            (REAL32, "OneOverKnotScale", None, 0),
+            (REF_TO_ARRAY, "KnotsControls", Some(u16_t), 0),
+        ],
+    );
+    let d3c_t = t.ty(
+        T,
+        &[
+            (INLINE, "CurveDataHeader_D3Constant32f", Some(header_t), 0),
+            (INT16, "Padding", None, 0),
+            (REAL32, "Controls", None, 3),
+        ],
+    );
+    let ident_t = t.ty(
+        T,
+        &[
+            (INLINE, "CurveDataHeader_DaIdentity", Some(header_t), 0),
+            (INT16, "Dimension", None, 0),
+        ],
+    );
+    let float_t = t.ty(
+        T,
+        &[
+            (INLINE, "CurveDataHeader_DaK32fC32f", Some(header_t), 0),
+            (INT16, "Padding", None, 0),
+            (REF_TO_ARRAY, "Knots", Some(f32_t), 0),
+            (REF_TO_ARRAY, "Controls", Some(f32_t), 0),
+        ],
+    );
+    let curve_t = t.ty(T, &[(VARIANT_REF, "CurveData", None, 0)]);
+    let track_t = t.ty(
+        T,
+        &[
+            (STRING, "Name", None, 0),
+            (INT32, "Flags", None, 0),
+            (INLINE, "OrientationCurve", Some(curve_t), 0),
+            (INLINE, "PositionCurve", Some(curve_t), 0),
+            (INLINE, "ScaleShearCurve", Some(curve_t), 0),
+        ],
+    );
+    let vtrack_t = t.ty(
+        T,
+        &[
+            (STRING, "Name", None, 0),
+            (INT32, "TrackKey", None, 0),
+            (INT32, "Dimension", None, 0),
+            (INLINE, "ValueCurve", Some(curve_t), 0),
+        ],
+    );
+    let group_t = t.ty(
+        T,
+        &[
+            (STRING, "Name", None, 0),
+            (REF_TO_ARRAY, "VectorTracks", Some(vtrack_t), 0),
+            (REF_TO_ARRAY, "TransformTracks", Some(track_t), 0),
+            (TRANSFORM, "InitialPlacement", None, 0),
+            (INT32, "AccumulationFlags", None, 0),
+            (REAL32, "LoopTranslation", None, 3),
+        ],
+    );
+    let anim_t = t.ty(
+        T,
+        &[
+            (STRING, "Name", None, 0),
+            (REAL32, "Duration", None, 0),
+            (REAL32, "TimeStep", None, 0),
+            (REAL32, "Oversampling", None, 0),
+            (ARRAY_OF_REFS, "TrackGroups", Some(group_t), 0),
+            (INT32, "DefaultLoopCount", None, 0),
+            (INT32, "Flags", None, 0),
+        ],
+    );
+    let root_t = t.ty(T, &[(ARRAY_OF_REFS, "Animations", Some(anim_t), 0)]);
+
+    let s_anim = d.str("Idle");
+    let s_group = d.str("Dummy_Root");
+    let s_bone = d.str("Spine");
+    let s_vt = d.str("Textkeys");
+
+    // Quaternion curve: 2 knots (0 s and 1 s), both controls the identity quaternion
+    // (omitted component w = index 3, positive; x, y, z = 0 → word = max/2 for entry 0).
+    let kc = d.here();
+    let mid = 16384u16; // 16384 / 32767 * sqrt2 - 1/sqrt2 ≈ 0
+    for w in [
+        0u16,
+        30,
+        mid,
+        mid | 0x8000,
+        mid | 0x8000,
+        mid,
+        mid | 0x8000,
+        mid | 0x8000,
+    ] {
+        d.data.extend_from_slice(&w.to_le_bytes());
+    }
+    let d4n = d.here();
+    d.data.extend_from_slice(&[8, 2]);
+    d.data.extend_from_slice(&0u16.to_le_bytes());
+    d.f32(30.0);
+    d.u32(8);
+    d.ptr(Some((D, kc)));
+    let d3c = d.here();
+    d.data.extend_from_slice(&[4, 0, 0, 0]);
+    for v in [0.0, 1.5, 0.0] {
+        d.f32(v);
+    }
+    let ident = d.here();
+    d.data.extend_from_slice(&[2, 0]);
+    d.data.extend_from_slice(&9i16.to_le_bytes());
+    let fknots = d.here();
+    for v in [0.0, 1.0] {
+        d.f32(v);
+    }
+    let fctrl = d.here();
+    for v in [0.0, 2.0] {
+        d.f32(v);
+    }
+    let fcurve = d.here();
+    d.data.extend_from_slice(&[1, 1, 0, 0]);
+    d.u32(2);
+    d.ptr(Some((D, fknots)));
+    d.u32(2);
+    d.ptr(Some((D, fctrl)));
+
+    let track = d.here();
+    d.ptr(Some((D, s_bone)));
+    d.u32(0);
+    for (ty, at) in [(d4n_t, d4n), (d3c_t, d3c), (ident_t, ident)] {
+        d.ptr(Some(ty));
+        d.ptr(Some((D, at)));
+    }
+    let vtrack = d.here();
+    d.ptr(Some((D, s_vt)));
+    d.u32(7);
+    d.u32(1);
+    d.ptr(Some(float_t));
+    d.ptr(Some((D, fcurve)));
+
+    let group = d.here();
+    d.ptr(Some((D, s_group)));
+    d.u32(1);
+    d.ptr(Some((D, vtrack)));
+    d.u32(1);
+    d.ptr(Some((D, track)));
+    d.transform([0.0, 0.0, 0.0]);
+    d.u32(2);
+    for v in [0.0, 0.0, 1.0] {
+        d.f32(v);
+    }
+    let groups = d.here();
+    d.ptr(Some((D, group)));
+
+    let anim = d.here();
+    d.ptr(Some((D, s_anim)));
+    for v in [1.0, 1.0 / 30.0, 2.0] {
+        d.f32(v);
+    }
+    d.u32(1);
+    d.ptr(Some((D, groups)));
+    d.u32(0);
+    d.u32(0);
+    let anims = d.here();
+    d.ptr(Some((D, anim)));
+    let root = d.here();
+    d.u32(1);
+    d.ptr(Some((D, anims)));
+
+    write_file(&[d, t], root_t, (D, root), true)
+}
+
+#[test]
+fn synthetic_animation_decodes() {
+    let anims = Animation::from_bytes(&build_animation()).unwrap();
+    assert_eq!(anims.len(), 1);
+    let a = &anims[0];
+    assert_eq!(a.name, "Idle");
+    assert_eq!((a.duration, a.oversampling), (1.0, 2.0));
+    let g = &a.track_groups[0];
+    assert_eq!(g.name, "Dummy_Root");
+    assert_eq!(
+        (g.accumulation_flags, g.loop_translation),
+        (2, [0.0, 0.0, 1.0])
+    );
+    let tr = g.track("Spine").unwrap();
+    assert_eq!(tr.orientation.format, CurveFormat::D4nK16uC15u);
+    assert_eq!(tr.orientation.knots, vec![0.0, 1.0]);
+    assert_eq!(tr.position.format, CurveFormat::D3Constant32f);
+    assert!(tr.scale_shear.is_identity());
+    let x = tr.sample(0.5);
+    for (v, want) in x.orientation.iter().zip([0.0, 0.0, 0.0, 1.0]) {
+        assert!((v - want).abs() < 1e-3, "{:?}", x.orientation);
+    }
+    assert_eq!(x.position, [0.0, 1.5, 0.0]);
+    let v = &g.vector_tracks[0];
+    assert_eq!(
+        (v.name.as_str(), v.track_key, v.dimension),
+        ("Textkeys", 7, 1)
+    );
+    let mut out = [0.0];
+    v.curve.sample(0.25, &mut out);
+    assert!((out[0] - 0.5).abs() < 1e-6);
+}
