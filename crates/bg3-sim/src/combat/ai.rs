@@ -82,7 +82,16 @@ impl Sim {
         let Some(&(target, dist)) = self.hostiles_by_distance(who).first() else {
             return Ok(AiAction::Nothing);
         };
-        let attacks = self.ai_attacks(who);
+        let mut attacks = self.ai_attacks(who);
+        // Melee first when standing next to the target.
+        attacks.sort_by_key(|(s, _)| {
+            !self
+                .data
+                .combat
+                .spells
+                .get(s)
+                .is_some_and(|d| d.has_flag("IsMelee"))
+        });
         if attacks.is_empty() {
             return Ok(AiAction::Nothing);
         }

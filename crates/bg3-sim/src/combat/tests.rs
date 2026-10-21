@@ -312,7 +312,12 @@ fn enter_combat_pulls_in_group_and_allies_and_raises_events() {
     assert_eq!(ev.iter().filter(|e| *e == "EnteredCombat").count(), 4);
     let start = ev.iter().position(|e| e == "CombatStarted").unwrap();
     assert_eq!(ev[start + 1], "CombatRoundStarted");
-    assert_eq!(ev[start + 2..start + 4], ["TurnStarted", "TurnStarted"]);
+    // As in the reference trace: the shared group starts, ShareInitiative after all but the
+    // last member in round 1.
+    assert_eq!(
+        ev[start + 2..start + 5],
+        ["TurnStarted", "ShareInitiative", "TurnStarted"]
+    );
     assert!(s.in_combat(g(IMP2)));
 }
 
@@ -422,9 +427,21 @@ fn a_fight_runs_to_the_end_deterministically() {
     if imps_dead {
         assert_eq!(ev.iter().filter(|e| *e == "Died").count(), 2);
         let dying = ev.iter().position(|e| e == "Dying").unwrap();
-        assert_eq!(ev[dying + 1], "StatusAttempt");
-        assert_eq!(ev[dying + 2], "StatusApplied");
-        assert_eq!(ev[dying + 3], "Died");
+        // The order of the reference trace (combat-20261021-183321).
+        let tail: Vec<&str> = ev[dying..].iter().map(String::as_str).take(8).collect();
+        assert_eq!(
+            tail,
+            [
+                "Dying",
+                "KilledBy",
+                "CastedSpell",
+                "StatusAttempt",
+                "LeftCombat",
+                "AttackedBy",
+                "StatusApplied",
+                "Died"
+            ][..tail.len()]
+        );
     }
     assert!(ev.contains(&"AttackedBy".to_owned()));
     assert!(ev.contains(&"TurnEnded".to_owned()));

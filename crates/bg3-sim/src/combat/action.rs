@@ -187,38 +187,38 @@ impl Sim {
         let exec_spell = def
             .to_exec()
             .map_err(|e| CombatError::BadSpell(spell.to_owned(), e.to_string()))?;
-        let element = def.field("DamageType").unwrap_or("None").trim().to_owned();
-        let element = if element.is_empty() {
-            "None".to_owned()
+        let school = def.field("SpellSchool").unwrap_or("").trim().to_owned();
+        let school = if school == "None" {
+            String::new()
         } else {
-            element
+            school
         };
+        let id = self.next_story_action();
         let w = SimValue::Guid(self.render(who));
         let t = SimValue::Guid(self.render(target));
         let sp = SimValue::Str(spell.to_owned());
-        let ty = SimValue::Str(def.spell_type.clone());
-        let el = SimValue::Str(element);
-        self.push_event(
-            "UsingSpell",
-            vec![
-                w.clone(),
-                sp.clone(),
-                ty.clone(),
-                el.clone(),
-                SimValue::Int(0),
-            ],
-        );
+        let ty = SimValue::Str(def.spell_type.to_ascii_lowercase());
+        let sc = SimValue::Str(school);
+        let spell_args = vec![
+            w.clone(),
+            sp.clone(),
+            ty.clone(),
+            sc.clone(),
+            SimValue::Int(id),
+        ];
+        self.push_event("UsingSpell", spell_args.clone());
         self.push_event(
             "UsingSpellOnTarget",
-            vec![
-                w.clone(),
-                t.clone(),
-                sp.clone(),
-                ty.clone(),
-                el.clone(),
-                SimValue::Int(0),
-            ],
+            vec![w.clone(), t.clone(), sp, ty, sc, SimValue::Int(id)],
         );
+        let is_attack = def.has_flag("IsAttack");
+        if is_attack {
+            // StartAttack(target, attacker owner, attacker, story action).
+            self.push_event(
+                "StartAttack",
+                vec![t.clone(), w.clone(), w.clone(), SimValue::Int(id)],
+            );
+        }
         self.combat_event(CombatEvent::SpellCast {
             caster: who,
             spell: spell.to_owned(),
@@ -243,18 +243,66 @@ impl Sim {
             self.combat_event(CombatEvent::Log(l.clone()));
         }
         let mut hit_zero: Vec<(Guid, Guid)> = Vec::new();
+        let mut attacked: Vec<Vec<SimValue>> = Vec::new();
         for e in &events {
-            self.apply_exec_event(e, &mut hit_zero);
+            self.apply_exec_event(e, id, &mut hit_zero, &mut attacked);
         }
-        self.push_event("CastedSpell", vec![w, sp, ty, el, SimValue::Int(0)]);
-        for (victim, killer) in hit_zero {
-            self.on_zero_hp(victim, killer);
+        // A roll against the target that dealt no damage (a miss, a saved cantrip) still
+        // raises AttackedBy, with no damage type and 0 (*verified by trace* for missed
+        // attacks).
+        let rolled = events.iter().any(|e| matches!(e, ExecEvent::Roll(_)));
+        if attacked.is_empty() && rolled && target != who {
+            attacked.push(vec![
+                t,
+                w.clone(),
+                w,
+                SimValue::Str(String::new()),
+                SimValue::Int(0),
+                SimValue::Str("Attack".to_owned()),
+                SimValue::Int(id),
+            ]);
         }
-        let harmful = def.has_flag("IsHarmful") || def.has_flag("IsAttack");
+        // Story events after the cast resolves, in the order of the reference trace
+        // (combat-20261021-183321): CastSpell; per kill Dying + KilledBy; AttackedBy (when
+        // nothing died); CastedSpell; then per kill StatusAttempt(DYING) and LeftCombat,
+        // AttackedBy, StatusApplied(DYING), statuses removed, Died.
+        self.push_event("CastSpell", spell_args.clone());
+        let (kills, downs): (Vec<_>, Vec<_>) = hit_zero
+            .into_iter()
+            .filter(|(v, _)| self.combatant(*v).is_some_and(|c| !c.dead && !c.downed))
+            .partition(|(v, _)| !self.is_player_controlled(*v));
+        for (v, k) in &kills {
+            self.begin_death(*v, Some((*k, id)));
+        }
+        if kills.is_empty() {
+            for a in attacked.drain(..) {
+                self.push_event("AttackedBy", a);
+            }
+        }
+        self.push_event("CastedSpell", spell_args);
+        let mut combats: Vec<Guid> = Vec::new();
+        for (v, _) in &kills {
+            if let Some(cid) = self.death_leave_combat(*v) {
+                combats.push(cid);
+            }
+        }
+        for a in attacked {
+            self.push_event("AttackedBy", a);
+        }
+        for (v, _) in &kills {
+            self.finish_death(*v);
+        }
+        for (v, k) in downs {
+            self.on_zero_hp(v, k);
+        }
+        let harmful = def.has_flag("IsHarmful") || is_attack;
         if !self.in_combat(who) && harmful && self.is_hostile(who, target) {
             self.enter_combat(who, target);
         }
         if let Some(cid) = self.combat_of(who).map(|c| c.id) {
+            combats.push(cid);
+        }
+        for cid in combats {
             self.check_combat_end(cid);
         }
         Ok(CastReport {
@@ -264,7 +312,20 @@ impl Sim {
         })
     }
 
-    fn apply_exec_event(&mut self, e: &ExecEvent, hit_zero: &mut Vec<(Guid, Guid)>) {
+    /// The next story action id (the engine numbers player and AI actions; the ids in the
+    /// trace are larger because other actions came first).
+    pub fn next_story_action(&mut self) -> i32 {
+        self.combat.story_actions += 1;
+        self.combat.story_actions
+    }
+
+    fn apply_exec_event(
+        &mut self,
+        e: &ExecEvent,
+        action: i32,
+        hit_zero: &mut Vec<(Guid, Guid)>,
+        attacked: &mut Vec<Vec<SimValue>>,
+    ) {
         let g = |s: &Sim, x: EntityId| s.entity_guid(x).unwrap_or(Guid::NULL);
         match e {
             ExecEvent::Roll(r) => {
@@ -309,18 +370,17 @@ impl Sim {
                     max_hp,
                 });
                 let (ss, ts) = (self.render(s), self.render(t));
-                self.push_event(
-                    "AttackedBy",
-                    vec![
-                        SimValue::Guid(ts),
-                        SimValue::Guid(ss.clone()),
-                        SimValue::Guid(ss),
-                        SimValue::Str(damage_type.name().to_owned()),
-                        SimValue::Int(*amount),
-                        SimValue::Str("Attack".to_owned()),
-                        SimValue::Int(0),
-                    ],
-                );
+                // AttackedBy(defender, attacker owner, attacker, damage type, amount, cause,
+                // story action): *verified by trace* for weapon attacks and Sacred Flame.
+                attacked.push(vec![
+                    SimValue::Guid(ts),
+                    SimValue::Guid(ss.clone()),
+                    SimValue::Guid(ss),
+                    SimValue::Str(damage_type.name().to_owned()),
+                    SimValue::Int(*amount),
+                    SimValue::Str("Attack".to_owned()),
+                    SimValue::Int(action),
+                ]);
                 if *hp_after <= 0 && !hit_zero.iter().any(|(v, _)| *v == t) {
                     hit_zero.push((t, s));
                 }
@@ -372,11 +432,9 @@ impl Sim {
         }
     }
 
-    /// Death: `Dying(x)`, the `DYING` status (story action id 0, null source), `Died(x)`.
-    ///
-    /// *Verified by trace* for a scripted death in the opening (`HitpointsChanged(x, 0.0)` →
-    /// `Dying` → `StatusAttempt`/`StatusApplied` `DYING` → `Died`); combat deaths are not in
-    /// the trace yet.
+    /// Kill a character outside a cast (a failed death save, a story `Die`): the whole
+    /// death sequence of [`Sim::begin_death`], [`Sim::death_leave_combat`] and
+    /// [`Sim::finish_death`].
     pub fn kill(&mut self, victim: Guid) {
         if self.combatant(victim).is_some_and(|c| c.dead) {
             return;
@@ -388,19 +446,113 @@ impl Sim {
         {
             self.set_hitpoints(victim, 0);
         }
+        self.begin_death(victim, None);
+        let cid = self.death_leave_combat(victim);
+        self.finish_death(victim);
+        if let Some(cid) = cid {
+            self.check_combat_end(cid);
+        }
+    }
+
+    /// First part of a death: `Dying(x)`, then `KilledBy(x, killer owner, killer, story
+    /// action)` when there is a killer.
+    // *Verified by trace* (combat-20261021-183321, the imps' deaths).
+    pub fn begin_death(&mut self, victim: Guid, killer: Option<(Guid, i32)>) {
         if let Some(c) = self.combatant_mut(victim) {
             c.dead = true;
             c.downed = false;
         }
         let v = self.render(victim);
         self.push_event("Dying", vec![SimValue::Guid(v.clone())]);
-        self.apply_status_with(victim, "DYING", -1.0, Guid::NULL, 0);
-        self.push_event("Died", vec![SimValue::Guid(v)]);
-        self.combat_event(CombatEvent::Died { entity: victim });
-        self.end_turn_if_active(victim);
-        if let Some(cid) = self.combat_of(victim).map(|c| c.id) {
-            self.check_combat_end(cid);
+        if let Some((k, id)) = killer {
+            let ks = self.render(k);
+            self.push_event(
+                "KilledBy",
+                vec![
+                    SimValue::Guid(v),
+                    SimValue::Guid(ks.clone()),
+                    SimValue::Guid(ks),
+                    SimValue::Int(id),
+                ],
+            );
         }
+        self.combat_event(CombatEvent::Died { entity: victim });
+    }
+
+    /// Second part: `StatusAttempt(x, "DYING", null, 0)`, then `LeftCombat(x, combat)` if
+    /// the character was in a fight (returned).
+    pub fn death_leave_combat(&mut self, victim: Guid) -> Option<Guid> {
+        let v = self.render(victim);
+        self.push_event(
+            "StatusAttempt",
+            vec![
+                SimValue::Guid(v.clone()),
+                SimValue::Str("DYING".to_owned()),
+                SimValue::Guid(Guid::NULL.to_string()),
+                SimValue::Int(0),
+            ],
+        );
+        let cid = self.combat_of(victim).map(|c| c.id)?;
+        if let Some(i) = self.combat.combats.iter().position(|c| c.id == cid) {
+            // A dead member of the acting group is done; its story TurnEnded is not raised.
+            let c = &mut self.combat.combats[i];
+            if c.current_group()
+                .is_some_and(|g| g.members.contains(&victim))
+                && !c.ended.contains(&victim)
+            {
+                c.ended.push(victim);
+            }
+        }
+        if let Some(c) = self.combatant_mut(victim) {
+            c.combat = None;
+        }
+        self.push_event(
+            "LeftCombat",
+            vec![SimValue::Guid(v), SimValue::Guid(cid.to_string())],
+        );
+        Some(cid)
+    }
+
+    /// Last part: `StatusApplied(x, "DYING", null, 0)`, the character's other statuses
+    /// removed, `Died(x)`.
+    // *Approximate*: the trace removes each status with the story action id it was applied
+    // with (the sim does not keep it and reports 0), and also raises tag, sight and loot
+    // events the sim does not model.
+    pub fn finish_death(&mut self, victim: Guid) {
+        let v = self.render(victim);
+        let others: Vec<String> = self
+            .entity(victim)
+            .map(|e| e.statuses.iter().map(|s| s.id.clone()).collect())
+            .unwrap_or_default();
+        if let Some(e) = self.entities.get_mut(victim) {
+            e.statuses.clear();
+            e.statuses.push(crate::status::ActiveStatus {
+                id: "DYING".to_owned(),
+                source: Guid::NULL,
+                remaining: -1.0,
+            });
+        }
+        self.push_event(
+            "StatusApplied",
+            vec![
+                SimValue::Guid(v.clone()),
+                SimValue::Str("DYING".to_owned()),
+                SimValue::Guid(Guid::NULL.to_string()),
+                SimValue::Int(0),
+            ],
+        );
+        for s in others.into_iter().filter(|s| s != "DYING") {
+            self.push_event(
+                "StatusRemoved",
+                vec![
+                    SimValue::Guid(v.clone()),
+                    SimValue::Str(s),
+                    SimValue::Guid(Guid::NULL.to_string()),
+                    SimValue::Int(0),
+                ],
+            );
+        }
+        self.push_event("Died", vec![SimValue::Guid(v)]);
     }
 
     fn end_turn_if_active(&mut self, who: Guid) {

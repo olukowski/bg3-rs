@@ -1,5 +1,6 @@
 //! `bg3x` — inspect a Baldur's Gate 3 install. Output stays local; see ADR 0001.
 
+mod combat;
 mod dialog;
 mod materials;
 mod nav;
@@ -214,6 +215,28 @@ enum Command {
         #[arg(long)]
         regions: bool,
     },
+    /// Run a fight headless on bg3-sim with the story (party and enemies on the approximate
+    /// AI) and print the combat log, e.g. `bg3x combat TUT_Avernus_C --party
+    /// S_Player_Laezel,S_Player_ShadowHeart --target S_FirstFight_Imp_Melee_01`. The party
+    /// stands 3 m from the target.
+    Combat {
+        #[arg(default_value = "TUT_Avernus_C")]
+        level: String,
+        /// Party members (object names or `Name_<uuid>`), the first one starts the fight.
+        #[arg(long, value_delimiter = ',')]
+        party: Vec<String>,
+        /// The enemy the fight starts with.
+        #[arg(long, default_value = "S_FirstFight_Imp_Melee_01")]
+        target: String,
+        /// Dice seed.
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+        #[arg(long, default_value_t = 200)]
+        max_turns: usize,
+        /// Also print the rules engine's log lines and statuses.
+        #[arg(long)]
+        events: bool,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -343,6 +366,21 @@ fn main() -> Result<()> {
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),
         Command::Rules { cmd } => rules::run(cmd),
+        Command::Combat {
+            level,
+            party,
+            target,
+            seed,
+            max_turns,
+            events,
+        } => combat::run(combat::Options {
+            level,
+            party,
+            target,
+            seed,
+            max_turns,
+            events,
+        }),
         Command::Nav {
             level,
             path,

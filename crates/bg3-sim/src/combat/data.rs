@@ -248,6 +248,39 @@ pub struct CombatData {
     pub base_spell_dc: i32,
     /// Condition helper scripts (`Mods/<Module>/Scripts/thoth/helpers/*.khn`): `(path, source)`.
     pub helper_scripts: Vec<(String, String)>,
+    /// Classes and subclasses (`ClassDescriptions.lsx`) by `UUID`.
+    pub classes: HashMap<Guid, ClassDef>,
+    /// Origins (`Origins.lsx`) by the origin character's global object (`GlobalTemplate`).
+    pub origins: HashMap<Guid, OriginDef>,
+    /// Races (`Races.lsx`): `UUID → ProgressionTableUUID`.
+    pub race_tables: HashMap<Guid, Guid>,
+    /// Progressions (`Progressions.lsx`) by `TableUUID`.
+    pub progressions: HashMap<Guid, Vec<ProgressionDef>>,
+    /// Spell lists (`Lists/SpellLists.lsx`) by `UUID`.
+    pub spell_lists: HashMap<Guid, Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClassDef {
+    pub base_hp: i32,
+    pub hp_per_level: i32,
+    pub progression_table: Option<Guid>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OriginDef {
+    pub class: Option<Guid>,
+    pub subclass: Option<Guid>,
+    pub race: Option<Guid>,
+    pub subrace: Option<Guid>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProgressionDef {
+    pub id: Guid,
+    pub level: i32,
+    pub boosts: String,
+    pub selectors: String,
 }
 
 impl Default for CombatData {
@@ -304,7 +337,34 @@ impl CombatData {
             join_ally_radius: 7.0,
             base_spell_dc: bg3_rules::rules::DEFAULT_BASE_SPELL_DC,
             helper_scripts: Vec::new(),
+            classes: HashMap::new(),
+            origins: HashMap::new(),
+            race_tables: HashMap::new(),
+            progressions: HashMap::new(),
+            spell_lists: HashMap::new(),
         }
+    }
+
+    /// Maximum hit points of a character of `class` at `level` with Constitution modifier
+    /// `con`: `BaseHp + con` at level 1, `HpPerLevel + con` for every further level.
+    // *Verified by trace* (combat-20261021-183321): Lae'zel (Fighter, BaseHp 10, Con 14)
+    // has 12 HP at level 1; the trace's cleric avatar (BaseHp 8, Con 12) 9 HP.
+    pub fn class_hp(&self, class: Guid, level: i32, con: i32) -> Option<i32> {
+        let c = self.classes.get(&class)?;
+        Some(c.base_hp + con + (level.max(1) - 1) * (c.hp_per_level + con))
+    }
+
+    /// The progression tables of an origin character (race, subrace, class, subclass).
+    pub fn origin_tables(&self, origin: &OriginDef) -> Vec<Guid> {
+        let race = [origin.race, origin.subrace]
+            .into_iter()
+            .flatten()
+            .filter_map(|r| self.race_tables.get(&r).copied());
+        let class = [origin.class, origin.subclass]
+            .into_iter()
+            .flatten()
+            .filter_map(|c| self.classes.get(&c).and_then(|c| c.progression_table));
+        race.chain(class).collect()
     }
 
     /// Everything that comes from stats (no VFS needed).
@@ -418,6 +478,7 @@ impl CombatData {
                         "SpellFail",
                         "SpellProperties",
                         "DamageType",
+                        "SpellSchool",
                     ];
                     self.spells.insert(
                         o.name.clone(),
@@ -458,6 +519,7 @@ impl CombatData {
         load_factions(vfs, &mut d.factions)?;
         d.resources = load_resources(vfs)?;
         d.helper_scripts = bg3_rules::install::helper_scripts(vfs, BASE_LOAD_ORDER);
+        load_classes(vfs, &mut d)?;
         for m in BASE_LOAD_ORDER {
             let path = format!("Public/{m}/RootTemplates/_merged.lsf");
             if vfs.exists(&path) {
@@ -558,6 +620,104 @@ fn load_factions(vfs: &Vfs, out: &mut Factions) -> Result<(), LoadError> {
                     {
                         out.relations.insert((a, b), v as i32);
                     }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Children named `name` of a region's node, directly or under `root`.
+fn region_nodes<'a>(
+    res: &'a bg3_lsf::Resource,
+    region: &str,
+    name: &'a str,
+) -> Vec<&'a bg3_lsf::Node> {
+    let Some(root) = res.region(region) else {
+        return Vec::new();
+    };
+    root.children_named(name)
+        .chain(
+            root.children_named("root")
+                .flat_map(move |r| r.children_named(name)),
+        )
+        .collect()
+}
+
+fn load_classes(vfs: &Vfs, d: &mut CombatData) -> Result<(), LoadError> {
+    for m in BASE_LOAD_ORDER {
+        let path = format!("Public/{m}/ClassDescriptions/ClassDescriptions.lsx");
+        if vfs.exists(&path) {
+            let res = parse(vfs, &path)?;
+            for n in region_nodes(&res, "ClassDescriptions", "ClassDescription") {
+                let int = |k: &str| n.attr(k).and_then(|v| v.as_i64()).map(|v| v as i32);
+                if let Some(id) = guid_attr(n, "UUID") {
+                    d.classes.insert(
+                        id,
+                        ClassDef {
+                            base_hp: int("BaseHp").unwrap_or(0),
+                            hp_per_level: int("HpPerLevel").unwrap_or(0),
+                            progression_table: guid_attr(n, "ProgressionTableUUID"),
+                        },
+                    );
+                }
+            }
+        }
+        let path = format!("Public/{m}/Origins/Origins.lsx");
+        if vfs.exists(&path) {
+            let res = parse(vfs, &path)?;
+            for n in region_nodes(&res, "Origins", "Origin") {
+                if let Some(obj) = guid_attr(n, "GlobalTemplate") {
+                    d.origins.insert(
+                        obj,
+                        OriginDef {
+                            class: guid_attr(n, "ClassUUID"),
+                            subclass: guid_attr(n, "SubClassUUID"),
+                            race: guid_attr(n, "RaceUUID"),
+                            subrace: guid_attr(n, "SubRaceUUID"),
+                        },
+                    );
+                }
+            }
+        }
+        let path = format!("Public/{m}/Races/Races.lsx");
+        if vfs.exists(&path) {
+            let res = parse(vfs, &path)?;
+            for n in region_nodes(&res, "Races", "Race") {
+                if let (Some(id), Some(t)) =
+                    (guid_attr(n, "UUID"), guid_attr(n, "ProgressionTableUUID"))
+                {
+                    d.race_tables.insert(id, t);
+                }
+            }
+        }
+        let path = format!("Public/{m}/Progressions/Progressions.lsx");
+        if vfs.exists(&path) {
+            let res = parse(vfs, &path)?;
+            for n in region_nodes(&res, "Progressions", "Progression") {
+                if let Some(t) = guid_attr(n, "TableUUID") {
+                    let p = ProgressionDef {
+                        id: guid_attr(n, "UUID").unwrap_or(Guid::NULL),
+                        level: n.attr("Level").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        boosts: s(n, "Boosts").unwrap_or_default(),
+                        selectors: s(n, "Selectors").unwrap_or_default(),
+                    };
+                    // A later module's progression with the same UUID replaces the earlier.
+                    let list = d.progressions.entry(t).or_default();
+                    match list.iter_mut().find(|x| x.id == p.id && !p.id.is_null()) {
+                        Some(x) => *x = p,
+                        None => list.push(p),
+                    }
+                }
+            }
+        }
+        let path = format!("Public/{m}/Lists/SpellLists.lsx");
+        if vfs.exists(&path) {
+            let res = parse(vfs, &path)?;
+            for n in region_nodes(&res, "SpellLists", "SpellList") {
+                if let Some(id) = guid_attr(n, "UUID") {
+                    d.spell_lists
+                        .insert(id, split_list(s(n, "Spells").as_deref()));
                 }
             }
         }

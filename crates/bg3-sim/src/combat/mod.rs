@@ -18,6 +18,7 @@
 pub mod action;
 pub mod ai;
 pub mod data;
+pub mod game;
 
 #[cfg(test)]
 mod tests;
@@ -29,6 +30,7 @@ use bg3_rules::context::{Ability, DamageType, Hand, Resistance, Weapon};
 use bg3_rules::natives::RollEvent;
 
 pub use action::{CastReport, CombatError};
+pub use ai::AiAction;
 pub use data::{CombatData, Factions};
 
 use crate::entity::EntityKind;
@@ -166,6 +168,9 @@ pub struct Combat {
     /// Members of the current group who ended their turn.
     pub ended: Vec<Guid>,
     pub finished: bool,
+    /// Members of the finished group whose story `TurnEnded` is still due (the engine raises
+    /// it after the next group's `TurnStarted`).
+    pub turn_ended_pending: Vec<Guid>,
 }
 
 impl Combat {
@@ -279,7 +284,43 @@ pub struct CombatState {
     pub combats: Vec<Combat>,
     pub combatants: HashMap<Guid, Combatant>,
     next_id: u32,
+    /// Story action ids handed out (UsingSpell … CastedSpell carry one).
+    pub story_actions: i32,
     pub(crate) events: Vec<CombatEvent>,
+    /// Objects the story took off stage (`SetOnStage(x, 0)`); they don't join fights.
+    pub off_stage: std::collections::HashSet<Guid>,
+}
+
+/// `ActionResource(Name, amount, level)` boosts of a progression (unconditional, fixed
+/// amounts only).
+fn progression_resources(boosts: &str) -> Vec<(String, f32)> {
+    let Ok(entries) = bg3_rules::fields::parse_boosts(boosts) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .filter_map(|e| match e {
+            bg3_rules::fields::BoostEntry::Boost(b)
+                if b.condition.is_none() && b.name == "ActionResource" =>
+            {
+                let name = b.args.first()?.trim().to_owned();
+                let amount: f32 = b.args.get(1)?.trim().parse().ok()?;
+                Some((name, amount))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The spell lists of `AddSpells(list, …)` selectors.
+fn progression_spell_lists(selectors: &str) -> Vec<Guid> {
+    selectors
+        .split(';')
+        .filter_map(|s| {
+            let rest = s.trim().strip_prefix("AddSpells(")?;
+            Guid::parse(rest.split([',', ')']).next()?.trim())
+        })
+        .collect()
 }
 
 /// Distance between two positions (metres, straight line).
@@ -416,6 +457,40 @@ impl Sim {
                 })
                 .collect(),
         };
+        // Origin characters: what their race and class progressions grant up to their level.
+        // `ActionResource(Name, amount, level)` boosts (e.g. the race's Movement) and fixed
+        // spell grants (`AddSpells(list)` selectors). *Approximate*: choices (`SelectSpells`,
+        // …), passives and other boosts are not modelled.
+        let mut resources = resources;
+        if let Some(origin) = d.origins.get(&id) {
+            for t in d.origin_tables(origin) {
+                for p in d.progressions.get(&t).into_iter().flatten() {
+                    if p.level > sheet.level {
+                        continue;
+                    }
+                    for (name, amount) in progression_resources(&p.boosts) {
+                        match resources.entries.iter_mut().find(|r| r.name == name) {
+                            Some(r) => {
+                                r.max += amount;
+                                r.amount = r.max;
+                            }
+                            None => resources.entries.push(ResourceAmount {
+                                name,
+                                amount,
+                                max: amount,
+                            }),
+                        }
+                    }
+                    for list in progression_spell_lists(&p.selectors) {
+                        for s in d.spell_lists.get(&list).into_iter().flatten() {
+                            if d.spells.contains_key(s) && !spells.contains(s) {
+                                spells.push(s.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let mut c = Combatant {
             id,
             combat: None,
@@ -449,6 +524,7 @@ impl Sim {
         };
         self.combat.combatants.insert(id, c);
         self.update_armor_class(id);
+        self.update_class_hp(id);
         true
     }
 
@@ -458,6 +534,28 @@ impl Sim {
 
     pub fn combatant_mut(&mut self, id: Guid) -> Option<&mut Combatant> {
         self.combat.combatants.get_mut(&id)
+    }
+
+    /// Origin characters' `Character` stats entries carry placeholder hit points (`Vitality`
+    /// 1); their real maximum comes from their class (see [`CombatData::class_hp`]). Sets
+    /// the maximum and fills the character up.
+    // *Approximate*: no class progressions, boosts or the created avatar's own class.
+    pub fn update_class_hp(&mut self, id: Guid) {
+        let d = &self.data.combat;
+        let Some(class) = d.origins.get(&id).and_then(|o| o.class) else {
+            return;
+        };
+        let Some(sheet) = self.entities.get(id).and_then(|e| e.sheet.as_ref()) else {
+            return;
+        };
+        let con = (sheet.ability(Ability::Constitution) - 10).div_euclid(2);
+        let Some(max) = d.class_hp(class, sheet.level, con) else {
+            return;
+        };
+        if let Some(s) = self.entities.get_mut(id).and_then(|e| e.sheet.as_mut()) {
+            s.max_hp = max;
+            s.hp = max;
+        }
     }
 
     /// Recompute a character's armour class.
@@ -623,7 +721,11 @@ impl Sim {
         loop {
             let mut added = false;
             for &c in &candidates {
-                if out.contains(&c) || !self.ensure_combatant(c) || !self.alive(c) {
+                if out.contains(&c)
+                    || self.combat.off_stage.contains(&c)
+                    || !self.ensure_combatant(c)
+                    || !self.alive(c)
+                {
                     continue;
                 }
                 if self.combat_of(c).is_some_and(|x| !x.finished) {
@@ -802,6 +904,7 @@ impl Sim {
             current: 0,
             ended: Vec::new(),
             finished: false,
+            turn_ended_pending: Vec::new(),
         });
         self.combat_event(CombatEvent::CombatStarted {
             combat: cid,
@@ -860,13 +963,26 @@ impl Sim {
             .map(|g| g.members.clone())
             .unwrap_or_default();
         let data = self.data.clone();
-        for m in &members {
+        let round = self.combat.combats[i].round;
+        let shared = members.len() > 1;
+        for (k, m) in members.iter().enumerate() {
             if let Some(c) = self.combatant_mut(*m) {
                 c.resources.replenish_turn(&data.combat);
             }
             let who = self.render(*m);
-            self.push_event("TurnStarted", vec![SimValue::Guid(who)]);
+            self.push_event("TurnStarted", vec![SimValue::Guid(who.clone())]);
             self.combat_event(CombatEvent::TurnStarted { entity: *m });
+            // *Verified by trace* (combat-20261021-183321, imp fight): a shared group raises
+            // `ShareInitiative(x)` after each member's `TurnStarted`, except after the last
+            // member in round 1. Why the last one is skipped in the first round is unknown.
+            if shared && (round > 1 || k + 1 < members.len()) {
+                self.push_event("ShareInitiative", vec![SimValue::Guid(who)]);
+            }
+        }
+        let pending = std::mem::take(&mut self.combat.combats[i].turn_ended_pending);
+        for p in pending {
+            let w = self.render(p);
+            self.push_event("TurnEnded", vec![SimValue::Guid(w)]);
         }
         for m in members {
             if self.combatant(m).is_some_and(|c| c.downed || c.dead) {
@@ -888,8 +1004,8 @@ impl Sim {
             .ok_or(CombatError::NotYourTurn)?;
         let i = self.combat_index(cid).ok_or(CombatError::NotInCombat)?;
         self.combat.combats[i].ended.push(who);
-        let w = self.render(who);
-        self.push_event("TurnEnded", vec![SimValue::Guid(w)]);
+        // The story's `TurnEnded` follows the next group's `TurnStarted` (see start_group).
+        self.combat.combats[i].turn_ended_pending.push(who);
         self.combat_event(CombatEvent::TurnEnded { entity: who });
         let done = {
             let c = &self.combat.combats[i];
@@ -963,15 +1079,33 @@ impl Sim {
         if fighting {
             return false;
         }
+        // *Verified by trace* (combat-20261021-183321): when the last enemy falls, the acting
+        // group's `TurnEnded` events come first, then `LeftCombat` for each remaining
+        // participant, then `CombatEnded`. (The trace also shows a `CombatRoundStarted` just
+        // before `CombatEnded`, which the sim does not raise.)
+        let c = &self.combat.combats[i];
+        let mut turn_ended = c.turn_ended_pending.clone();
+        if let Some(g) = c.current_group() {
+            turn_ended.extend(g.members.iter().filter(|m| !c.ended.contains(m)).copied());
+        }
+        let parts = c.participants.clone();
         self.combat.combats[i].finished = true;
-        let parts = self.combat.combats[i].participants.clone();
+        self.combat.combats[i].turn_ended_pending.clear();
+        for m in turn_ended {
+            let w = self.render(m);
+            self.push_event("TurnEnded", vec![SimValue::Guid(w)]);
+            self.combat_event(CombatEvent::TurnEnded { entity: m });
+        }
         let cs = SimValue::Guid(cid.to_string());
         for p in parts {
+            let still_in = self.combatant(p).is_some_and(|c| c.combat == Some(cid));
             if let Some(c) = self.combatant_mut(p) {
                 c.combat = None;
             }
-            let who = self.render(p);
-            self.push_event("LeftCombat", vec![SimValue::Guid(who), cs.clone()]);
+            if still_in {
+                let who = self.render(p);
+                self.push_event("LeftCombat", vec![SimValue::Guid(who), cs.clone()]);
+            }
         }
         self.push_event("CombatEnded", vec![cs]);
         self.combat_event(CombatEvent::CombatEnded { combat: cid });
