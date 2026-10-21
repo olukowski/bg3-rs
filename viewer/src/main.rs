@@ -197,6 +197,8 @@ fn main() -> Result<()> {
         &vfs,
         &level,
         level.level.objects.iter().chain(&extra),
+        play.as_ref()
+            .map(|(_, s)| (s.avatar.to_string(), s.avatar_equipment.as_slice())),
     );
     let material_ids = meshes.by_visual.values().flatten();
     let materials = materials::PreparedMaterials::load(

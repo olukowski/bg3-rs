@@ -24,7 +24,7 @@ use bg3_vfs::Vfs;
 use bg3_world::characters::{
     CombatAnimation, DEFAULT_MOVEMENT_SPEED_RUN, DEFAULT_MOVEMENT_STEP_UP_HEIGHT, EquippedItem,
     RUN_PEACE, ResolvedCharacter, animation_simple_names, idle_simple_name, resolve_character,
-    resolve_equipment,
+    resolve_equipment, resolve_equipment_items,
 };
 use rayon::prelude::*;
 
@@ -211,6 +211,7 @@ impl LevelCharacters {
         vfs: &Vfs,
         level: &LoadedLevel,
         objects: impl Iterator<Item = &'a bg3_world::LevelObject>,
+        avatar_equipment: Option<(String, &[String])>,
     ) -> Self {
         let started = std::time::Instant::now();
         let idle = idle_simple_name(vfs);
@@ -222,13 +223,46 @@ impl LevelCharacters {
         let mut resolved = Vec::new();
         for obj in objects.filter(|o| o.kind == "character") {
             match resolve_character(obj, &level.templates, &level.banks, &idle) {
-                Ok(c) => {
-                    let items = match (&c.props.equipment, &stats) {
-                        (Some(e), Some(stats)) => {
-                            resolve_equipment(e, stats, &level.templates, &level.banks)
+                Ok(mut c) => {
+                    let items = if let (Some((id, names)), Some(stats)) =
+                        (&avatar_equipment, &stats)
+                        && *id == c.id
+                    {
+                        resolve_equipment_items(
+                            names.iter().map(String::as_str),
+                            c.props.equipment_race.as_deref(),
+                            stats,
+                            &level.templates,
+                            &level.banks,
+                        )
+                    } else {
+                        match (&c.props.equipment, &stats) {
+                            (Some(e), Some(stats)) => resolve_equipment(
+                                e,
+                                c.props.equipment_race.as_deref(),
+                                stats,
+                                &level.templates,
+                                &level.banks,
+                            ),
+                            _ => Vec::new(),
                         }
-                        _ => Vec::new(),
                     };
+                    c.apply_equipment(&items, &level.banks.equipment);
+                    if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
+                        for i in &items {
+                            eprintln!(
+                                "equipment {} {} ({}): {:?}",
+                                c.name,
+                                i.stats,
+                                i.slot,
+                                i.worn.iter().map(|p| &p.visual.name).collect::<Vec<_>>()
+                            );
+                        }
+                        eprintln!(
+                            "character {} at {:?}, equipment race {:?}, body masks {:?}",
+                            c.name, obj.transform.position, c.props.equipment_race, c.body_masks
+                        );
+                    }
                     let run = c.animation(&level.banks, RUN_PEACE);
                     resolved.push((obj.transform, c, items, run));
                 }
@@ -447,7 +481,11 @@ fn prepare(
             let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) else {
                 continue;
             };
-            let (bevy_mesh, _) = skinned_mesh(mesh, &skeleton);
+            let bevy_mesh = if part.attach_bone.is_some() {
+                crate::meshes::to_bevy_mesh(mesh)
+            } else {
+                skinned_mesh(mesh, &skeleton).0
+            };
             parts.push(PreparedPart {
                 mesh: bevy_mesh,
                 material_id: obj.material_id.clone(),
@@ -456,7 +494,9 @@ fn prepare(
             });
         }
     }
-    parts.extend(weapon_parts(vfs, cache, &skeleton, items));
+    if c.character_visual.show_equipment_visuals {
+        parts.extend(rigid_equipment_parts(vfs, cache, &skeleton, items));
+    }
     if !unmapped.is_empty() {
         unmapped.sort();
         unmapped.dedup();
@@ -492,13 +532,13 @@ fn prepare(
     })
 }
 
-/// Weapons from the starting equipment, drawn in hand (the drawn/sheathed state isn't modelled).
+/// Weapons and rigid wearable attachments (the drawn/sheathed state is not modelled).
 ///
 /// Assumption: a weapon GR2's `Dummy_Attachment` bone is placed on the character's
 /// `Dummy_R_Hand` (main hand) or `Dummy_L_Hand` (off hand); both names occur in the game
 /// binary and in every humanoid skeleton. A ranged main weapon is shown only when there is no
 /// melee main weapon.
-fn weapon_parts(
+fn rigid_equipment_parts(
     vfs: &Vfs,
     cache: &GrannyCache,
     skeleton: &Skeleton,
@@ -507,16 +547,22 @@ fn weapon_parts(
     let has_melee = items.iter().any(|i| i.slot == "Melee Main Weapon");
     let mut out = Vec::new();
     for item in items {
-        let bone = match item.slot.as_str() {
-            "Melee Main Weapon" => "Dummy_R_Hand",
-            "Ranged Main Weapon" if !has_melee => "Dummy_R_Hand",
-            "Melee Offhand Weapon" => "Dummy_L_Hand",
-            _ => continue,
+        if !item.worn.is_empty() {
+            continue;
+        }
+        let Some(visual) = &item.visual else { continue };
+        let Some(bone) = equipment_attachment_bone(
+            &item.slot,
+            item.is_weapon,
+            visual.attach_bone.as_deref(),
+            has_melee,
+        ) else {
+            continue;
         };
         let Some(joint) = skeleton.index(bone) else {
             continue;
         };
-        let Some(path) = item.visual.source_file.as_deref() else {
+        let Some(path) = visual.source_file.as_deref() else {
             continue;
         };
         let Ok(scene) = cache.scene(vfs, path) else {
@@ -530,7 +576,7 @@ fn weapon_parts(
             .map_or(Transform::default(), |b| {
                 Transform::from_matrix(inverse_bind(&b.inverse_world))
             });
-        for obj in item.visual.objects.iter().filter(|o| o.lod == 0) {
+        for obj in visual.objects.iter().filter(|o| o.lod == 0) {
             if let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) {
                 out.push(PreparedPart {
                     mesh: crate::meshes::to_bevy_mesh(mesh),
@@ -542,6 +588,25 @@ fn weapon_parts(
         }
     }
     out
+}
+
+// bg3: ecl::equipment::GetAttachmentBoneName (4.1.1.7631656)
+// Explicit rigid-wearable attachment comes from data; hand choice remains a viewer assumption.
+fn equipment_attachment_bone<'a>(
+    slot: &str,
+    is_weapon: bool,
+    attach_bone: Option<&'a str>,
+    has_melee: bool,
+) -> Option<&'a str> {
+    if !is_weapon && let Some(bone) = attach_bone {
+        return Some(bone);
+    }
+    match slot {
+        "Melee Main Weapon" => Some("Dummy_R_Hand"),
+        "Ranged Main Weapon" if !has_melee => Some("Dummy_R_Hand"),
+        "Melee Offhand Weapon" => Some("Dummy_L_Hand"),
+        _ => None,
+    }
 }
 
 /// Convert a GR2 mesh and remap its bone indices (into the mesh's `BoneBindings`) to joints of
@@ -881,6 +946,35 @@ impl Plugin for CharactersPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wearable_attachment_uses_visual_bone_and_weapons_keep_hand_policy() {
+        assert_eq!(
+            equipment_attachment_bone("Helmet", false, Some("Dummy_Hat"), true),
+            Some("Dummy_Hat")
+        );
+        assert_eq!(
+            equipment_attachment_bone("Melee Offhand Weapon", false, Some("Dummy_Shield"), true),
+            Some("Dummy_Shield")
+        );
+        assert_eq!(
+            equipment_attachment_bone("Melee Offhand Weapon", false, None, true),
+            Some("Dummy_L_Hand")
+        );
+        assert_eq!(
+            equipment_attachment_bone("Melee Main Weapon", true, Some("Other"), true),
+            Some("Dummy_R_Hand")
+        );
+        assert_eq!(
+            equipment_attachment_bone("Ranged Main Weapon", true, None, true),
+            None
+        );
+        assert_eq!(
+            equipment_attachment_bone("Ranged Main Weapon", true, None, false),
+            Some("Dummy_R_Hand")
+        );
+        assert_eq!(equipment_attachment_bone("Helmet", false, None, true), None);
+    }
 
     fn clip(name: &str, duration: f32) -> BoundClip {
         (

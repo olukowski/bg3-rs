@@ -345,9 +345,46 @@ explicit empty entries, null/cyclic/missing parents, sparse item-template inheri
 preset-slot replacement, equipment visibility, mask metadata and actual item-list
 resolution without any dropped visual. The ignored install test
 `worn_armour_resolves_laezel_and_human_fighter` checks Lae'zel's global/template race
-and a Human Male player template with `EQP_CC_Fighter`, requiring real worn `Breast`
-visuals and existing GR2s for both. Visual inspection and final check results are
-recorded below after capture.
+and the CC Human Male player template (`Humans_Male_Player_Dev`) with `EQP_CC_Fighter`, requiring real worn `Breast`
+visuals and existing GR2s for both.
+
+Verified on 2026-10-21: `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`
+(333 passed including doctests, 48 ignored), and
+`cargo test --release -p bg3-world worn_armour_resolves_laezel_and_human_fighter -- --ignored --nocapture`
+all exited 0 against the final source. Logs are under `.cache/equipment/`.
+An initial viewer/test build overlapped a source edit and saw an older dependency
+layout; both were rebuilt successfully after the edit. This verifies our data
+resolution and rendering, not engine runtime behaviour.
+
+Captured and opened locally (all viewer processes exited 0):
+
+- `.cache/shots/equipment-party.png`: `--play --combat-test --shot … --shot-after 3`.
+  Both characters wear armour; the gnome has a wooden shield. This wider angle is
+  partly obscured by the combat UI.
+- `.cache/shots/equipment-laezel-close.png`: same command plus
+  `--camera=-49,4.5,-400 --look-at=-46,3.8,-402.5`. Lae'zel has the silver engraved
+  half-plate chest, shoulder pieces, skirt panels and gith metal boots. The gnome's
+  chain-shirt back, trousers, boots and shield are clear alongside her.
+- `.cache/shots/equipment-avatar-front.png`: adds `--combat-autoplay` and
+  `--camera=-49,4.3,-405.8 --look-at=-46,3.6,-402.5`. Close frontal view of the default
+  deep-gnome cleric casting: chainmail torso and sleeves, trousers, boots, mace and
+  shield. The sleeve/torso meshes follow the posed skeleton. The UI covers some feet.
+- `.cache/shots/equipment-human-fighter.png`: actual `bg3x cc --race Human --class Fighter --spec`
+  passed to `--character`, with `--camera=-43.6,4.3,-405.8 --look-at=-46,3.6,-402.5`.
+  Human scale-mail torso, separate trousers and leather boots are visible; Lae'zel is
+  beside him. This angle is dim, but the outfit silhouettes and pieces are distinct.
+- `.cache/shots/equipment-avatar-close.png`: alternate reverse angle at the previous
+  camera, with the default cleric. It is darker and the avatar is partly behind the UI;
+  the frontal autoplay capture is better for inspecting his chain shirt.
+
+The visible red skin, grey head/hair and overly white cloth are existing material
+limitations. Red body regions still poke through at the avatar's hips/knees/feet;
+mask requests are exposed but not applied by this change. No claim of complete body
+occlusion or final dye/skin/hair appearance is made. The shared-turn camera can centre
+Lae'zel even when the supplied initial look-at targets the avatar; autoplay gives a
+clearer frontal avatar view after his move. No original-game comparison trace was
+captured, and no shader files were edited.
 
 ## Open
 

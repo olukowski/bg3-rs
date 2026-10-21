@@ -603,6 +603,7 @@ pub struct ResolvedCharacter {
 pub struct EquippedItem {
     /// Stats entry (e.g. `WPN_Imp_Handaxe`).
     pub stats: String,
+    pub is_weapon: bool,
     /// Stats `Slot` (`Melee Main Weapon`, `Melee Offhand Weapon`, `Ranged Main Weapon`, `Breast`, …).
     pub slot: String,
     /// Item root template (stats `RootTemplate`).
@@ -688,6 +689,7 @@ pub fn resolve_equipment_items<'a>(
             }
             Some(EquippedItem {
                 stats: entry.to_owned(),
+                is_weapon: obj.type_name.as_deref() == Some("Weapon"),
                 slot: slot.to_owned(),
                 visual: templates
                     .visual_for(&template)
@@ -1201,6 +1203,7 @@ add equipment entry "camp"
         };
         let item = EquippedItem {
             stats: "shirt".into(),
+            is_weapon: false,
             slot: "Breast".into(),
             template: "item".into(),
             visual: None,
@@ -1266,7 +1269,7 @@ add equipment entry "camp"
         let human = templates
             .templates
             .values()
-            .find(|t| t.name == "Humans_Male_Player")
+            .find(|t| t.name == "Humans_Male_Player_Dev")
             .unwrap();
         for (template, equipment) in [
             (laezel_template, "EQ_Laezel"),

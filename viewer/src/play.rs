@@ -63,6 +63,8 @@ pub struct Started {
     pub names: HashMap<Guid, String>,
     pub avatar: Guid,
     pub avatar_template: Guid,
+    /// Actual CC result, including class/race starting items (read from the sim).
+    pub avatar_equipment: Vec<String>,
     pub level: String,
     pub presences: Vec<Presence>,
     /// Items with use actions (`Sim::item_use_actions`): clicking them uses them.
@@ -204,6 +206,13 @@ fn game_thread(
         names: display_names(&game.sim),
         avatar: started.avatar,
         avatar_template: started.avatar_template,
+        avatar_equipment: game
+            .sim
+            .combat
+            .created_characters
+            .get(&started.avatar)
+            .map(|c| c.equipment.clone())
+            .unwrap_or_default(),
         level: started.level,
         presences: last.clone(),
         usable_items,
