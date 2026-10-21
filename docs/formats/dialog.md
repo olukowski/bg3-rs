@@ -319,8 +319,21 @@ In the order the game raises them (`esv::StoryDialogEventManager`; Osiris queues
 5. `NestedDialogPlayed(dialog, inst)` per nested dialog that played, then
    `DialogEnded(root dialog, inst)` / `AutomatedDialogEnded`.
 
-`DialogEvent::osiris` renders runner events in the runtime-log format. Names of non-`NONE`
-criticality values are not verified.
+`DialogEvent::osiris` renders runner events in the runtime-log format. Criticality values are
+the story's `CRITICALITYTYPE` enum (`NONE` 0, `SUCCESS` 1, `FAIL` 2); every roll of the recorded
+opening reports `NONE`.
+
+**On the game state.** `bg3_sim` runs dialogs with the sim as the `DialogWorld`
+(`crates/bg3-sim/src/dialog.rs`): flag checks and sets use the sim's flag store with the
+`scr::SetFlag` holder rules (`User`/`Party` checks read every holder), tag checks see the merged
+tags plus the story's and the dialog's own (`esv::EoCDialogGameInterface::IsSpeakerTagged`),
+`Tag` set-flags go to the dialog tag source and are announced by the tag merge, and rolls are
+ability checks through `bg3-rules` against the `DifficultyClasses` DC. The story starts a dialog
+with `StartDialog_Internal(dialog, ?, speaker × 6, [out] ok, [out] instance, ?)`: the instance id
+comes back at once, the speakers fill slots 0, 1, … in order, `DialogAddActorAtReservedSlot` can
+add one before it starts (to the slot whose speaker list names it), and it starts a frame later
+(`DialogStarted` already lists the added actor in the trace). Instance ids count up from 1;
+dialogs the engine starts on its own (world dialogs) take ids too.
 
 ### Not modelled
 
@@ -346,6 +359,14 @@ start-node preference, and actor joining/leaving mid-dialog.
   `TUT_Start_Brinepool` (one active roll), `TUT_Lab_AD_DevourerVictim` ×2 (automated) and
   `TUT_Lab_TrappedDevourer` (28 events: 10 `FlagSet`, 2 passive and 3 active rolls, Object and
   Global flags, choice path 1,1,1,3,1). One instance is cut off by the end of the log.
+
+- `nautiloid_dialogs_run_on_the_sim` (`crates/bg3-sim/tests/dialog_e2e.rs`, needs the install
+  and the log): the whole opening replays with the sim answering the story, and the story's
+  `StartDialog_Internal` calls start the six dialogs on the sim. With the choices found by the
+  same search and the logged roll outcomes, all 54 of their events (start, actors, 12 dialog
+  `FlagSet`s, 6 rolls, end) are raised by the sim and equal the log; the story behaves
+  identically (every segment matches). The roll outcomes are consistent with the rules: each
+  logged outcome is reachable with a non-critical d20 given the speakers' sheets and the DCs.
 
 What the log can and can't confirm: the start/actor/end events, which flags are set, on whom,
 in which order relative to the rolls, and roll targets. It can't show the player's actual

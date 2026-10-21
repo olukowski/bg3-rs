@@ -1,6 +1,6 @@
-//! A small, object-safe view of the story state for other systems (the dialogue runner reads
-//! and writes flags and checks tags through it). [`crate::Sim`] implements it; tests can use
-//! their own implementation.
+//! A small, object-safe view of the story state for other systems (tools, a front end).
+//! [`crate::Sim`] implements it; tests can use their own implementation. Dialogs use the
+//! richer [`crate::SimDialogWorld`], the rules engine [`bg3_rules::RulesContext`].
 
 use crate::entity::{Entity, EntityKind};
 use crate::flags::FlagError;

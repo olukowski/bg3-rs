@@ -662,3 +662,67 @@ fn level_maps() {
     assert_eq!(ev.eval(&e, Mode::Average).unwrap(), 8);
     assert_eq!(ev.eval(&e, Mode::Roll { critical: true }).unwrap(), 25);
 }
+
+#[test]
+fn ability_checks() {
+    use crate::context::Skill;
+    use rules::CheckKind;
+    let mut w = TestWorld::new();
+    let mut c = Combatant::new("Sage").ability(Ability::Wisdom, 14);
+    c.skills.insert(Skill::Medicine);
+    let e = w.spawn(c);
+    let none = Advantage::default();
+    // 10 + 2 (Wis) + 2 (proficiency) = 14 vs 14: success.
+    let mut dice = ScriptedDice::new(&[10, 3]);
+    let r = rules::roll_ability_check(
+        &w,
+        &mut dice,
+        e,
+        Ability::Wisdom,
+        CheckKind::Skill(Skill::Medicine),
+        14,
+        none,
+    );
+    assert_eq!((r.total, r.success, r.critical), (14, true, Critical::None));
+    // Not proficient in Insight: 10 + 2 = 12.
+    let mut dice = ScriptedDice::new(&[10, 3]);
+    let r = rules::roll_ability_check(
+        &w,
+        &mut dice,
+        e,
+        Ability::Wisdom,
+        CheckKind::Skill(Skill::Insight),
+        14,
+        none,
+    );
+    assert_eq!((r.total, r.success), (12, false));
+    // Natural 20 always succeeds, natural 1 always fails.
+    let mut dice = ScriptedDice::new(&[20, 1]);
+    let r = rules::roll_ability_check(
+        &w,
+        &mut dice,
+        e,
+        Ability::Wisdom,
+        CheckKind::RawAbility,
+        99,
+        none,
+    );
+    assert!(r.success && r.critical == Critical::Success);
+    let mut dice = ScriptedDice::new(&[1, 20]);
+    let r = rules::roll_ability_check(
+        &w,
+        &mut dice,
+        e,
+        Ability::Wisdom,
+        CheckKind::RawAbility,
+        0,
+        none,
+    );
+    assert!(!r.success && r.critical == Critical::Fail);
+    assert_eq!(Skill::Medicine.ability(), Ability::Wisdom);
+    assert_eq!(Skill::parse("SleightOfHand"), Some(Skill::SleightOfHand));
+    assert_eq!(
+        Skill::ALL.iter().map(|s| s.name()).collect::<Vec<_>>(),
+        expr::SKILLS
+    );
+}

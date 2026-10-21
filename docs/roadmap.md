@@ -42,8 +42,14 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [x] `bg3-sim`: flags, tags, statuses (minimal), timers, entities; the opening's story runs on
   sim answers with every graded answer equal to the game's (`bg3x sim-replay`)
 - [ ] Run Nautiloid goals headlessly without a trace (character creation, loot, HP/death,
-  dialogue, perception still come from the trace)
+  perception still come from the trace)
 - [x] Dialog trees (`.lsf` dialogs) with flags/checks: `bg3-dialog` runner, `bg3x dialog`, viewer `--dialog` (`docs/formats/dialog.md`)
+- [x] Integration step 1: `bg3-sim` is the `DialogWorld` and the `RulesContext` (character
+  sheets from stats, dialog checks through `bg3-rules`); the story starts dialogs on the sim and
+  all six dialogs of the recorded opening run on it event for event (`dialog_e2e`,
+  `bg3x sim-replay`, `bg3x dialog --walk --sim`); `bg3_sim::Game` packages VM + sim for a front end
+- [ ] Integration step 2: the viewer drives a live `bg3_sim::Game` (ticks, dialog panel from
+  notifications, player choices)
 
 ## M5 — First playable slice
 - [x] Characters: visuals, skinning, idle animation, weapons in hand (docs/research/characters.md)

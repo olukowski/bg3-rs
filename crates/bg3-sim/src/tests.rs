@@ -39,6 +39,7 @@ fn obj(id: &str, name: &str, kind: EntityKind, tags: &[&str]) -> PlacedObject {
         statuses: Vec::new(),
         race: None,
         faction: None,
+        level_override: None,
     }
 }
 
@@ -69,6 +70,7 @@ fn data() -> GameData {
             faction: None,
             stats: None,
             statuses: Vec::new(),
+            level_override: None,
         },
     );
     d.globals = vec![

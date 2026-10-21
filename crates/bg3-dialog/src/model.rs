@@ -196,6 +196,41 @@ pub enum NodeKind {
     Other(String),
 }
 
+impl Node {
+    /// A node of `kind` with no flags, texts or children, and every switch off.
+    pub fn new(uuid: Guid, kind: NodeKind) -> Self {
+        Self {
+            uuid,
+            kind,
+            speaker: None,
+            addressed_speaker: None,
+            root: false,
+            greeting: false,
+            end_node: false,
+            end_all_dialogs: false,
+            show_once: false,
+            optional: false,
+            exclusive: false,
+            stub: false,
+            suppress_subtitle: false,
+            gameplay_node: false,
+            allow_node_grouping: None,
+            group: None,
+            transition_mode: None,
+            wait_time: None,
+            approval_rating_id: None,
+            override_approval_rating_id: false,
+            children: Vec::new(),
+            check_flags: Vec::new(),
+            set_flags: Vec::new(),
+            validated_flags: None,
+            tags: Vec::new(),
+            texts: Vec::new(),
+            cinematic_context: None,
+        }
+    }
+}
+
 impl NodeKind {
     /// The constructor name as stored in the file.
     pub fn constructor(&self) -> &str {

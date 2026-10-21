@@ -16,8 +16,13 @@
 //!     delivers one, the harness looks for the same event in the sim's queue; if the sim
 //!     produced it, the sim's event is delivered ("generated"), else the logged one is fed
 //!     and counted as a fallback ("fed").
-//!   - *external* (level loading, character creation, perception, dialog, combat, …): fed
+//!   - *external* (level loading, character creation, perception, combat, …): fed
 //!     from the log, and the sim observes them ([`Sim::observe`]) so its state follows.
+//!
+//!   With a dialog bank ([`Options::dialogs`]) the sim runs the story's dialogs: when the log
+//!   delivers an event of one that the sim has not raised yet, the dialog plays on until it
+//!   does. The player's choices, which the log doesn't show, are searched for when the dialog
+//!   starts (the walk that raises the logged events); roll outcomes come from the log.
 //!
 //!   The log gives the order; the sim decides whether the event happens. The log has no
 //!   timestamps, so timers are not driven by the clock here: when the log delivers a timer
@@ -28,8 +33,9 @@
 //! story on the logged answers and only grades the sim's (isolates each answer's
 //! correctness from knock-on effects).
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use bg3_osiris::replay::{
     Answer, Comparer, ReplayHost, Report, Segment, event_values, ignored_event, segments,
@@ -38,6 +44,9 @@ use bg3_osiris::trace::{LogData, LogValue, parse_log};
 use bg3_osiris::{Host, HostCtx, Value, Vm};
 use bg3_story::Story;
 
+use bg3_dialog::Step;
+
+use crate::dialog::{DialogBank, DialogRollRecord, DialogScript, InstanceState};
 use crate::events::SimEvent;
 use crate::host::SimFunctions;
 use crate::sim::{GameData, ObservedArg, Sim};
@@ -57,6 +66,10 @@ pub struct Options {
     /// campaign starts there).
     pub start_level: String,
     pub keep_vm_log: bool,
+    /// Dialogs: with them the sim runs the story's dialogs itself (the player's choices are
+    /// searched for, roll outcomes taken from the log); without, dialog events are fed from
+    /// the log.
+    pub dialogs: Option<Arc<DialogBank>>,
 }
 
 impl Default for Options {
@@ -65,6 +78,7 @@ impl Default for Options {
             mode: Mode::Sim,
             start_level: String::new(),
             keep_vm_log: false,
+            dialogs: None,
         }
     }
 }
@@ -81,6 +95,17 @@ pub const SIM_OWNED_EVENTS: &[&str] = &[
     "StatusApplied",
     "StatusRemoved",
     "BaseFactionChanged",
+    // Raised by the sim's dialogs (from `DIALOG_EVENTS_FROM` on).
+    "DialogStarted",
+    "AutomatedDialogStarted",
+    "DialogActorJoined",
+    "DialogActorLeft",
+    "DialogEnded",
+    "AutomatedDialogEnded",
+    "RollResult",
+    "DialogRollResult",
+    "NestedDialogPlayed",
+    "InstanceDialogChanged",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +193,28 @@ pub struct SimReport {
     /// Events the sim produced that the log never delivered.
     pub extras: Vec<String>,
     pub entities: usize,
+    /// Every dialog instance of the log.
+    pub dialogs: Vec<DialogReport>,
+    /// The sim at the end of the replay.
+    pub sim: Sim,
+}
+
+/// How one logged dialog instance went.
+#[derive(Clone, Debug)]
+pub struct DialogReport {
+    pub instance: u32,
+    pub dialog: String,
+    /// Run by the sim (requested by the story through `StartDialog_Internal`).
+    pub owned: bool,
+    /// Events of the instance in the log (start, actors, flags, rolls, end).
+    pub logged: usize,
+    /// Of those, produced by the sim.
+    pub generated: usize,
+    /// The choices the search found (1-based as shown to a player), if any.
+    pub choices: Option<Vec<usize>>,
+    pub rolls: Vec<DialogRollRecord>,
+    /// The log ends before the instance does.
+    pub cut_off: bool,
 }
 
 impl SimReport {
@@ -342,6 +389,49 @@ impl SimReport {
             );
         }
         let _ = writeln!(s, "sim entities at the end: {}", self.entities);
+        if !self.dialogs.is_empty() {
+            let _ = writeln!(s, "dialogs:");
+            for d in &self.dialogs {
+                let rolls: Vec<String> = d
+                    .rolls
+                    .iter()
+                    .map(|r| match &r.check {
+                        Some(c) => format!(
+                            "{} {}{}",
+                            if r.active { "active" } else { "passive" },
+                            c,
+                            if r.consistent { "" } else { " (inconsistent)" }
+                        ),
+                        None => format!("roll without rules data: {}", r.success),
+                    })
+                    .collect();
+                let _ = writeln!(
+                    s,
+                    "  #{} {}: {}/{} events by the sim{}{}{}",
+                    d.instance,
+                    d.dialog,
+                    d.generated,
+                    d.logged,
+                    if d.owned {
+                        ""
+                    } else {
+                        " (not started by the sim)"
+                    },
+                    match &d.choices {
+                        Some(c) if !c.is_empty() => format!(", choices {c:?}"),
+                        _ => String::new(),
+                    },
+                    if d.cut_off {
+                        ", log ends mid-dialog"
+                    } else {
+                        ""
+                    },
+                );
+                for r in rolls {
+                    let _ = writeln!(s, "      {r}");
+                }
+            }
+        }
         if !self.disagreements.is_empty() {
             let _ = writeln!(s, "disagreements (first 3 per query):");
             let mut shown: BTreeMap<&str, usize> = BTreeMap::new();
@@ -566,6 +656,15 @@ impl Pending {
         None
     }
 
+    /// Whether the sim has the event queued (exact text or same UUIDs).
+    fn contains(&self, key: &str, uuid: &str) -> bool {
+        let live = |m: &HashMap<String, VecDeque<usize>>, k: &str| {
+            m.get(k)
+                .is_some_and(|q| q.iter().any(|&i| self.events[i].is_some()))
+        };
+        live(&self.by_key, key) || live(&self.by_uuid, uuid)
+    }
+
     /// `(event, exact text)` for a logged event, if the sim has it queued.
     fn take_match(&mut self, key: &str, uuid: &str) -> Option<(SimEvent, bool)> {
         if let Some(e) = Self::take(&mut self.by_key, &mut self.events, key) {
@@ -579,6 +678,256 @@ impl Pending {
     }
 }
 
+/// Index of the first dialog event in [`SIM_OWNED_EVENTS`].
+const DIALOG_EVENTS_FROM: usize = 10;
+
+/// The dialog instance an event belongs to. `by_dialog` finds the instance of a dialog by its
+/// `Name_<uuid>` (for `DialogRollResult`, which names no instance).
+fn dialog_instance_of(
+    name: &str,
+    texts: &[String],
+    by_dialog: impl Fn(&str) -> Option<u32>,
+) -> Option<u32> {
+    let int = |i: usize| texts.get(i)?.parse::<u32>().ok();
+    match name {
+        "DialogStarted"
+        | "AutomatedDialogStarted"
+        | "DialogActorJoined"
+        | "DialogActorLeft"
+        | "DialogEnded"
+        | "AutomatedDialogEnded"
+        | "NestedDialogPlayed" => int(1),
+        "InstanceDialogChanged" => int(0),
+        "FlagSet" | "FlagCleared" => int(2).filter(|i| *i != 0),
+        "RollResult" => texts
+            .first()?
+            .trim_matches('"')
+            .rsplit_once('_')?
+            .1
+            .parse()
+            .ok(),
+        "DialogRollResult" => by_dialog(texts.get(2)?),
+        _ => None,
+    }
+}
+
+/// A dialog instance as the log shows it: its events in order and its roll outcomes.
+#[derive(Clone, Debug, Default)]
+struct LoggedDialog {
+    dialog: String,
+    expected: Vec<String>,
+    rolls: Vec<bool>,
+}
+
+fn event_key(name: &str, texts: &[String]) -> String {
+    format!("{name}({})", texts.join(", "))
+}
+
+fn logged_dialogs(segs: &[Segment]) -> BTreeMap<u32, LoggedDialog> {
+    let mut out: BTreeMap<u32, LoggedDialog> = BTreeMap::new();
+    let mut by_name: HashMap<String, u32> = HashMap::new();
+    for seg in segs {
+        let Some((name, args)) = &seg.event else {
+            continue;
+        };
+        let texts: Vec<String> = args.iter().map(LogValue::key).collect();
+        if matches!(name.as_str(), "DialogStarted" | "AutomatedDialogStarted")
+            && let (Some(d), Some(i)) = (texts.first(), texts.get(1).and_then(|t| t.parse().ok()))
+        {
+            by_name.insert(d.clone(), i);
+            out.entry(i).or_default().dialog = d.clone();
+        }
+        let Some(inst) = dialog_instance_of(name, &texts, |d| by_name.get(d).copied()) else {
+            continue;
+        };
+        let e = out.entry(inst).or_default();
+        e.expected.push(event_key(name, &texts));
+        if name == "RollResult" {
+            e.rolls.push(texts.get(3).is_some_and(|s| s == "1"));
+        }
+    }
+    out
+}
+
+/// One attempt of a choice path in the search.
+enum Probe {
+    /// Every logged event of the instance reproduced.
+    Match,
+    /// Diverged after this many matching events.
+    Mismatch(usize),
+    /// Choices on offer after this many matching events: how many, and a state signature.
+    Choose(usize, usize, u64),
+}
+
+/// Play an instance on a copy of the sim with the given choices; compare what it raises with
+/// the log.
+fn probe(sim: &Sim, inst: u32, logged: &LoggedDialog, path: &[usize]) -> Probe {
+    use std::hash::{Hash, Hasher};
+    let mut s = sim.clone();
+    s.take_events();
+    s.set_dialog_script(
+        inst,
+        DialogScript {
+            choices: path.iter().copied().collect(),
+            rolls: logged.rolls.iter().copied().collect(),
+        },
+    );
+    let name = s.dialog(inst).map(|i| i.name.clone()).unwrap_or_default();
+    let mut produced: Vec<String> = Vec::new();
+    for _ in 0..5_000 {
+        let progressed = s.dialog_autostep(inst);
+        for e in s.take_events() {
+            let texts: Vec<String> = e.args.iter().map(ToString::to_string).collect();
+            if dialog_instance_of(&e.name, &texts, |d| (d == name).then_some(inst)) == Some(inst) {
+                produced.push(e.key());
+            }
+        }
+        let matched = produced
+            .iter()
+            .zip(&logged.expected)
+            .take_while(|(a, b)| a == b)
+            .count();
+        if matched < produced.len() {
+            return Probe::Mismatch(matched);
+        }
+        if matched == logged.expected.len() {
+            return Probe::Match;
+        }
+        if !progressed {
+            return match s.dialog(inst).and_then(|i| i.step()) {
+                Some(Step::Choices(c)) => {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    produced.hash(&mut h);
+                    c.iter().for_each(|o| o.node_uuid.hash(&mut h));
+                    Probe::Choose(c.len(), matched, h.finish())
+                }
+                _ => Probe::Mismatch(matched),
+            };
+        }
+    }
+    Probe::Mismatch(0)
+}
+
+/// Search the player's choices for a walk that raises the logged events (depth first, like
+/// `bg3-dialog`'s trace test); the best walk if none does.
+fn find_choices(sim: &Sim, inst: u32, logged: &LoggedDialog) -> Option<Vec<usize>> {
+    let mut stack: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut seen: HashSet<u64> = HashSet::new();
+    let mut best: (usize, Option<Vec<usize>>) = (0, None);
+    let mut budget = 20_000;
+    while let Some(path) = stack.pop() {
+        if budget == 0 {
+            break;
+        }
+        budget -= 1;
+        match probe(sim, inst, logged, &path) {
+            Probe::Match => return Some(path),
+            Probe::Mismatch(n) => {
+                if n > best.0 {
+                    best = (n, Some(path));
+                }
+            }
+            Probe::Choose(n, matched, sig) => {
+                if !seen.insert(sig) {
+                    continue;
+                }
+                if matched > best.0 {
+                    best = (matched, Some(path.clone()));
+                }
+                for i in (0..n).rev() {
+                    let mut p = path.clone();
+                    p.push(i);
+                    stack.push(p);
+                }
+            }
+        }
+    }
+    best.1
+}
+
+/// Drives the sim's dialogs during a replay: when the log delivers a dialog's event the sim
+/// has not raised yet, the dialog plays on (lines finish, scripted choices are taken) until it
+/// raises it.
+struct DialogDriver {
+    logged: BTreeMap<u32, LoggedDialog>,
+    choices: BTreeMap<u32, Option<Vec<usize>>>,
+    generated: BTreeMap<u32, usize>,
+}
+
+impl DialogDriver {
+    fn pump(&mut self, sim: &mut Sim, pending: &mut Pending, inst: u32, key: &str, uuid: &str) {
+        let Some(i) = sim.dialog(inst) else {
+            return;
+        };
+        if !i.owned {
+            return;
+        }
+        if i.state == InstanceState::Requested && !self.choices.contains_key(&inst) {
+            let logged = self.logged.get(&inst).cloned().unwrap_or_default();
+            let path = find_choices(sim, inst, &logged);
+            sim.set_dialog_script(
+                inst,
+                DialogScript {
+                    choices: path.iter().flatten().copied().collect(),
+                    rolls: logged.rolls.iter().copied().collect(),
+                },
+            );
+            self.choices.insert(inst, path);
+        }
+        for _ in 0..5_000 {
+            if !sim.dialog_autostep(inst) {
+                break;
+            }
+            let mut found = false;
+            for e in sim.take_events() {
+                let texts: Vec<String> = e.args.iter().map(ToString::to_string).collect();
+                found |= e.key() == key || uuid_key(&e.name, &texts) == uuid;
+                pending.push(e);
+            }
+            if found {
+                break;
+            }
+        }
+    }
+
+    fn report(&self, sim: &Sim) -> Vec<DialogReport> {
+        self.logged
+            .iter()
+            .map(|(&id, l)| {
+                let inst = sim.dialog(id);
+                DialogReport {
+                    instance: id,
+                    dialog: l.dialog.clone(),
+                    owned: inst.is_some_and(|i| i.owned),
+                    logged: l.expected.len(),
+                    generated: self.generated.get(&id).copied().unwrap_or(0),
+                    choices: self
+                        .choices
+                        .get(&id)
+                        .cloned()
+                        .flatten()
+                        .map(|c| c.iter().map(|i| i + 1).collect()),
+                    rolls: inst.map(|i| i.rolls.clone()).unwrap_or_default(),
+                    cut_off: !l
+                        .expected
+                        .last()
+                        .is_some_and(|e| e.contains("DialogEnded(")),
+                }
+            })
+            .collect()
+    }
+}
+
+/// The running sim instance a dialog name refers to (latest first).
+fn sim_instance_by_name(sim: &Sim, name: &str) -> Option<u32> {
+    sim.dialogs
+        .instances
+        .iter()
+        .rev()
+        .find(|i| i.name == name)
+        .map(|i| i.id)
+}
+
 /// Run the replay. Needs a deep stack (run on a thread with a large stack, like the plain
 /// replay).
 pub fn sim_replay(story: &Story, log: &str, data: GameData, opts: &Options) -> SimReport {
@@ -587,6 +936,14 @@ pub fn sim_replay(story: &Story, log: &str, data: GameData, opts: &Options) -> S
     let mut vm = Vm::new(story);
     vm.set_logging(true);
     let mut sim = Sim::new(data);
+    if let Some(bank) = &opts.dialogs {
+        sim.set_dialog_bank(bank.clone());
+    }
+    let mut dialogs = DialogDriver {
+        logged: logged_dialogs(&segs),
+        choices: BTreeMap::new(),
+        generated: BTreeMap::new(),
+    };
     let start = if opts.start_level.is_empty() {
         sim.data.module_levels.character_creation.clone()
     } else {
@@ -614,6 +971,13 @@ pub fn sim_replay(story: &Story, log: &str, data: GameData, opts: &Options) -> S
             if classify(name) == EventClass::SimOwned && !seg.ignored {
                 let key = format!("{name}({})", texts.join(", "));
                 let uuid = uuid_key(name, &texts);
+                // A dialog plays on until it raises the event.
+                let inst = dialog_instance_of(name, &texts, |d| sim_instance_by_name(&sim, d));
+                if let Some(inst) = inst
+                    && !pending.contains(&key, &uuid)
+                {
+                    dialogs.pump(&mut sim, &mut pending, inst, &key, &uuid);
+                }
                 // A timer the sim has running fires when the log says it did.
                 if matches!(name.as_str(), "TimerFinished" | "ObjectTimerFinished") {
                     force_timer(&mut sim, name, args);
@@ -627,6 +991,9 @@ pub fn sim_replay(story: &Story, log: &str, data: GameData, opts: &Options) -> S
                             st.generated += 1;
                         } else {
                             st.generated_renamed += 1;
+                        }
+                        if let Some(i) = inst {
+                            *dialogs.generated.entry(i).or_default() += 1;
                         }
                         let vals = e
                             .args
@@ -714,6 +1081,8 @@ pub fn sim_replay(story: &Story, log: &str, data: GameData, opts: &Options) -> S
         missing,
         extras,
         entities: sim.entities.len(),
+        dialogs: dialogs.report(&sim),
+        sim,
     }
 }
 
@@ -722,6 +1091,13 @@ pub fn sim_replay(story: &Story, log: &str, data: GameData, opts: &Options) -> S
 fn caused_outside(sim: &Sim, name: &str, texts: &[String]) -> bool {
     use crate::entity::Origin;
     use crate::guid::Guid;
+    // A dialog event is the sim's to raise only for dialogs the sim runs.
+    if let Some(inst) = dialog_instance_of(name, texts, |d| sim_instance_by_name(sim, d)) {
+        return !sim.dialog(inst).is_some_and(|i| i.owned);
+    }
+    if SIM_OWNED_EVENTS[DIALOG_EVENTS_FROM..].contains(&name) {
+        return true;
+    }
     match name {
         "FlagSet" | "FlagCleared" => texts.get(2).is_some_and(|d| d != "0"),
         _ => texts

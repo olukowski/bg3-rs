@@ -29,7 +29,7 @@ pub mod textkey;
 pub mod thoth;
 
 pub use condition::{Condition, ConditionContext, ConditionEngine, RollConditions};
-pub use context::{EntityId, RulesContext};
+pub use context::{Ability, EntityId, RulesContext, Skill};
 pub use dice::{DiceRng, RollDefinition, RollStream};
 pub use functor::FunctorList;
 

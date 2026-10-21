@@ -84,6 +84,14 @@ impl LevelMaps {
         maps
     }
 
+    /// The series with this `UUID` (stats fields like `ProficiencyBonusScaling` refer to a
+    /// series by UUID).
+    pub fn by_uuid(&self, uuid: &str) -> Option<&LevelMapSeries> {
+        self.series
+            .values()
+            .find(|s| s.uuid.eq_ignore_ascii_case(uuid))
+    }
+
     /// The value of series `name` at `level`, as a roll (a plain number is a roll with no
     /// dice).
     pub fn roll(&self, name: &str, level: i32) -> Option<RollDefinition> {

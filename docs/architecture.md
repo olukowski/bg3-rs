@@ -41,17 +41,40 @@
 | `bg3-stats` | Stats text files with `using` inheritance across modules | parsing done; expressions not yet evaluated |
 | `bg3-story` | Compiled Osiris story loader and pseudo-source dump | done |
 | `bg3-osiris` | Osiris VM, plus trace parser and replay | matches the real game on the recorded opening |
-| `bg3-dialog` | Dialog model, resources, headless runner; game state via the `DialogWorld` trait | reproduces the recorded Nautiloid dialogs |
-| `bg3-sim` | Headless world state and the engine side of Osiris: entities, flags, tags, statuses, timers; `Host` impl; trace validation (`sim-replay`) | answers 87% of the opening's engine queries, all graded answers equal the game's |
+| `bg3-dialog` | Dialog model, resources, headless runner; game state via the `DialogWorld` trait | reproduces the recorded Nautiloid dialogs (on a memory world and on `bg3-sim`) |
+| `bg3-sim` | Headless world state and the engine side of Osiris: entities, flags, tags, statuses, timers, character sheets, the dialog manager; `Host` impl; `DialogWorld` and `RulesContext` impls; `Game` (VM + sim, ticked, player input, notifications); trace validation (`sim-replay`) | answers 88% of the opening's engine queries, all graded answers equal the game's; runs the opening's six dialogs itself, event for event |
 | `bg3-gr2` | Granny GR2 reader with BitKnit2 decompression | meshes, skeletons and animations (all 228,541 decode) |
 | `bg3-vt` | Granite virtual textures | done |
 | `bg3-material` | Shader-graph parameters, material instances, texture slot/channel mapping | first approximation |
 | `bg3-world` | Resource banks, root templates, levels, terrain, lights | done for rendering |
 | `bg3-nav` | AI grid and nav cloud parsers; walkability, projection, raycast and A* path finding on the AI grid | v21 grids parse; search faithful, smoothing approximate (docs/formats/navcloud.md) |
-| `bg3-rules` | Stats expression languages (functors, conditions, formulas, boosts), Thoth (Lua 5.3) parser and interpreter, rolls, `RulesContext` | all fields and `.khn` parse; single-target casts evaluate |
+| `bg3-rules` | Stats expression languages (functors, conditions, formulas, boosts), Thoth (Lua 5.3) parser and interpreter, rolls (attacks, saves, ability checks), `RulesContext` | all fields and `.khn` parse; single-target casts evaluate; runs on `bg3-sim` entities |
 | `bg3x` | Command-line inspector over all of the above | |
 | `bg3-viewer` | Bevy level viewer; AI grid overlay and click-to-move | |
 
-Planned: combat flow and UI. `bg3-sim` will implement
-`bg3_rules::RulesContext` and `bg3_dialog::DialogWorld`. See the
-[roadmap](roadmap.md).
+Planned: combat flow and UI. See the [roadmap](roadmap.md).
+
+## The simulation core: who depends on whom
+
+```
+ bg3-osiris (VM)   bg3-dialog (runner, DialogWorld)   bg3-rules (rolls, conditions, RulesContext)
+        \                       |                               /
+         └────────────── bg3-sim (world state) ────────────────┘
+                                 │
+                   bg3x · tests · (next) the Bevy game layer
+```
+
+`bg3-sim` implements the traits of the other three (`bg3_osiris::Host`,
+`bg3_dialog::DialogWorld`, `bg3_rules::RulesContext`) and owns the state they work on; they
+don't know about it. That mirrors the original, where the server simulation (`esv`) owns the
+dialog manager and evaluates the shared rules (`eoc`) on its own entities, and keeps the
+runner and the rules testable on their own (`MemoryWorld`, `TestWorld`). No integration crate is
+needed: the dependency only goes one way, and putting the glue in the sim means a dialog's flag
+writes, tag changes and rolls are plain sim operations that raise the same story events as
+the Osiris calls do.
+
+The front end drives one `bg3_sim::Game` (the story VM plus the `Sim`): `tick(dt)` every frame
+(requested dialogs start, timers fire, queued events reach the story), player input through
+`dialog_advance` / `dialog_choose`, and `take_notifications()` for what to show (dialog lines,
+choices, rolls). Everything stays headless and deterministic (seeded dice), so the trace harness
+and the game run the same code.

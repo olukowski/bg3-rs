@@ -15,6 +15,8 @@ pub enum SimValue {
     /// A GUIDSTRING, as the engine renders it (`Name_<uuid>` for objects, bare UUIDs for
     /// tags and null sources, …).
     Guid(String),
+    /// A value of an Osiris enum type, by type and label (`CRITICALITYTYPE.NONE`).
+    Enum(String, String),
 }
 
 impl fmt::Display for SimValue {
@@ -25,6 +27,7 @@ impl fmt::Display for SimValue {
             Self::Real(r) => write!(f, "{r:.1}"),
             Self::Str(s) => write!(f, "\"{s}\""),
             Self::Guid(s) => f.write_str(s),
+            Self::Enum(t, l) => write!(f, "{t}.{l}"),
         }
     }
 }

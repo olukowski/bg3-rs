@@ -177,11 +177,11 @@ impl DialogEvent {
             Some(a) => name(a),
             None => "NULL_00000000-0000-0000-0000-000000000000".to_owned(),
         };
+        // The story's `CRITICALITYTYPE` enum: NONE 0, SUCCESS 1, FAIL 2.
         let crit = |o: &RollOutcome| match o.critical {
             None => "CRITICALITYTYPE.NONE",
-            // Names of the other values not verified.
-            Some(true) => "CRITICALITYTYPE.SUCCESS?",
-            Some(false) => "CRITICALITYTYPE.FAILURE?",
+            Some(true) => "CRITICALITYTYPE.SUCCESS",
+            Some(false) => "CRITICALITYTYPE.FAIL",
         };
         let started = |automated: bool| {
             if automated {
@@ -304,6 +304,7 @@ struct Frame {
 }
 
 /// The runner. Create with [`DialogRunner::new`], then call [`DialogRunner::start`].
+#[derive(Clone)]
 pub struct DialogRunner {
     provider: Arc<dyn DialogProvider + Send + Sync>,
     instance: u32,
@@ -496,6 +497,16 @@ impl DialogRunner {
         };
         self.start_node(world, node);
         Ok(&self.step)
+    }
+
+    /// Stops the instance from outside (`DialogRequestStop` and friends): actors leave and
+    /// the dialog ends, as when it runs out of nodes. Does nothing once ended.
+    // bg3: esv::OsirisDialogFunctions::DialogRequestStop (4.1.1.7631656)
+    pub fn stop(&mut self) {
+        if !self.ended {
+            self.started = true;
+            self.end();
+        }
     }
 
     // ---- frames -----------------------------------------------------------------------
