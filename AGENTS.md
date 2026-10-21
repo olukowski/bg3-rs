@@ -66,7 +66,8 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `find <value> [-p prefix]` (searches all resources for an attribute value), `loca <handle>`,
   `stat <name>`, `story [--goal NAME | -s]`, `materials [LEVEL] [-v]` (material/texture survey of a level),
   `osiris-replay [TRACE] [--vm-log OUT] [--kinds]` (replay a libOsiris runtime log through the VM,
-  see `docs/research/osiris-runtime-log.md`).
+  see `docs/research/osiris-runtime-log.md`), `sim-replay [TRACE] [--check|--both] [--inventory]
+  [--dump OUT]` (the same with `bg3-sim` as the engine, see `docs/research/osiris-engine-api.md`).
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
   level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),

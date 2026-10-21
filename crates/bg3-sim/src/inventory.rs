@@ -52,14 +52,47 @@ pub struct Inventory {
     pub declared: Vec<(ApiKind, usize, usize)>,
 }
 
-/// Abbreviate a logged value: `Name_<uuid>` → `Name_…`, a bare UUID → `…`.
+/// Replace every UUID (`8-4-4-4-12` hex) and loca handle (`h` + 8-4-4-4-12 hex with `g`
+/// separators) inside a text by `…`.
+fn scrub(text: &str) -> String {
+    let b = text.as_bytes();
+    let is_uuid_at = |i: usize, sep: u8| -> bool {
+        b.len() >= i + 36
+            && b[i..i + 36].iter().enumerate().all(|(k, &c)| {
+                if matches!(k, 8 | 13 | 18 | 23) {
+                    c == sep
+                } else {
+                    c.is_ascii_hexdigit()
+                }
+            })
+    };
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        if is_uuid_at(i, b'-') {
+            out.push('…');
+            i += 36;
+        } else if b[i] == b'h' && is_uuid_at(i + 1, b'g') {
+            out.push_str("h…");
+            i += 37;
+        } else {
+            let ch = text[i..].chars().next().unwrap_or(' ');
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+/// Abbreviate a logged value: `Name_<uuid>` → `Name_…`, a bare UUID → `…`, UUIDs and loca
+/// handles inside strings → `…`.
 fn abbreviate(v: &LogValue) -> String {
     let text = v.to_string();
     let LogData::Guid(s) = &v.v else {
-        return text;
+        return scrub(&text);
     };
     if bg3_osiris::parse_uuid_suffix(s).is_none() {
-        return text;
+        return scrub(&text);
     }
     let prefix = &s[..s.len() - 36];
     let ty = v.ty.as_ref().map_or(String::new(), |t| format!("({t})"));
@@ -430,4 +463,29 @@ pub fn subsystem(name: &str) -> &'static str {
         }
     }
     "Other"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn examples_carry_no_identifiers() {
+        let u = "1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d";
+        assert_eq!(
+            abbreviate(&LogValue::parse(&format!("S_Hero_{u}"))),
+            "S_Hero_…"
+        );
+        assert_eq!(
+            abbreviate(&LogValue::parse(&format!("(CHARACTER)S_Hero_{u}"))),
+            "(CHARACTER)S_Hero_…"
+        );
+        assert_eq!(abbreviate(&LogValue::parse(u)), "…");
+        assert_eq!(
+            abbreviate(&LogValue::parse(&format!("\"Timer_{u}3\""))),
+            "\"Timer_…3\""
+        );
+        assert_eq!(scrub("h1a2b3c4dg5e6fg4a1bg8c2dg3e4f5a6b7c8d;1"), "h…;1");
+        assert_eq!(scrub("plain"), "plain");
+    }
 }

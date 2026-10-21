@@ -42,6 +42,7 @@ still open.
 | [lighting.md](research/lighting.md) | Placed lights, level lighting and atmosphere |
 | [osiris-vm.md](research/osiris-vm.md) | How the quest-script engine evaluates rules, and the replay plan |
 | [osiris-runtime-log.md](research/osiris-runtime-log.md) | The engine's own runtime log format, used for verification |
+| [osiris-engine-api.md](research/osiris-engine-api.md) | The engine calls, queries and events the story uses; what `bg3-sim` implements and how it is validated |
 
 ## Glossary
 
