@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "tools/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+bg3-install = { path = "crates/bg3-install" }
+bg3-pak = { path = "crates/bg3-pak" }
+
+anyhow = "1"
+clap = { version = "4.6", features = ["derive"] }
+flate2 = "1.1"
+lz4_flex = "0.14"
+memmap2 = "0.9"
+plist = "1.10"
+thiserror = "2"
+zstd = "0.14"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

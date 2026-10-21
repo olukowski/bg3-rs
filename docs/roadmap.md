@@ -5,12 +5,13 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 
 ## M0 — Foundations ← *current*
 - [x] Workspace docs, AGENTS.md, provenance ADR, install survey
-- [ ] Cargo workspace skeleton, CI (fmt, clippy, install-free tests)
+- [x] Cargo workspace skeleton
+- [x] CI (fmt, clippy, install-free tests)
 - [x] `scripts/symbol-index.sh` → demangled symbol index in `.cache/symbols/`
-- [ ] `bg3-install`: locate install, read version, enumerate paks
+- [x] `bg3-install`: locate install, read version, enumerate paks
 
 ## M1 — Read everything
-- [ ] `bg3-pak` + `bg3x list/extract` (verify against all paks in the install)
+- [x] `bg3-pak` + `bg3x list/extract/cat/verify` (verify against all paks in the install)
 - [ ] `bg3-lsf` (LSF/LSX), `bg3-loca`
 - [ ] `bg3-vfs` with original load order
 - [ ] Format write-ups in `docs/formats/`

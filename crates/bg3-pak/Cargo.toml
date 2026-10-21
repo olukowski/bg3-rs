@@ -1,0 +1,19 @@
+[package]
+name = "bg3-pak"
+description = "Reader for Larian LSPK (.pak) archives as used by Baldur's Gate 3"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+flate2.workspace = true
+lz4_flex.workspace = true
+memmap2.workspace = true
+thiserror.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+bg3-install.workspace = true
+
+[lints]
+workspace = true

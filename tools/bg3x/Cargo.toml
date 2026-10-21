@@ -1,0 +1,15 @@
+[package]
+name = "bg3x"
+description = "Command-line tool for inspecting a Baldur's Gate 3 install"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bg3-install.workspace = true
+bg3-pak.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true
