@@ -448,3 +448,19 @@ fn a_fight_runs_to_the_end_deterministically() {
     let (_, again) = fight(11);
     assert_eq!(ev, again, "same seed, same fight");
 }
+
+#[test]
+fn hostiles_in_sight_start_a_fight() {
+    let mut s = sim(3);
+    for (id, x) in [(IMP1, 30.0), (IMP2, 40.0)] {
+        s.entities.get_mut(g(id)).unwrap().position = [x, 0.0, 0.0];
+    }
+    assert_eq!(s.start_combat_on_sight(), None, "out of sight (16 m)");
+    s.entities.get_mut(g(IMP1)).unwrap().position = [10.0, 0.0, 0.0];
+    let cid = s.start_combat_on_sight().expect("the imp sees the party");
+    let mut parts = s.combat_by_id(cid).unwrap().participants.clone();
+    parts.sort_by_key(|p| p.0);
+    // The second imp joins through the combat group, the second hero as an ally nearby.
+    assert_eq!(parts, [g(HERO1), g(HERO2), g(IMP1), g(IMP2)]);
+    assert_eq!(s.start_combat_on_sight(), None, "everyone is in the fight");
+}

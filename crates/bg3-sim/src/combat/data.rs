@@ -118,6 +118,8 @@ pub struct CharacterCombatDef {
     pub resistances: Vec<(DamageType, Resistance)>,
     /// `DefaultBoosts` `AC(n)` boosts.
     pub ac_boosts: i32,
+    /// `Sight`, in metres (the stats value is in centimetres; `_Base`: 1600).
+    pub sight: Option<f32>,
 }
 
 /// Equipment slot of a weapon or armour (`Slot`).
@@ -273,6 +275,8 @@ pub struct OriginDef {
     pub subclass: Option<Guid>,
     pub race: Option<Guid>,
     pub subrace: Option<Guid>,
+    /// `ReallyTags` (`REALLY_LAEZEL`, …): tags the engine gives the origin character.
+    pub really_tags: Vec<Guid>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -400,6 +404,10 @@ impl CombatData {
                         unarmed_ability: o
                             .get("UnarmedAttackAbility")
                             .and_then(|v| Ability::parse(v.trim())),
+                        sight: o
+                            .get("Sight")
+                            .and_then(|v| v.trim().parse::<f32>().ok())
+                            .map(|cm| cm / 100.0),
                         ..Default::default()
                     };
                     for t in DamageType::ALL {
@@ -675,6 +683,10 @@ fn load_classes(vfs: &Vfs, d: &mut CombatData) -> Result<(), LoadError> {
                             subclass: guid_attr(n, "SubClassUUID"),
                             race: guid_attr(n, "RaceUUID"),
                             subrace: guid_attr(n, "SubRaceUUID"),
+                            really_tags: n
+                                .children_named("ReallyTags")
+                                .filter_map(|t| guid_attr(t, "Object"))
+                                .collect(),
                         },
                     );
                 }

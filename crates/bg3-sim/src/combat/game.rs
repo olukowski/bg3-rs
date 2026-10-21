@@ -99,6 +99,17 @@ impl Game {
         }
     }
 
+    /// Start the fight hostile characters noticing the party would start (see
+    /// [`crate::Sim::start_combat_on_sight`]), then let the story react. Call once per frame
+    /// in a live game.
+    pub fn start_combat_on_sight(&mut self) -> Option<Guid> {
+        let r = self.sim.start_combat_on_sight();
+        if r.is_some() {
+            self.deliver();
+        }
+        r
+    }
+
     pub fn take_combat_events(&mut self) -> Vec<CombatEvent> {
         self.sim.take_combat_events()
     }

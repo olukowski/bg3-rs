@@ -19,6 +19,7 @@ pub mod action;
 pub mod ai;
 pub mod data;
 pub mod game;
+pub mod notice;
 
 #[cfg(test)]
 mod tests;
@@ -723,6 +724,7 @@ impl Sim {
             for &c in &candidates {
                 if out.contains(&c)
                     || self.combat.off_stage.contains(&c)
+                    || !self.on_stage(c)
                     || !self.ensure_combatant(c)
                     || !self.alive(c)
                 {

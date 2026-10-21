@@ -41,6 +41,7 @@ pub mod guid;
 pub mod host;
 pub mod inventory;
 pub mod load;
+pub mod party;
 pub mod presentation;
 pub mod replay;
 pub mod rules;

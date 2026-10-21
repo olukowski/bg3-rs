@@ -721,6 +721,16 @@ pub(crate) fn query(
             }
             Some(true)
         }
+        // IsInTrigger(object, trigger, [out] bool): whether the object stands in the
+        // trigger's volume (checked geometrically, registered or not).
+        // bg3: esv::OsirisGameFunctions::IsInTrigger (4.1.1.7631656)
+        ("IsInTrigger", 3) => {
+            let p = sim.entity(guid(ctx, &args[0]))?.position;
+            let t = guid(ctx, &args[1]);
+            let def = sim.stage.triggers.iter().find(|d| d.id == t)?;
+            args[2] = Value::int(i32::from(def.contains(p)));
+            Some(true)
+        }
         // GetReservedUserID(character, [out] user): the user a character is reserved for
         // (`CharacterReservedUserIDChanged`); fails for characters without one.
         // bg3: esv::OsirisCharacterFunctions::GetReservedUserID (4.1.1.7631656)

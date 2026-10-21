@@ -340,6 +340,14 @@ impl Sim {
         for t in tags {
             e.tags.add(TagSource::Template, t);
         }
+        // An origin character carries its origin's `ReallyTags` (`eoc::OriginTagComponent`;
+        // *verified by trace*: `IsTagged(S_Player_Gale, REALLY_GALE)` answers 1 in
+        // `full-nautiloid.log`).
+        if let Some(origin) = self.data.combat.origins.get(&o.id) {
+            for t in &origin.really_tags {
+                e.tags.add(TagSource::Engine, *t);
+            }
+        }
         if matches!(o.kind, EntityKind::Character | EntityKind::Item) {
             for t in self.data.weight_tags(o) {
                 e.tags.add(TagSource::Engine, t);

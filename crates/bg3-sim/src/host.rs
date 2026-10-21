@@ -152,6 +152,9 @@ impl<'a> SimFunctions<'a> {
         if let Some(ok) = crate::presentation::call(sim, ctx, name, args) {
             return Some(ok);
         }
+        if let Some(ok) = crate::party::call(sim, ctx, name, args) {
+            return Some(ok);
+        }
         if is_dialog_function(name) && sim.dialog_bank().is_none() {
             return None;
         }
@@ -263,9 +266,10 @@ impl<'a> SimFunctions<'a> {
             // bg3: esv::OsirisGameFunctions::IsTagged (4.1.1.7631656)
             ("IsTagged", 3) => {
                 // Objects created outside the sim (character creation, loot) may carry tags
-                // the sim cannot know (race, deity, … chosen by the player).
+                // the sim cannot know (race, deity, … chosen by the player). In a live game
+                // the sim made them itself (`start::new_game`), so it knows their tags.
                 let o = g(ctx, 0);
-                if sim.entity(o).is_some_and(|e| e.origin == Origin::Observed) {
+                if !sim.stage.live && sim.entity(o).is_some_and(|e| e.origin == Origin::Observed) {
                     return None;
                 }
                 Some(bool_out(sim.is_tagged(o, g(ctx, 1))))
