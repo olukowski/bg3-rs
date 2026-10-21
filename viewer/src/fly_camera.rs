@@ -55,6 +55,14 @@ impl Default for CombatCamera {
 }
 
 impl CombatCamera {
+    /// Follow off from the start (as after pressing `F`).
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..default()
+        }
+    }
+
     pub fn turn_started(&mut self, who: bg3_sim::Guid) {
         self.active = Some(who);
         self.requested = Some(who);

@@ -82,6 +82,9 @@ struct Args {
     /// With `--play`: the AI plays the party's turns too (for demos and screenshots).
     #[arg(long)]
     combat_autoplay: bool,
+    /// Keep the camera where `--camera` puts it: no combat camera follow (for close-ups).
+    #[arg(long)]
+    no_follow: bool,
     /// With `--play`: create the player character on a character creation screen first, then
     /// start (the viewer restarts itself with `--character`).
     #[arg(long)]
@@ -287,6 +290,9 @@ fn main() -> Result<()> {
     }
     if let Some(dialog) = dialog {
         app.add_plugins(dialog);
+    }
+    if args.no_follow {
+        app.insert_resource(fly_camera::CombatCamera::disabled());
     }
     if let Some(path) = args.shot {
         app.insert_resource(ShotRequest(path, args.shot_after))

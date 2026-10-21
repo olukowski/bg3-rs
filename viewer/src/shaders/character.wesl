@@ -299,6 +299,53 @@ fn eye_catchlight(in: VertexOutput, n_world: vec3<f32>, view: vec3<f32>) -> vec3
     return vec3(0.0);
 }
 
+// ---- Hair (CHAR_Hair) ----
+// t0 ID/Depth/Root/Alpha mask, t1 HAIR_Splatter_MSK (noise), t2 hue LUT (256×4).
+// Uniform layout: bg3_material::character::hair::uniform. Vertex colour: r graying seed,
+// b highlight mask, a root occlusion.
+fn hair(uv: vec2<f32>, vc: vec4<f32>, n_dot_v: f32) -> Surface {
+    let v = cu.v;
+    // Frizz: two mask reads, the second shifted by noise; per channel keep the one further
+    // from 0.5 (ID) / 0 (others).
+    let noise = textureSample(t1, s0, uv * v[5].w).r * 2.0 - 1.0;
+    let a = textureSample(t0, s0, uv + v[4].w * noise) - vec4(0.5, 0.0, 0.0, 0.0);
+    let b = textureSample(t0, s0, uv) - vec4(0.5, 0.0, 0.0, 0.0);
+    let m = max(sign(a), sign(b)) * max(abs(a), abs(b));
+    let id = m.x + 0.5;
+    let depth = m.y;
+    let root = m.z;
+    let alpha = m.w;
+
+    let g = v[0].w;
+    let f = fract(uv.y) * (1.0 - 4.0 * max(g - 0.75, 0.0));
+    let seed = fract(vc.r + v[1].w) * 0.4;
+    let gray_mask = clamp(ceil(g) * (g - 1.0 + abs(f - (2.0 * id - 0.5 + seed))), 0.0, 1.0);
+    let c1 = mix(v[0].rgb, v[1].rgb, gray_mask);
+    let falloff = v[3].x;
+    let h = v[2].w * clamp(clamp(vc.b - falloff, 0.0, 1.0) * 1.5 / (1.0 - falloff), 0.0, 1.0);
+    let c2 = mix(c1, v[2].rgb, h);
+    let soft = clamp(v[3].z, 0.0, 1.0);
+    let t = clamp((root + 0.5 * soft - v[3].y) / soft, 0.0, 1.0);
+    let r = t * t * (3.0 - 2.0 * t);
+    let d = min(min(clamp(4.0 * uv.y, 0.0, 1.0), vc.a), r);
+    let rr = clamp(mix(r, spow(d, v[3].w), v[4].x), 0.0, 1.0);
+    let half_c = 0.5 * c2;
+    let dark = mix(vec3(dot(half_c, LUMA)), half_c, 1.2);
+    var c = mix(dark, c2, rr);
+    c *= mix(1.0, 1.8 * id + 0.2, v[4].y);
+    c *= mix(1.0, 1.5 * spow(depth, 2.2) + 0.5, v[4].z);
+    let lut = textureSampleLevel(t2, s0, vec2(clamp(id, 0.0, 1.0), 0.0), 0.0).rgb;
+    c *= max(vec3(0.0), (lut - 0.5) * v[5].rgb * gray_mask + 1.0);
+    c += noise * v[7].x;
+
+    var s = surface_new();
+    s.albedo = clamp(c, vec3(0.0), vec3(1.0));
+    s.roughness = clamp(v[6].x * mix(1.0, 1.5 * (1.0 - depth) + 0.5, v[6].y), 0.0, 1.0);
+    // Coverage as the game's depth prepass computes it (tested against 1/3 without TAA).
+    s.alpha = alpha * (1.0 - root * v[6].z) * clamp(5.0 * abs(n_dot_v), 0.0, 1.0) * v[6].w;
+    return s;
+}
+
 // ---- Eyelash shadow card (CHAR_LashesShadow), alpha-blended ----
 // t0 lash mask (R lash cards, G coverage, B root gradient).
 // v[0] (Eyelashes_Color.rgb, GradientIntensity), v[1] (LashesAlphaIntensity, ShadowAlphaIntensity).
@@ -320,9 +367,10 @@ fn fragment(
     var in = vertex_output;
     let mode = cu.mode;
     var surf = surface_new();
-    var vc_r = 0.0;
+    var vc = vec4(0.0, 0.0, 0.0, 1.0);
 @if(VERTEX_COLORS)
-    vc_r = in.color.r;
+    vc = in.color;
+    let vc_r = vc.r;
 
 @if(VERTEX_UVS_A) {
     if mode == MODE_EYE {
@@ -342,8 +390,10 @@ fn fragment(
         surf.emissive = eye_catchlight(in, pbr_input.N, pbr_input.V);
     } else if mode == MODE_LASHES {
         surf = lashes(uv);
+    } else if mode == MODE_HAIR {
+        surf = hair(uv, vc, dot(pbr_input.world_normal, pbr_input.V));
     }
-    if mode == MODE_SKIN || mode == MODE_EYE || mode == MODE_LASHES {
+    if mode == MODE_SKIN || mode == MODE_EYE || mode == MODE_LASHES || mode == MODE_HAIR {
         pbr_input.material.base_color = vec4(surf.albedo, surf.alpha * pbr_input.material.base_color.a);
         pbr_input.material.perceptual_roughness = surf.roughness;
         pbr_input.material.metallic = surf.metallic;

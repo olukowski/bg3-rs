@@ -162,7 +162,12 @@ pub fn plan(
             textures[0] = color(by_param("ID_Depth_Root_Alpha_MSKA"));
             None
         }
-        CharKind::Hair => None,
+        CharKind::Hair => {
+            textures[0] = color(by_param("ID_Depth_Root_Alpha_MSKA"));
+            textures[1] = color(by_bank_name("HAIR_Splatter"));
+            textures[2] = color(by_bank_name("HAIR_ColorVar_LUT"));
+            None
+        }
         CharKind::ClothPalette => {
             textures[0] = color(by_param("MSKColor"));
             None
@@ -226,6 +231,8 @@ impl CharacterTemplates {
                     cull_mode: standard.cull_mode,
                     alpha_mode: match (plan.kind, plan.blend) {
                         (CharKind::Lashes, _) | (_, BlendMode::Blend) => AlphaMode::Blend,
+                        // The game's depth prepass keeps hair where coverage ≥ 1/3 (no TAA).
+                        (CharKind::Hair, _) => AlphaMode::Mask(1.0 / 3.0),
                         (_, BlendMode::AlphaTest) => AlphaMode::Mask(0.5),
                         _ => AlphaMode::Opaque,
                     },
@@ -253,6 +260,13 @@ impl CharacterTemplates {
         materials: &mut Assets<CharacterMaterial>,
     ) -> Option<PartMaterial> {
         let t = self.by_id.get(id)?;
+        if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
+            eprintln!(
+                "character material {id}: {:?}, {} overrides",
+                t.kind,
+                overrides.len()
+            );
+        }
         if t.kind == CharKind::Tearline {
             return Some(PartMaterial::Hidden);
         }
@@ -284,11 +298,12 @@ impl CharacterTemplates {
         })))
     }
 
-    /// Whether material `id` reads vertex colours in its fragment shader (eyes: left/right).
+    /// Whether material `id` reads vertex colours in its fragment shader (eyes: left/right;
+    /// hair: graying seed, highlight, root occlusion).
     pub fn needs_vertex_colors(&self, id: &str) -> bool {
         self.by_id
             .get(id)
-            .is_some_and(|t| matches!(t.kind, CharKind::Eye { .. }))
+            .is_some_and(|t| matches!(t.kind, CharKind::Eye { .. } | CharKind::Hair))
     }
 }
 
@@ -380,6 +395,8 @@ pub fn part_material(
         apply_cut(&mut part.mesh, colors, cut_bytes);
     }
     let id = part.material_id.as_deref();
+    // `BG3_STANDARD_CHARACTERS=1`: the generic StandardMaterial path, for A/B comparisons.
+    let templates = templates.filter(|_| std::env::var_os("BG3_STANDARD_CHARACTERS").is_none());
     if let (Some(t), Some(id)) = (templates, id) {
         if t.needs_vertex_colors(id)
             && let Some(colors) = &look.vertex_colors

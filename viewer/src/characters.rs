@@ -106,16 +106,34 @@ impl Skeleton {
                 let parent = bone
                     .parent
                     .and_then(|p| self.by_name.get(&other.bones[p].name).copied());
+                let inverse_bind = inverse_bind(&bone.inverse_world);
+                // The foreign rig's parents can sit elsewhere than ours (Lae'zel's hair rig has
+                // `Head_M` 9 cm higher than her body rig), so its local rest would move the
+                // mesh. Place the bone where its bind pose says, relative to our parent:
+                // rest_world · inverse_bind = I, as for the base skeleton. Assumption: the
+                // engine keeps attached meshes in their authored bind pose.
+                let parent_world = parent.map_or(Mat4::IDENTITY, |p| self.world_of(p));
+                let rest = Transform::from_matrix(parent_world.inverse() * inverse_bind.inverse());
                 self.by_name.insert(bone.name.clone(), self.joints.len());
                 self.joints.push(Joint {
                     name: bone.name.clone(),
                     parent,
-                    rest: granny_transform(&bone.transform),
-                    inverse_bind: inverse_bind(&bone.inverse_world),
+                    rest,
+                    inverse_bind,
                 });
             }
         }
         unknown
+    }
+
+    /// Model-space rest matrix of joint `i`.
+    fn world_of(&self, mut i: usize) -> Mat4 {
+        let mut m = self.joints[i].rest.to_matrix();
+        while let Some(p) = self.joints[i].parent {
+            m = self.joints[p].rest.to_matrix() * m;
+            i = p;
+        }
+        m
     }
 
     pub fn index(&self, name: &str) -> Option<usize> {
