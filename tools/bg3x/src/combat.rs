@@ -13,6 +13,7 @@ pub struct Options {
     pub seed: u64,
     pub max_turns: usize,
     pub events: bool,
+    pub nav: bool,
 }
 
 fn find(sim: &Sim, s: &str) -> Option<Guid> {
@@ -28,7 +29,18 @@ fn name(sim: &Sim, g: Guid) -> String {
 
 pub fn run(o: Options) -> Result<()> {
     let data = crate::sim::load_data(std::slice::from_ref(&o.level))?;
+    let navigation = if o.nav {
+        let install = bg3_install::Install::locate()?;
+        let vfs = bg3_vfs::Vfs::from_install(&install)?;
+        let grid = bg3_nav::NavGrid::new(bg3_nav::load_aigrid(&vfs, &o.level)?);
+        Some(Arc::new(bg3_sim_nav::GridPathfinder::new(Arc::new(grid))))
+    } else {
+        None
+    };
     let mut sim = Sim::with_data(Arc::new(data));
+    if let Some(nav) = &navigation {
+        sim.set_pathfinder(Some(nav.clone()));
+    }
     sim.load_level(&o.level);
     sim.dice = bg3_sim::rules::SimDice::new(o.seed);
     let target = find(&sim, &o.target).with_context(|| format!("no object {}", o.target))?;
@@ -118,14 +130,35 @@ pub fn run(o: Options) -> Result<()> {
         let ev = game.take_combat_events();
         print_events(&game.sim, ev, events);
         println!("turn order: {}", order.join(" | "));
-        let turns = game.combat_auto(cid, o.max_turns);
-        for (who, a) in &turns {
-            if let AiAction::Nothing = a {
-                println!("({} does nothing)", name(&game.sim, *who));
+        let mut turns = Vec::new();
+        for _ in 0..o.max_turns {
+            let next = game.combat_auto(cid, 1);
+            if next.is_empty() {
+                break;
             }
+            let ev = game.take_combat_events();
+            print_events(&game.sim, ev, events);
+            for (who, action) in &next {
+                if let AiAction::Nothing = action {
+                    println!("({} does nothing)", name(&game.sim, *who));
+                }
+                if let Some(nav) = &navigation
+                    && let Some(&end) = action.path().last()
+                {
+                    let length: f32 = action
+                        .path()
+                        .windows(2)
+                        .map(|w| bg3_sim::combat::distance(w[0], w[1]))
+                        .sum();
+                    println!(
+                        "  nav: {} endpoint {end:?}, standable={}, path length={length:.3} m",
+                        name(&game.sim, *who),
+                        nav.is_standable(end, bg3_sim::combat::path::APPROXIMATE_RADIUS)
+                    );
+                }
+            }
+            turns.extend(next);
         }
-        let ev = game.take_combat_events();
-        print_events(&game.sim, ev, events);
         let done = game.sim.combat_by_id(cid).is_some_and(|c| c.finished);
         println!(
             "{} after {} turns",

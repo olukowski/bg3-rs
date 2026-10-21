@@ -157,6 +157,12 @@ fn game_thread(
             return;
         }
     };
+    if let Some(grid) = &grid {
+        game.sim
+            .set_pathfinder(Some(Arc::new(bg3_sim_nav::GridPathfinder::new(
+                grid.clone(),
+            ))));
+    }
     let started = bg3_sim::start::new_game(&mut game, &opts);
     eprintln!(
         "play: new game in {:.1?}: {} in {} ({} triggers)",

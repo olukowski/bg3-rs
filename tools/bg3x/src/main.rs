@@ -260,6 +260,9 @@ enum Command {
         /// Also print the rules engine's log lines and statuses.
         #[arg(long)]
         events: bool,
+        /// Follow the level AI grid and print movement walkability diagnostics.
+        #[arg(long)]
+        nav: bool,
     },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
@@ -412,6 +415,7 @@ fn main() -> Result<()> {
             seed,
             max_turns,
             events,
+            nav,
         } => combat::run(combat::Options {
             level,
             party,
@@ -419,6 +423,7 @@ fn main() -> Result<()> {
             seed,
             max_turns,
             events,
+            nav,
         }),
         Command::Nav {
             level,

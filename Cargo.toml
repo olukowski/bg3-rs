@@ -22,6 +22,7 @@ bg3-lsf = { path = "crates/bg3-lsf" }
 bg3-osiris = { path = "crates/bg3-osiris" }
 bg3-pak = { path = "crates/bg3-pak" }
 bg3-sim = { path = "crates/bg3-sim" }
+bg3-sim-nav = { path = "crates/bg3-sim-nav" }
 bg3-stats = { path = "crates/bg3-stats" }
 bg3-story = { path = "crates/bg3-story" }
 bg3-vfs = { path = "crates/bg3-vfs" }

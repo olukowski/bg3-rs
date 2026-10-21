@@ -48,6 +48,7 @@
 | `bg3-material` | Shader-graph parameters, material instances, texture slot/channel mapping | first approximation |
 | `bg3-world` | Resource banks, root templates, levels, terrain, lights | done for rendering |
 | `bg3-nav` | AI grid and nav cloud parsers; walkability, projection, raycast and A* path finding on the AI grid | v21 grids parse; search faithful, smoothing approximate (docs/formats/navcloud.md) |
+| `bg3-sim-nav` | Optional adapter from `bg3-sim::combat::Pathfinder` to `bg3-nav::NavGrid`; shared by the viewer and combat CLI without coupling the core crates | AI movement and install integration test |
 | `bg3-rules` | Stats expression languages (functors, conditions, formulas, boosts), Thoth (Lua 5.3) parser and interpreter, rolls (attacks, saves, ability checks), `RulesContext` | all fields and `.khn` parse; single-target casts evaluate; runs on `bg3-sim` entities |
 | `bg3x` | Command-line inspector over all of the above | |
 | `bg3-viewer` | Bevy level viewer; AI grid overlay and click-to-move | |

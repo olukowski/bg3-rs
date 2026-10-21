@@ -127,7 +127,8 @@ story teleports the party into the imp room (`IsInTrigger`), and the imps notice
   whose `ReplenishType` is `Turn` refill at the start of the owner's turn and on entering combat
   (*approximate*: the refill point was not read in the binary).
 - **Movement** (*approximate*): the caller passes the path length (`bg3-nav` finds paths); it is
-  paid 1:1 from `Movement` in metres. No difficult terrain, no jumping.
+  paid 1:1 from `Movement` in metres. AI movement with a pathfinder pays the walked 3D polyline
+  length, including partial final segments. No difficult terrain, no jumping.
 - **Spell costs** (*data*): `UseCosts` are checked and paid before the cast
   (`ActionPoint:1` for weapon attacks).
 
@@ -209,8 +210,39 @@ Story functions: `EnterCombat`, `EndTurn`, `IsInCombat`, and `SetOnStage` (off-s
 
 ## AI (approximate)
 
-`combat::ai`: walk straight towards the nearest living hostile and use the first affordable
-damaging spell that reaches (melee first when adjacent), else close in. Not from the binary.
+`combat::ai`: approach the nearest living hostile and use the first affordable damaging
+spell that reaches (melee first when adjacent), else close in. Not from the binary.
+
+With `Sim::set_pathfinder(Some(...))`, AI movement follows a walkable route on the level's AI
+grid. It stops at attack range (retaining the 5 cm safety margin when affordable), or at the
+movement budget, charging the walked polyline length. An unreachable target causes no movement;
+an attack already in range still works. Without a pathfinder, the original straight-line
+placeholder behavior is preserved for existing headless consumers and reference replays.
+`AiAction::path()` exposes the walked waypoints, including both endpoints, for animation.
+
+The shared `bg3-sim-nav::GridPathfinder` adapter depends on both core crates, keeping `bg3-sim`
+independent of `bg3-nav` and Bevy and keeping `bg3-nav` independent of the sim. It wraps an
+`Arc<NavGrid>` and is used by `bg3-viewer --play` and `bg3x combat --nav`. The viewer animates
+all walked waypoints, starting at the recorded origin before applying the final sim position.
+The adapter rejects a blocked start column rather than connecting it to a sideways-snapped
+start through geometry; valid starts may need a short vertical approach to the grid surface.
+The destination uses the grid's existing standable projection; disconnected goals return no
+path. This does not search for a best partial route in a disconnected component.
+
+Still approximate: target/spell selection (no tactical scoring or attack line of sight),
+centre-to-centre ranges, a fixed **0.5 m** radius (the sim does not load AI bound radii), default
+humanoid step height and collision mask, the grid search/smoothing limitations documented in
+`docs/formats/navcloud.md`, and interpolation between smoothed floor waypoints. This is a fix
+to our placeholder AI, not newly verified original-engine AI behavior.
+
+Validation: synthetic wall-detour tests in `bg3-sim` check route truncation, path-length costs,
+range stops and unreachable targets. The ignored `bg3-sim-nav` test
+`nautiloid_nav_endpoints_are_standable_and_fight_finishes` checks each move endpoint's actual
+column (no sideways standability snap, within 0.6 m of the floor) and fight completion.
+With seed 0, Lae'zel and Shadowheart against the lower deck imps, the CLI fight with and
+without `--nav` both finished in **9 turns**, with the party winning and the story defeat flag
+set. All **5** nav move endpoints were standable; routes and movement costs differ.
+
 The real AI scores actions, targets and positions: `esv::ai::…`, `esv::AiHelpers` (e.g.
 `esv::AiHelpers::CalculateMovementScore`), archetypes (`Public/<Module>/AI/Archetypes`), the
 objects' `Archetype` attribute (`imp_melee`), swarm groups (`esv::ai::swarm`). The trace's
@@ -235,9 +267,12 @@ On `Sim` (state) and `Game` (the same, with the story events delivered after eac
   `Game::set_companion_factions(party)` (`Companion1`, `Companion2`, … as the story assigns
   on recruitment; the trace: Lae'zel → `Companion1`)
 
-`bg3x combat [LEVEL] --party A,B [--target X] [--seed N] [--events]` runs a fight on the AI and
-prints the log; `cargo test -p bg3-sim --test combat_nautiloid -- --ignored` runs the imp fight
-as a test.
+`bg3x combat [LEVEL] --party A,B [--target X] [--seed N] [--events] [--nav]` runs a fight on
+the AI and prints the log. `--nav` loads the level's AI grid and prints endpoint standability
+and walked path length for each AI move.
+`cargo test -p bg3-sim --test combat_nautiloid -- --ignored` runs the original headless imp
+fight test; `cargo test --release -p bg3-sim-nav --test combat_nautiloid -- --ignored` runs
+the nav endpoint/completion test.
 
 ## What a further trace should capture
 

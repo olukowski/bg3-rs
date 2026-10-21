@@ -80,6 +80,7 @@ pub struct AiTurn {
     pub who: Guid,
     pub from: [f32; 3],
     pub to: [f32; 3],
+    pub path: Vec<[f32; 3]>,
     pub action: AiAction,
 }
 
@@ -313,6 +314,7 @@ fn ai_step(game: &mut Game, cid: Guid, party: bool) -> Option<AiTurn> {
         who,
         from,
         to,
+        path: action.path().to_vec(),
         action,
     })
 }
@@ -944,12 +946,20 @@ fn animate(
                 AiAction::Cast { target, .. } => Some(*target),
                 _ => None,
             };
-            let moved = space_distance(turn.from, turn.to) > 0.05;
+            let moved = turn.path.len() >= 2;
             match by_id.get(&turn.who) {
                 Some(&e) if moved => {
+                    // Presences already contain the sim's final position. Start the
+                    // animation at the recorded origin before following the walked route.
+                    let from = turn.from;
+                    commands.queue(move |world: &mut World| {
+                        if let Some(mut transform) = world.get_mut::<Transform>(e) {
+                            transform.translation = to_bevy(from);
+                        }
+                    });
                     let speed = roots.get(e).map_or(4.0, |(_, r)| r.run_speed.max(2.0));
                     commands.entity(e).insert(CombatWalk {
-                        waypoints: vec![to_bevy(turn.to)],
+                        waypoints: turn.path.iter().skip(1).copied().map(to_bevy).collect(),
                         speed,
                         end: turn.to,
                     });
@@ -965,10 +975,6 @@ fn animate(
             }
         }
     }
-}
-
-fn space_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    bg3_sim::combat::distance(a, b)
 }
 
 /// Run while walking a combat move, idle otherwise (nav.rs does the same for click-to-move).
