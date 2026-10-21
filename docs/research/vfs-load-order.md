@@ -24,15 +24,20 @@ For the unmodded base game, pak precedence therefore only affects the ModBrowser
 
 ## Header priority (Windows build)
 
-The Windows/Proton build ships extra paks with a non-zero header `priority`, unlike the macOS build
+The Windows and native Linux builds ship extra paks with a non-zero header `priority`, unlike the macOS build
 (all 0): `Patch8_HotFix9` (1), `Patch8_HotFix10` (3), `PhysXOverlay` (100). Alphabetical order would
 mount HotFix10 before HotFix9 and let the older hotfix win. The VFS therefore mounts paks in
 ascending priority (stable within equal priority), so higher priority overrides. Inferred from
 the numbering and not yet confirmed in the binary.
 
-Also Windows-only: `LowTex.pak` (flags `0x06`, i.e. it includes the "solid" bit `0x04`),
-`PsoCache.pak` and `PhysXOverlay.pak`. Whether `LowTex.pak` should be mounted at normal texture
-quality, and whether solid paks read correctly, is still to be checked on a Windows-style install.
+Measured on a native Linux install with `bg3x dups`:
+
+- `Patch8_HotFix9`/`10` replace the **compiled stories** (`Mods/{Gustav,GustavDev,GustavX,Honour,HonourX}/Story/story.div.osi`),
+  some UI pages and story source files. Mounting them in the wrong order runs an outdated story.
+- `PhysXOverlay` (priority 100) overrides about 15.5k physics `.bin` files from `Models.pak`.
+- `LowTex.pak` (flags `0x06`, so it has the "solid" bit `0x04`) verifies fine with our reader, and
+  its files have distinct `*_lowtex.DDS` names, so it overrides nothing.
+- In total, 880 identical and 15,588 differing duplicates on that install.
 
 ## Current implementation
 

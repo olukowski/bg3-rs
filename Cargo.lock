@@ -2191,6 +2191,7 @@ dependencies = [
  "bg3-vt",
  "bg3-world",
  "clap",
+ "libc",
 ]
 
 [[package]]

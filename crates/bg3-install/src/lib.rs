@@ -11,6 +11,7 @@
 mod locate;
 mod pe_version;
 pub mod vdf;
+mod version_scan;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -66,7 +67,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Layout {
     /// macOS: `root` is `Baldur's Gate 3.app`; files live under `Contents/`.
     MacApp,
-    /// Windows, and Linux via Proton: `root` contains `Data/` and `bin/`.
+    /// `root` contains `Data/` and `bin/`: Windows, Linux via Proton, and the native Linux build
+    /// (`bin/bg3` ELF + `bin/libOsiris.so`).
     WindowsStyle,
 }
 
@@ -74,7 +76,7 @@ impl fmt::Display for Layout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Layout::MacApp => "macOS app bundle",
-            Layout::WindowsStyle => "Windows-style (Windows / Proton)",
+            Layout::WindowsStyle => "Data/ + bin/ (Windows, Linux)",
         })
     }
 }
@@ -170,22 +172,26 @@ impl Install {
             }
             Layout::WindowsStyle => {
                 let bin = child(&root, "bin");
-                let binary = ["bg3.exe", "bg3_dx11.exe"]
+                // Windows (`bg3.exe`, `bg3_dx11.exe`) or the native Linux build (`bg3`, ELF).
+                let binary = ["bg3.exe", "bg3_dx11.exe", "bg3"]
                     .iter()
                     .map(|n| child(&bin, n))
                     .find(|p| p.is_file())
                     .unwrap_or_else(|| child(&bin, "bg3.exe"));
-                // The Windows build ships Osiris as `bin/osiris.dll` (BG3 Script Extender loads
-                // it by that name). Unverified on a real install; `None` if it isn't there.
-                let osiris = child(&bin, "osiris.dll");
+                // Windows ships Osiris as `bin/osiris.dll` (BG3 Script Extender loads it by that
+                // name; unverified on a real install); the native Linux build as
+                // `bin/libOsiris.so` (seen on a real install).
+                let osiris = ["osiris.dll", "libOsiris.so"]
+                    .iter()
+                    .map(|n| child(&bin, n))
+                    .find(|p| p.is_file())
+                    .unwrap_or_else(|| child(&bin, "osiris.dll"));
                 let version = if binary.is_file() {
-                    match read_exe_version(&binary) {
+                    match read_binary_version(&binary) {
                         Ok(Some(v)) => Some(v),
                         Ok(None) => {
-                            warnings.push(format!(
-                                "no ProductVersion/FileVersion in {}",
-                                binary.display()
-                            ));
+                            warnings
+                                .push(format!("no version string found in {}", binary.display()));
                             None
                         }
                         Err(e) => {
@@ -195,7 +201,7 @@ impl Install {
                     }
                 } else {
                     warnings.push(format!(
-                        "no bin/bg3.exe or bin/bg3_dx11.exe under {}",
+                        "no bin/bg3.exe, bin/bg3_dx11.exe or bin/bg3 under {}",
                         root.display()
                     ));
                     None
@@ -266,6 +272,23 @@ impl Install {
         }
         Ok(paks)
     }
+}
+
+/// Version of a game executable: the PE version resource for Windows `.exe` files, otherwise (or
+/// if that has none) the single version-shaped string embedded in the binary (native Linux ELF).
+fn read_binary_version(path: &Path) -> std::io::Result<Option<String>> {
+    let mut magic = [0u8; 2];
+    {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path)?;
+        let _ = f.read(&mut magic)?;
+    }
+    if &magic == b"MZ"
+        && let Some(v) = read_exe_version(path)?
+    {
+        return Ok(Some(v));
+    }
+    Ok(version_scan::find_embedded_version(&std::fs::read(path)?))
 }
 
 /// Find `name` in `dir`, preferring an exact match and falling back to a case-insensitive one
@@ -671,6 +694,10 @@ mod tests {
         assert!(!paks.iter().any(|p| p.ends_with("Textures_1.pak")));
         assert!(install.binary().is_file());
         assert_ne!(install.version, UNKNOWN_VERSION, "{:?}", install.warnings);
+        // The embedded-string scan (used for the native Linux build) must agree with the
+        // authoritative version source on every platform we can check.
+        let scanned = read_binary_version(&install.binary()).unwrap();
+        assert_eq!(scanned.as_deref(), Some(install.version.as_str()));
         eprintln!(
             "BG3 {} ({}, {} paks) at {}",
             install.version,

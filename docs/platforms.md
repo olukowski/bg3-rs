@@ -7,7 +7,8 @@ platforms, so the parsers, the VFS and the viewer are meant to run on macOS, Win
 |---|---|
 | macOS (Steam) | Supported and tested. This is the reference build (4.1.1.7631656). |
 | Windows (Steam, GOG) | Expected to work. **Untested on a real install so far.** |
-| Linux (Steam + Proton) | Expected to work. **Untested on a real install so far.** |
+| Linux (Steam, native build) | **Tested on a real install:** install found automatically, all paks read, viewer renders the Nautiloid (Vulkan, NVIDIA). |
+| Linux (Steam + Proton) | Same files as Windows; expected to work, untested. |
 
 CI builds the workspace, runs clippy and runs the install-free tests on macOS, Ubuntu and Windows.
 
@@ -25,22 +26,30 @@ Baldur's Gate 3.app/Contents/
   Info.plist                       version: CFBundleShortVersionString
 ```
 
-**`WindowsStyle`**: the Windows build. Linux has no native build: Steam runs the Windows build
-through Proton, so the files on disk are the same. `root` is the game folder (Steam:
-`steamapps/common/Baldurs Gate 3`).
+**`WindowsStyle`**: a game folder with `Data/` and `bin/`. That covers the Windows build, Linux
+via Proton (the same files), and the **native Linux build** that Steam installs on Linux. `root` is
+the game folder (Steam: `steamapps/common/Baldurs Gate 3`).
 
 ```
 <root>/
   Data/*.pak, Data/Localization/*.pak
-  bin/bg3.exe                      Vulkan executable
-  bin/bg3_dx11.exe                 DirectX 11 executable
-  bin/osiris.dll                   Osiris story VM (see below)
+  bin/bg3.exe                      Windows: Vulkan executable
+  bin/bg3_dx11.exe                 Windows: DirectX 11 executable
+  bin/osiris.dll                   Windows: Osiris story VM (see below)
+  bin/bg3                          native Linux: executable (ELF)
+  bin/libOsiris.so                 native Linux: Osiris story VM
 ```
 
-The version comes from the executable's version resource. Its fixed-size numeric fields can't
-hold `4.1.1.7631656` (each part is 16 bits), so we read the UTF-16 `ProductVersion` string, falling
-back to `FileVersion`. If neither is found, the install still opens, with version `unknown` and a
-warning.
+The version comes from the Windows executable's version resource. Its fixed-size numeric fields
+can't hold `4.1.1.7631656` (each part is 16 bits), so we read the UTF-16 `ProductVersion` string,
+falling back to `FileVersion`. ELF has no version resource, so for the native Linux build (and as
+a fallback on Windows) we scan the binary for its single embedded `a.b.c.build` string. On macOS
+that scan returns exactly the `Info.plist` version, which the install test checks. If nothing is
+found, the install still opens, with version `unknown` and a warning.
+
+The native Linux build also ships extra paks with non-zero header priority (`Patch8_HotFix9`,
+`Patch8_HotFix10`, `PhysXOverlay`), which replace e.g. the compiled stories. See
+[vfs-load-order.md](research/vfs-load-order.md).
 
 What's uncertain about the Windows layout:
 

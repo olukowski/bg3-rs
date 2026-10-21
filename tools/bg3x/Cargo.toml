@@ -25,5 +25,8 @@ bg3-world.workspace = true
 bg3-vfs.workspace = true
 clap.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

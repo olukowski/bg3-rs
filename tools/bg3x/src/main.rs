@@ -184,7 +184,20 @@ enum Command {
     Dups,
 }
 
+/// Let `bg3x … | head` end quietly instead of panicking on a closed stdout: restore the default
+/// SIGPIPE action, which the Rust runtime sets to "ignore".
+fn restore_sigpipe() {
+    #[cfg(unix)]
+    // SAFETY: called once at startup before any threads exist; resetting a signal disposition to
+    // SIG_DFL has no memory-safety implications.
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 fn main() -> Result<()> {
+    restore_sigpipe();
     match Cli::parse().command {
         Command::Info { candidates } => info(candidates),
         Command::List { pak, filter } => {
