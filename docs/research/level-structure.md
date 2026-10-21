@@ -1,6 +1,6 @@
 # Level → mesh reference chain
 
-Status: traced by hand for one Nautiloid object with `bg3x lsx` / `bg3x find`. Not yet implemented.
+Status: traced with `bg3x lsx` / `bg3x find`, implemented in `crates/bg3-world`. All 2,068 Nautiloid scenery objects resolve: 1,860 to an existing GR2, 208 to `EffectBank` (VFX).
 
 ## Where a level lives
 
