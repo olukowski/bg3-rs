@@ -31,6 +31,8 @@ use crate::sim::Sim;
 pub struct Planner {
     pub(super) engine: ConditionEngine,
     average_damage: HashMap<Guid, f32>,
+    /// Attack-of-opportunity simulations (attacker, mover) of the current plan.
+    pub(super) opportunity: HashMap<(Guid, Guid), Option<AiScore>>,
 }
 
 /// What simulating a spell on a target gave.
@@ -53,6 +55,7 @@ impl Sim {
         Planner {
             engine: self.condition_engine(),
             average_damage: HashMap::new(),
+            opportunity: HashMap::new(),
         }
     }
 

@@ -257,8 +257,16 @@ impl Sim {
             if distance(path[0], at) > reach || samples.iter().all(|p| distance(*p, at) <= reach) {
                 continue;
             }
-            if let Some(sim) = self.ai_simulate(pl, m, &spell, e, mover) {
-                out.add(&sim.score, 1.0);
+            let score = match pl.opportunity.get(&(e, mover)) {
+                Some(s) => s.clone(),
+                None => {
+                    let s = self.ai_simulate(pl, m, &spell, e, mover).map(|x| x.score);
+                    pl.opportunity.insert((e, mover), s.clone());
+                    s
+                }
+            };
+            if let Some(score) = score {
+                out.add(&score, 1.0);
             }
         }
         out
@@ -325,6 +333,7 @@ impl Sim {
         if c.dead || c.downed {
             return None;
         }
+        pl.opportunity.clear();
         let m = self.ai_modifiers(who);
         let actor = ActorInfo {
             average_damage: self.ai_average_damage(pl, who),
