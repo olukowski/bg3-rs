@@ -9,7 +9,10 @@ pub mod lights;
 pub mod templates;
 pub mod terrain;
 
-pub use banks::{MaterialResource, MeshObject, ResourceBanks, TextureResource, VisualResource};
+pub use banks::{
+    MaterialResource, MeshObject, ResourceBanks, TextureResource, VirtualTextureResource,
+    VisualResource,
+};
 pub use level::{Level, LevelObject, Transform};
 pub use lights::{LevelLighting, Light, LightKind};
 pub use templates::{RootTemplate, RootTemplates};

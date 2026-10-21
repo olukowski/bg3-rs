@@ -64,6 +64,7 @@ pub fn spawn_level(
     start: Res<crate::CameraStart>,
     level: Res<LoadedLevel>,
     mut visual_meshes: ResMut<VisualMeshes>,
+    level_materials: Res<crate::materials::LevelMaterials>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -86,13 +87,17 @@ pub fn spawn_level(
     for (id, list) in std::mem::take(&mut visual_meshes.by_visual) {
         let parts = list
             .into_iter()
-            .map(|(mesh, material)| {
+            .filter_map(|(mesh, material)| {
                 let key = material.unwrap_or_default();
-                let mat = tints
-                    .entry(key.clone())
-                    .or_insert_with(|| materials.add(tint(&key)))
-                    .clone();
-                (meshes.add(mesh), mat)
+                let mat = match level_materials.by_id.get(&key) {
+                    Some(Some(mat)) => mat.clone(),
+                    Some(None) => return None, // helper geometry the game doesn't draw
+                    None => tints
+                        .entry(key.clone())
+                        .or_insert_with(|| materials.add(tint(&key)))
+                        .clone(),
+                };
+                Some((meshes.add(mesh), mat))
             })
             .collect();
         uploaded.insert(id, parts);

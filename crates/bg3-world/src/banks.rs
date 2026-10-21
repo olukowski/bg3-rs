@@ -48,6 +48,8 @@ pub struct MaterialResource {
     pub textures: Vec<(String, String)>,
     /// `(parameter name, value)` for scalar parameters.
     pub scalars: Vec<(String, f64)>,
+    /// Every parameter with its `Enabled` (overrides-the-graph) flag.
+    pub params: Vec<bg3_material::Param>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,13 +57,21 @@ pub struct TextureResource {
     pub id: String,
     pub name: String,
     pub source_file: Option<String>,
+    /// The `SRGB` flag: colour data to be decoded from sRGB.
+    pub srgb: bool,
+    /// `Type`: 1 = 2D, 2 = cube map (observed), 3 = 3D.
+    pub kind: i32,
 }
+
+/// A Granite virtual texture (`VirtualTextureBank`); see `bg3-vt`.
+pub use bg3_vt::VirtualTextureResource;
 
 #[derive(Debug, Default)]
 pub struct ResourceBanks {
     pub visuals: HashMap<String, VisualResource>,
     pub materials: HashMap<String, MaterialResource>,
     pub textures: HashMap<String, TextureResource>,
+    pub virtual_textures: HashMap<String, VirtualTextureResource>,
     /// Bank region (`EffectBank`, `SkeletonBank`, …) of every resource ID, including the typed ones.
     pub kinds: HashMap<String, String>,
     /// Bank files that failed to parse (path, error).
@@ -73,12 +83,19 @@ struct BankFile {
     visuals: Vec<VisualResource>,
     materials: Vec<MaterialResource>,
     textures: Vec<TextureResource>,
+    virtual_textures: Vec<VirtualTextureResource>,
 }
 
 impl ResourceBanks {
     /// Scan every `_merged.lsf` under `Public/<Module>/` for each module in load order.
+    ///
+    /// The engine's own banks (`Public/Engine/`, e.g. default materials that level meshes
+    /// reference) come first.
     pub fn load(vfs: &Vfs) -> Result<Self> {
-        Self::load_modules(vfs, BASE_LOAD_ORDER)
+        let modules: Vec<&str> = std::iter::once("Engine")
+            .chain(BASE_LOAD_ORDER.iter().copied())
+            .collect();
+        Self::load_modules(vfs, &modules)
     }
 
     pub fn load_modules(vfs: &Vfs, modules: &[&str]) -> Result<Self> {
@@ -126,6 +143,9 @@ impl ResourceBanks {
         }
         for t in file.textures {
             self.textures.insert(t.id.clone(), t);
+        }
+        for t in file.virtual_textures {
+            self.virtual_textures.insert(t.id.clone(), t);
         }
     }
 }
@@ -186,6 +206,7 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
                 source_file: str_attr(n, "SourceFile"),
                 textures,
                 scalars,
+                params: bg3_material::read_params(n),
             }
         })
         .collect();
@@ -196,9 +217,12 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
                 id,
                 name,
                 source_file: str_attr(n, "SourceFile"),
+                srgb: n.attr("SRGB").and_then(|v| v.as_bool()).unwrap_or(false),
+                kind: n.attr("Type").and_then(|v| v.as_i64()).unwrap_or(1) as i32,
             }
         })
         .collect();
+    let virtual_textures = VirtualTextureResource::read_bank(res);
     let kinds = res
         .regions
         .iter()
@@ -212,5 +236,6 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
         visuals,
         materials,
         textures,
+        virtual_textures,
     }
 }

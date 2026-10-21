@@ -1,11 +1,12 @@
 //! `bg3-viewer` — fly through BG3 levels.
 //!
-//! Current state: level objects rendered with their LOD0 GR2 meshes and flat placeholder
-//! materials; objects without a mesh (effects, …) are shown as small boxes.
+//! Current state: level objects rendered with their LOD0 GR2 meshes and textured materials
+//! (`materials.rs`); objects without a mesh (effects, …) are shown as small boxes.
 
 mod fly_camera;
 mod level;
 mod lights;
+mod materials;
 mod meshes;
 mod space;
 mod terrain;
@@ -98,6 +99,12 @@ fn main() -> Result<()> {
     for (id, err) in meshes.failed.iter().take(5) {
         eprintln!("  {id}: {err}");
     }
+    let material_ids = meshes.by_visual.values().flatten();
+    let materials = materials::PreparedMaterials::load(
+        &vfs,
+        &level.banks,
+        material_ids.filter_map(|(_, m)| m.as_deref()),
+    );
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -113,6 +120,7 @@ fn main() -> Result<()> {
     .insert_resource(meshes)
     .insert_resource(terrain)
     .insert_resource(lights)
+    .insert_resource(materials)
     .insert_resource(CameraStart {
         position: args
             .camera
@@ -124,7 +132,8 @@ fn main() -> Result<()> {
     .add_systems(
         Startup,
         (
-            level::spawn_level,
+            materials::upload,
+            level::spawn_level.after(materials::upload),
             terrain::spawn_terrain,
             lights::spawn_lights,
         ),
