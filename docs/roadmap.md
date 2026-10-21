@@ -19,8 +19,10 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 ## M2 — See a level
 - [x] `bg3-gr2`: all 285,055 GR2 files parse (BitKnit2, reflection, meshes, skeletons); animations not decoded yet
 - [x] `bg3-world`: resource banks, root templates, level objects (all Nautiloid scenery resolves to GR2 or effect)
-- [ ] Terrain, lights, level templates
-- [x] `bg3-viewer`: fly-cam through the Nautiloid with real LOD0 meshes (placeholder per-material colours)
+- [x] Terrain: `.patch` heightfields, holes, layer weights, brushes (`docs/research/terrain.md`)
+- [x] Lights: placed + combined lights via template chains, level sun/sky/exposure (`docs/research/lighting.md`); units approximate
+- [ ] Level templates, sub-level composition (which levels make up `WLD_Main_A`), fog volumes, light probes
+- [x] `bg3-viewer`: fly-cam through the Nautiloid with real LOD0 meshes (placeholder per-material colours), terrain and level lights
 - [ ] Materials: DDS textures, virtual textures (Granite), shader-graph parameters
 - [x] Handedness: BG3 is left-handed Y-up; viewer mirrors Z (docs/research/coordinate-space.md). Still worth confirming with an in-game screenshot.
 

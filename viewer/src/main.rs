@@ -5,8 +5,10 @@
 
 mod fly_camera;
 mod level;
+mod lights;
 mod meshes;
 mod space;
+mod terrain;
 
 use anyhow::Result;
 use bevy::prelude::*;
@@ -29,6 +31,15 @@ struct Args {
     /// Save a screenshot to this path after a few frames, then exit.
     #[arg(long)]
     shot: Option<std::path::PathBuf>,
+    /// Also render the terrain of these levels (e.g. the sub-levels of `WLD_Main_A`).
+    #[arg(long, value_delimiter = ',')]
+    terrain_levels: Vec<String>,
+    /// Factor from BG3 local-light intensity to Bevy lumens (see docs/research/lighting.md).
+    #[arg(long, default_value_t = lights::DEFAULT_LIGHT_SCALE)]
+    light_scale: f32,
+    /// Hide level objects, leaving terrain and lights.
+    #[arg(long)]
+    terrain_only: bool,
 }
 
 fn parse_vec3(s: &str) -> Result<Vec3, String> {
@@ -71,6 +82,11 @@ fn main() -> Result<()> {
     let vfs = Vfs::from_install(&install)?;
     eprintln!("mounted {} files from BG3 {}", vfs.len(), install.version);
     let level = level::LoadedLevel::load(&vfs, &args.level)?;
+    let terrain_levels: Vec<String> = std::iter::once(args.level.clone())
+        .chain(args.terrain_levels.iter().cloned())
+        .collect();
+    let terrain = terrain::LevelTerrain::load(&vfs, &terrain_levels)?;
+    let lights = lights::LevelLights::load(&vfs, &args.level, &level.templates, args.light_scale)?;
     let started = std::time::Instant::now();
     let meshes = meshes::VisualMeshes::load(&vfs, &level);
     eprintln!(
@@ -95,6 +111,8 @@ fn main() -> Result<()> {
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)
     .insert_resource(meshes)
+    .insert_resource(terrain)
+    .insert_resource(lights)
     .insert_resource(CameraStart {
         position: args
             .camera
@@ -103,7 +121,18 @@ fn main() -> Result<()> {
             .look_at
             .map(|v| Vec3::from_array(space::vec3(v.to_array()))),
     })
-    .add_systems(Startup, (setup, level::spawn_level));
+    .add_systems(
+        Startup,
+        (
+            level::spawn_level,
+            terrain::spawn_terrain,
+            lights::spawn_lights,
+        ),
+    )
+    .add_systems(PostStartup, lights::apply_exposure);
+    if args.terrain_only {
+        app.add_systems(PostStartup, terrain::hide_objects);
+    }
     if let Some(path) = args.shot {
         app.insert_resource(ShotRequest(path))
             .add_systems(Update, take_screenshot);
@@ -129,19 +158,4 @@ fn take_screenshot(
     if *frame == 90 {
         exit.write(AppExit::Success);
     }
-}
-
-fn setup(mut commands: Commands) {
-    commands.spawn((
-        DirectionalLight {
-            shadow_maps_enabled: false,
-            illuminance: 8000.0,
-            ..default()
-        },
-        Transform::from_xyz(4.0, 10.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    commands.insert_resource(GlobalAmbientLight {
-        brightness: 400.0,
-        ..default()
-    });
 }

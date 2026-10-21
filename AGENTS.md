@@ -57,6 +57,8 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `stat <name>`, `story [--goal NAME | -s]`.
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
   level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
+  `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),
+  `--terrain-only` hides objects, `--light-scale` tunes local-light brightness.
 - Scratch output goes in `.cache/` only.
 - Thin arm64 slices for REA/Ghidra (it can't open the universal binary):
   `lipo -thin arm64 -output .cache/bin/bg3-arm64 "<app>/Contents/MacOS/Baldur's Gate 3"`.
