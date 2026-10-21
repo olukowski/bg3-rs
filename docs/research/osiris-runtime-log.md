@@ -85,7 +85,7 @@ failed: the mismatch is decided afterwards in `UpdateToken` and is silent.
 | `(INTEGER64)7143220` | INTEGER64 (format `(INTEGER64)%-lld`; not seen in our captures) |
 | `100.0`, `-1.0`, `2.5` | REAL, `%.1f` |
 | `"text"` | STRING (no escaping) |
-| `S_Player_Karlach_2c76…`, `NULL_0000…` | GUIDSTRING, bare |
+| `S_Player_Hero_9f8e…`, `NULL_0000…` | GUIDSTRING, bare |
 | `(CHARACTER)S_…` | a value whose type id is an alias type: `(%s)%s` |
 | `DEATHTYPE.DOT` | enumeration value, `%s.%s`; when two labels share a value the real label wins over `__OSIRIS_ENUM_FALLBACK` |
 | `(unknown)` | unset value of type 0 |

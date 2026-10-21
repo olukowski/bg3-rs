@@ -342,7 +342,7 @@ fn compares_mix_numbers_and_fold_strings() {
 
 #[test]
 fn guid_strings_match_by_uuid() {
-    let uuid = "c7c13742-bacd-460a-8f65-f864fe41f255";
+    let uuid = "1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d";
     let mut b = StoryBuilder::new();
     let character = b.alias("CHARACTER", GUIDSTRING);
     b.event("Hello", &[character]);
@@ -355,7 +355,7 @@ fn guid_strings_match_by_uuid() {
             "DB_Friend",
             [typed(
                 character,
-                Lit::Str(format!("S_Player_Astarion_{uuid}")),
+                Lit::Str(format!("S_Player_Hero_{uuid}")),
             )],
         )],
     );
@@ -802,8 +802,8 @@ fn string_and_guid_equality() {
     };
     assert!(osi_eq(&s(&mut t, "Hello"), &s(&mut t, "hELLO")).unwrap());
     assert!(!osi_eq(&s(&mut t, "Hello"), &s(&mut t, "Hell")).unwrap());
-    let u = "58a69333-40bf-8358-1d17-fff240d7fb12";
-    assert!(osi_eq(&g(&mut t, &format!("S_Laezel_{u}")), &g(&mut t, u)).unwrap());
+    let u = "9f8e7d6c-5b4a-4321-8fed-cba987654321";
+    assert!(osi_eq(&g(&mut t, &format!("S_Hero_{u}")), &g(&mut t, u)).unwrap());
     // Everything without a valid non-zero UUID shares id 0.
     let null = g(&mut t, "NULL_00000000-0000-0000-0000-000000000000");
     assert!(osi_eq(&null, &g(&mut t, "")).unwrap());
@@ -812,7 +812,7 @@ fn string_and_guid_equality() {
     assert!(osi_eq(&s(&mut t, "x"), &g(&mut t, "x")).is_err());
     assert!(osi_eq(&Value::int(1), &Value::int64(1)).is_err());
     // Compare: GUID vs STRING uses the last 36 characters case-insensitively.
-    let a = g(&mut t, &format!("S_Laezel_{u}"));
+    let a = g(&mut t, &format!("S_Hero_{u}"));
     let b = s(&mut t, &u.to_uppercase());
     assert_eq!(osi_compare(&t, &a, &b, RelOp::Equal), Ok(true));
     assert!(osi_compare(&t, &b, &a, RelOp::Equal).is_err());

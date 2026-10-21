@@ -26,7 +26,7 @@ identical, in order (test `replay_trace`, `bg3x osiris-replay`). Log format and 
 - `COsiTypedValueBase::operator==` / `operator<` require equal roots; otherwise they log
   "invalid comparison" and answer false. INTEGER/INTEGER64/REAL compare by value; **STRING
   compares the lowercased id (case-insensitive)**; **GUIDSTRING compares the UUID id**. So
-  `"S_Player_Laezel_58a6…fb12" == "58a6…FB12"`, and every GUIDSTRING without a valid UUID
+  `"S_Player_Hero_9f8e…4321" == "9F8E…4321"`, and every GUIDSTRING without a valid UUID
   (`""`, `NULL_00000000-0000-0000-0000-000000000000`, `"foo"`) equals every other such string.
   These operators drive database indexes, adaptor constant checks and join matching.
 - `Compare(a, b, op)` (compare nodes) is different:
