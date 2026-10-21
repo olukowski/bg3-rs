@@ -7,7 +7,7 @@ platforms, so the parsers, the VFS and the viewer are meant to run on macOS, Win
 |---|---|
 | macOS (Steam) | Supported and tested. This is the reference build (4.1.1.7631656). |
 | Windows (Steam, GOG) | Expected to work. **Untested on a real install so far.** |
-| Linux (Steam, native build) | **Tested on a real install:** install found automatically, all paks read, viewer renders the Nautiloid (Vulkan, NVIDIA). |
+| Linux (Steam, native build) | **Tested on a real install:** install found automatically, version read from the binary (same build, 4.1.1.7631656), all paks read, viewer renders the Nautiloid (Vulkan, NVIDIA). |
 | Linux (Steam + Proton) | Same files as Windows; expected to work, untested. |
 
 CI builds the workspace, runs clippy and runs the install-free tests on macOS, Ubuntu and Windows.
@@ -107,7 +107,7 @@ If no install is found, the error lists every path tried. When autodetection fai
 ```sh
 # macOS
 export BG3_INSTALL="$HOME/Library/Application Support/Steam/steamapps/common/Baldurs Gate 3/Baldur's Gate 3.app"
-# Linux (Proton)
+# Linux (native or Proton)
 export BG3_INSTALL="$HOME/.local/share/Steam/steamapps/common/Baldurs Gate 3"
 ```
 
@@ -137,6 +137,15 @@ expected to work elsewhere:
 - REA / Ghidra work: the reference binary is the macOS `Baldur's Gate 3` and `libOsiris.dylib`
   (4.1.1.7631656). The Windows `bg3.exe` is only read for its version. Data extracted from the
   binary (ADR 0001, tier 2) is pinned to the macOS build.
+
+The native Linux `bin/bg3` is the same build number and is also **not stripped** (about 152k
+symbol lines from `nm -C`, against ~765k on macOS). It's a possible second RE reference (x86_64
+ELF) and a place to capture traces with gdb or Frida, but nothing uses it yet.
+
+Same build, different packaging: the Linux install ships `Patch8_HotFix9`, `Patch8_HotFix10` and
+`PhysXOverlay` as separate higher-priority paks, while the macOS install has none of them, so the
+macOS paks presumably include those changes already. Unverified; see
+[vfs-load-order.md](research/vfs-load-order.md).
 
 Everything else (`bg3x`, the viewer and all `crates/*`) should work on all three platforms.
 

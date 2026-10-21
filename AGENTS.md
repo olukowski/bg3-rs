@@ -38,8 +38,9 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
 
 ## Working with the game install
 
-- Platforms: macOS (app bundle, the reference build), Windows and Linux via Steam Proton (both use
-  the Windows layout: `<root>/Data`, `<root>/bin/bg3.exe`). Windows/Linux are untested so far.
+- Platforms: macOS (app bundle, the reference build), and the `Data/` + `bin/` layout used by
+  Windows (`bin/bg3.exe`), Proton, and the native Linux build (`bin/bg3`, `bin/libOsiris.so`).
+  Native Linux is tested (same build number); Windows is not yet.
   Details, default search paths and what's macOS-only: `docs/platforms.md`.
 - `bg3_install::Install::locate()` finds the game: `BG3_INSTALL` (or the older alias `BG3_APP`)
   if set, else the platform's Steam roots, every library in their `steamapps/libraryfolders.vdf`,

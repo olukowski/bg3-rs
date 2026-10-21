@@ -37,7 +37,8 @@ More screenshots: [the Nautiloid doorway](docs/media/nautiloid-doorway.jpg) ·
 You need:
 
 - A legally obtained copy of **Baldur's Gate 3**. Development uses the macOS Steam build
-  4.1.1.7631656. Windows and Linux (Steam/Proton, GOG) layouts are supported but less tested; see
+  4.1.1.7631656. Native Linux (Steam) is tested too; Windows (Steam, GOG) and Proton layouts are
+  supported but untested; see
   [docs/platforms.md](docs/platforms.md).
 - A recent stable **Rust** toolchain ([rustup.rs](https://rustup.rs)).
 
