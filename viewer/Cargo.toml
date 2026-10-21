@@ -8,10 +8,12 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 bevy.workspace = true
+bg3-gr2.workspace = true
 bg3-install.workspace = true
 bg3-vfs.workspace = true
 bg3-world.workspace = true
 clap.workspace = true
+rayon.workspace = true
 
 [lints]
 workspace = true

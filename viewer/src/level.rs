@@ -6,6 +6,10 @@ use bg3_vfs::Vfs;
 use bg3_world::{Level, LevelObject, ResourceBanks, RootTemplates};
 
 use crate::fly_camera::FlyCamera;
+use crate::meshes::VisualMeshes;
+
+/// A mesh and its material, ready to spawn.
+type MeshPart = (Handle<Mesh>, Handle<StandardMaterial>);
 
 #[derive(Resource)]
 pub struct LoadedLevel {
@@ -41,6 +45,15 @@ impl LoadedLevel {
     }
 }
 
+/// A muted colour derived from the material ID, so different materials are distinguishable.
+fn tint(key: &str) -> Color {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    key.hash(&mut h);
+    let v = h.finish();
+    Color::hsl((v % 360) as f32, 0.25, 0.55)
+}
+
 /// Convert a BG3 transform to Bevy. Both are Y-up; handedness is still to be verified.
 pub fn to_bevy(t: &bg3_world::Transform) -> Transform {
     let [x, y, z] = t.position;
@@ -54,11 +67,13 @@ pub fn to_bevy(t: &bg3_world::Transform) -> Transform {
 
 pub fn spawn_level(
     mut commands: Commands,
+    start: Res<crate::CameraStart>,
     level: Res<LoadedLevel>,
+    mut visual_meshes: ResMut<VisualMeshes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let cube = meshes.add(Cuboid::new(0.5, 0.5, 0.5));
+    let cube = meshes.add(Cuboid::new(0.2, 0.2, 0.2));
     let colors = [
         ("scenery", Color::srgb(0.6, 0.6, 0.65)),
         ("item", Color::srgb(0.9, 0.7, 0.2)),
@@ -71,10 +86,42 @@ pub fn spawn_level(
     let fallback = materials.add(Color::srgb(0.3, 0.3, 0.9));
     let effect = materials.add(Color::srgb(0.8, 0.3, 0.9));
 
+    // Upload each visual's meshes once; a stable per-material tint until real materials exist.
+    let mut uploaded: std::collections::HashMap<String, Vec<MeshPart>> = Default::default();
+    let mut tints: std::collections::HashMap<String, Handle<StandardMaterial>> = Default::default();
+    for (id, list) in std::mem::take(&mut visual_meshes.by_visual) {
+        let parts = list
+            .into_iter()
+            .map(|(mesh, material)| {
+                let key = material.unwrap_or_default();
+                let mat = tints
+                    .entry(key.clone())
+                    .or_insert_with(|| materials.add(tint(&key)))
+                    .clone();
+                (meshes.add(mesh), mat)
+            })
+            .collect();
+        uploaded.insert(id, parts);
+    }
+
     let mut sum = Vec3::ZERO;
     for obj in &level.level.objects {
         let transform = to_bevy(&obj.transform);
         sum += transform.translation;
+        if let Some(parts) = level.visual_id(obj).and_then(|v| uploaded.get(v)) {
+            commands
+                .spawn((
+                    Name::new(obj.name.clone()),
+                    transform,
+                    Visibility::default(),
+                ))
+                .with_children(|parent| {
+                    for (mesh, mat) in parts {
+                        parent.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone())));
+                    }
+                });
+            continue;
+        }
         let is_effect = level
             .visual_id(obj)
             .is_some_and(|v| level.banks.kind(v) == Some("EffectBank"));
@@ -93,11 +140,31 @@ pub fn spawn_level(
         ));
     }
 
-    let center = sum / level.level.objects.len().max(1) as f32;
+    // Median position is robust against far-away backdrops.
+    let mut xs: Vec<Vec3> = level
+        .level
+        .objects
+        .iter()
+        .map(|o| to_bevy(&o.transform).translation)
+        .collect();
+    let median = |f: fn(&Vec3) -> f32, xs: &mut Vec<Vec3>| {
+        xs.sort_by(|a, b| f(a).total_cmp(&f(b)));
+        xs.get(xs.len() / 2).map_or(0.0, f)
+    };
+    let center = Vec3::new(
+        median(|v| v.x, &mut xs),
+        median(|v| v.y, &mut xs),
+        median(|v| v.z, &mut xs),
+    );
+    let _ = sum;
+    let target = start.look_at.unwrap_or(center);
+    let position = start
+        .position
+        .unwrap_or(center + Vec3::new(0.0, 60.0, 40.0));
     commands.spawn((
         Camera3d::default(),
-        Transform::from_translation(center + Vec3::new(0.0, 40.0, 60.0))
-            .looking_at(center, Vec3::Y),
+        Transform::from_translation(position).looking_at(target, Vec3::Y),
         FlyCamera::default(),
     ));
+    eprintln!("camera at {position} looking at {target} (level median {center})");
 }

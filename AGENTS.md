@@ -49,6 +49,20 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
 - Build a local symbol index with `scripts/symbol-index.sh` (output in `.cache/symbols/`, gitignored).
   Grep it before reaching for REA — it's usually enough to find the right function.
 
+## Tooling
+
+- `cargo run --release -p bg3x -- <cmd>` inspects the install. Commands: `info`, `list <pak> [-f substr]`,
+  `cat|lsx|gr2 <pak|-> <path>` (`-` = search all paks via the VFS), `extract`, `verify`, `dups`,
+  `find <value> [-p prefix]` (searches all resources for an attribute value), `loca <handle>`,
+  `stat <name>`, `story [--goal NAME | -s]`.
+- `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
+  level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
+- Scratch output goes in `.cache/` only.
+- Thin arm64 slices for REA/Ghidra (it can't open the universal binary):
+  `lipo -thin arm64 -output .cache/bin/bg3-arm64 "<app>/Contents/MacOS/Baldur's Gate 3"`.
+- The REA MCP is a single shared session. Coordinate when several agents need it.
+- Every agent must keep the workspace building: create `src/lib.rs` together with `Cargo.toml`.
+
 ## Using REA (reverse-engineer-anything MCP)
 
 - Use it to: locate functions by name/xref, read pseudocode to *understand* logic, trace call paths,

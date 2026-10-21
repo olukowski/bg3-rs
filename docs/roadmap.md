@@ -20,7 +20,9 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [x] `bg3-gr2`: all 285,055 GR2 files parse (BitKnit2, reflection, meshes, skeletons); animations not decoded yet
 - [x] `bg3-world`: resource banks, root templates, level objects (all Nautiloid scenery resolves to GR2 or effect)
 - [ ] Terrain, lights, level templates
-- [ ] `bg3-viewer`: fly-cam through a Nautiloid level with basic materials (scaffold: window, fly cam, VFS mounted)
+- [x] `bg3-viewer`: fly-cam through the Nautiloid with real LOD0 meshes (placeholder per-material colours)
+- [ ] Materials: DDS textures, virtual textures (Granite), shader-graph parameters
+- [ ] Verify handedness and orientation against the original game
 
 ## M3 — Rules core (headless)
 - [x] `bg3-stats` parsing + `using` resolution (all 157 files)

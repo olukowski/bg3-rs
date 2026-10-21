@@ -1,10 +1,11 @@
 //! `bg3-viewer` — fly through BG3 levels.
 //!
-//! Current state: places every level object at its transform as a placeholder box (meshes land
-//! with `bg3-gr2`).
+//! Current state: level objects rendered with their LOD0 GR2 meshes and flat placeholder
+//! materials; objects without a mesh (effects, …) are shown as small boxes.
 
 mod fly_camera;
 mod level;
+mod meshes;
 
 use anyhow::Result;
 use bevy::prelude::*;
@@ -18,7 +19,36 @@ struct Args {
     /// Level to load.
     #[arg(default_value = "TUT_Avernus_C")]
     level: String,
+    /// Camera position `x,y,z` (default: above the level centre).
+    #[arg(long, value_parser = parse_vec3, allow_hyphen_values = true)]
+    camera: Option<Vec3>,
+    /// Camera target `x,y,z`.
+    #[arg(long, value_parser = parse_vec3, allow_hyphen_values = true)]
+    look_at: Option<Vec3>,
+    /// Save a screenshot to this path after a few frames, then exit.
+    #[arg(long)]
+    shot: Option<std::path::PathBuf>,
 }
+
+fn parse_vec3(s: &str) -> Result<Vec3, String> {
+    let v: Vec<f32> = s
+        .split(',')
+        .map(|x| x.trim().parse().map_err(|e| format!("{x}: {e}")))
+        .collect::<Result<_, _>>()?;
+    match v[..] {
+        [x, y, z] => Ok(Vec3::new(x, y, z)),
+        _ => Err("expected x,y,z".into()),
+    }
+}
+
+#[derive(Resource)]
+pub struct CameraStart {
+    pub position: Option<Vec3>,
+    pub look_at: Option<Vec3>,
+}
+
+#[derive(Resource)]
+struct ShotRequest(std::path::PathBuf);
 
 /// The game's files, mounted read-only.
 #[derive(Resource)]
@@ -40,21 +70,60 @@ fn main() -> Result<()> {
     let vfs = Vfs::from_install(&install)?;
     eprintln!("mounted {} files from BG3 {}", vfs.len(), install.version);
     let level = level::LoadedLevel::load(&vfs, &args.level)?;
+    let started = std::time::Instant::now();
+    let meshes = meshes::VisualMeshes::load(&vfs, &level);
+    eprintln!(
+        "converted meshes for {} visuals ({} failed) in {:.2?}",
+        meshes.by_visual.len(),
+        meshes.failed.len(),
+        started.elapsed()
+    );
+    for (id, err) in meshes.failed.iter().take(5) {
+        eprintln!("  {id}: {err}");
+    }
 
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: format!("bg3-viewer — {}", args.level),
-                ..default()
-            }),
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: format!("bg3-viewer — {}", args.level),
             ..default()
-        }))
-        .add_plugins(fly_camera::FlyCameraPlugin)
-        .insert_resource(GameData { install, vfs })
-        .insert_resource(level)
-        .add_systems(Startup, (setup, level::spawn_level))
-        .run();
+        }),
+        ..default()
+    }))
+    .add_plugins(fly_camera::FlyCameraPlugin)
+    .insert_resource(GameData { install, vfs })
+    .insert_resource(level)
+    .insert_resource(meshes)
+    .insert_resource(CameraStart {
+        position: args.camera,
+        look_at: args.look_at,
+    })
+    .add_systems(Startup, (setup, level::spawn_level));
+    if let Some(path) = args.shot {
+        app.insert_resource(ShotRequest(path))
+            .add_systems(Update, take_screenshot);
+    }
+    app.run();
     Ok(())
+}
+
+/// Wait for assets to settle, save one screenshot, then exit once it's written.
+fn take_screenshot(
+    mut commands: Commands,
+    request: Res<ShotRequest>,
+    mut frame: Local<u32>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+    *frame += 1;
+    if *frame == 60 {
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(request.0.clone()));
+    }
+    if *frame == 90 {
+        exit.write(AppExit::Success);
+    }
 }
 
 fn setup(mut commands: Commands) {

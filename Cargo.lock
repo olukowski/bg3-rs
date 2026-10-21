@@ -2071,10 +2071,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bevy",
+ "bg3-gr2",
  "bg3-install",
  "bg3-vfs",
  "bg3-world",
  "clap",
+ "rayon",
 ]
 
 [[package]]
