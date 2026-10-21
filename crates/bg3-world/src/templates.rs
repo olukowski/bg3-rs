@@ -15,6 +15,8 @@ pub struct RootTemplate {
     pub parent: Option<String>,
     pub visual_template: Option<String>,
     pub physics_template: Option<String>,
+    /// Light fields set on this template (`light` / `CombinedLight` templates only).
+    pub light: Option<crate::lights::LightProps>,
 }
 
 #[derive(Debug, Default)]
@@ -66,13 +68,17 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
         .into_iter()
         .flat_map(|n| n.children.iter().filter(|c| c.name == "GameObjects"))
         .filter_map(|n| {
+            let kind = str_attr(n, "Type").unwrap_or_default();
+            let light = matches!(kind.as_str(), "light" | "CombinedLight")
+                .then(|| crate::lights::LightProps::read(n));
             Some(RootTemplate {
                 id: str_attr(n, "MapKey")?,
                 name: str_attr(n, "Name").unwrap_or_default(),
-                kind: str_attr(n, "Type").unwrap_or_default(),
+                kind,
                 parent: str_attr(n, "ParentTemplateId"),
                 visual_template: str_attr(n, "VisualTemplate"),
                 physics_template: str_attr(n, "PhysicsTemplate"),
+                light,
             })
         })
 }

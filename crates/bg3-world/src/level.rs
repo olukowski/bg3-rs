@@ -110,7 +110,7 @@ fn read_objects<'a>(
         })
 }
 
-fn read_transform(node: &Node) -> Transform {
+pub(crate) fn read_transform(node: &Node) -> Transform {
     let vec = |name: &str| -> Option<Vec<f32>> {
         Some(
             node.attr(name)?
