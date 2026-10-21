@@ -38,7 +38,7 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [x] `bg3-osiris` VM (libOsiris semantics, host trait, boots GustavDev with a mock host)
 - [ ] Osiris runtime reference trace + replay test (`docs/research/osiris-vm.md`)
 - [ ] Run Nautiloid goals headlessly (needs engine call/query/event bindings)
-- [ ] Dialog trees (`.lsf` dialogs) with flags/checks
+- [x] Dialog trees (`.lsf` dialogs) with flags/checks: `bg3-dialog` runner, `bg3x dialog`, viewer `--dialog` (`docs/formats/dialog.md`)
 
 ## M5 — First playable slice
 - [ ] Characters, skinning, animation; movement & navcloud

@@ -13,5 +13,6 @@ prior art (e.g. LSLib) where that informed us.
 | [loca.md](loca.md) | `.loca` localization | `bg3-loca` |
 | [stats.md](stats.md) | Stats text files | `bg3-stats` |
 | [osiris-story.md](osiris-story.md) | Compiled Osiris story | `bg3-story` |
+| [dialog.md](dialog.md) | Dialogs (`DialogsBinary`), dialog resources, flags, and how dialogs run | `bg3-dialog` |
 
 New write-ups go in this folder, one file per format, and get a row in this table.
