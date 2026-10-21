@@ -454,6 +454,131 @@ pub struct CharacterPart {
     pub attach_bone: Option<String>,
 }
 
+/// Item template's `Equipment` child. Empty maps are sparse template overrides.
+#[derive(Debug, Clone, Default)]
+pub struct EquipmentVisuals {
+    pub slots: Vec<String>,
+    pub visuals: HashMap<String, Vec<String>>,
+    /// A null GUID explicitly stops fallback; an absent key uses `DefaultParent`.
+    pub parent_race: HashMap<String, String>,
+    pub material_overrides: MaterialOverrides,
+}
+
+impl EquipmentVisuals {
+    // bg3: eoc::EquipmentData::Visit (4.1.1.7631656)
+    pub(crate) fn read(n: &Node) -> Self {
+        Self {
+            slots: n
+                .children_named("Slot")
+                .filter_map(|s| str_attr(s, "Object"))
+                .collect(),
+            visuals: n
+                .children_named("Visuals")
+                .flat_map(|v| v.children_named("Object"))
+                .filter_map(|o| {
+                    Some((
+                        str_attr(o, "MapKey")?,
+                        o.children_named("MapValue")
+                            .filter_map(|v| str_attr(v, "Object"))
+                            .collect(),
+                    ))
+                })
+                .collect(),
+            parent_race: n
+                .children_named("ParentRace")
+                .flat_map(|v| v.children_named("Object"))
+                .filter_map(|o| Some((str_attr(o, "MapKey")?, str_attr(o, "MapValue")?)))
+                .collect(),
+            material_overrides: n
+                .child("VisualSet")
+                .and_then(|v| v.child("MaterialOverrides"))
+                .map(MaterialOverrides::read)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// Install-owned equipment mappings. No race tables are embedded in the executable.
+#[derive(Debug, Default)]
+pub struct EquipmentSettings {
+    pub race_parents: HashMap<String, String>,
+    pub slot_names: HashMap<String, String>,
+    /// Named `NakedBodySystem` regions → vertex-colour byte values.
+    pub body_mask_values: HashMap<String, u8>,
+    pub attachments: HashMap<String, Vec<String>>,
+}
+
+impl EquipmentSettings {
+    fn read(&mut self, res: &bg3_lsf::Resource) {
+        if let Some(root) = res.region("EquipmentRaces") {
+            for race in root.children_named("EquipmentRace") {
+                if let Some(id) = str_attr(race, "Guid") {
+                    // Later module definitions can remove an earlier parent too.
+                    self.race_parents.remove(&id);
+                    if let Some(parent) = str_attr(race, "DefaultParent") {
+                        self.race_parents.insert(id, parent);
+                    }
+                }
+            }
+        }
+        for region in &res.regions {
+            for child in &region.node.children {
+                match child.name.as_str() {
+                    "EquipmentSlots" => {
+                        self.slot_names
+                            .extend(child.children_named("Object").filter_map(|n| {
+                                Some((str_attr(n, "MapKey")?, str_attr(n, "MapValue")?))
+                            }))
+                    }
+                    "NakedBodySystem" => {
+                        self.body_mask_values
+                            .extend(child.children_named("Object").filter_map(|n| {
+                                Some((str_attr(n, "MapKey")?, n.attr("MapValue")?.as_i64()? as u8))
+                            }))
+                    }
+                    "AttachmentsMappings" => {
+                        self.attachments
+                            .extend(child.children_named("Object").filter_map(|n| {
+                                Some((
+                                    str_attr(n, "MapKey")?,
+                                    n.children_named("MapValue")
+                                        .filter_map(|v| str_attr(v, "Object"))
+                                        .collect(),
+                                ))
+                            }))
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    pub(crate) fn load(vfs: &bg3_vfs::Vfs, modules: &[&str]) -> crate::Result<Self> {
+        let mut out = Self::default();
+        for module in modules {
+            for file in [
+                "EquipmentRaces.lsx",
+                "EquipmentSlots.lsx",
+                "VisualSlots.lsx",
+                "VisualAttachmentMappings.lsf",
+            ] {
+                let path = format!("Mods/{module}/EquipmentSettings/{file}");
+                if vfs.exists(&path) {
+                    out.read(&crate::parse(vfs, &path)?);
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// A mask request, retaining names even when an install has no matching byte mapping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodyMask {
+    pub slot: String,
+    pub value: Option<u8>,
+}
+
 /// A level character resolved to the data needed to draw and animate it.
 #[derive(Debug, Clone)]
 pub struct ResolvedCharacter {
@@ -465,6 +590,8 @@ pub struct ResolvedCharacter {
     pub character_visual: CharacterVisualResource,
     pub skeleton: Option<SkeletonResource>,
     pub parts: Vec<CharacterPart>,
+    /// Union of active visuals' `VertexColorMaskSlots`; consumed by character shaders.
+    pub body_masks: Vec<BodyMask>,
     /// Animation sets in lookup order.
     pub animation_sets: Vec<String>,
     /// The idle animation, if found.
@@ -480,15 +607,19 @@ pub struct EquippedItem {
     pub slot: String,
     /// Item root template (stats `RootTemplate`).
     pub template: String,
-    pub visual: VisualResource,
+    pub visual: Option<VisualResource>,
+    /// Worn visuals for the requested equipment race (never the dropped mesh).
+    pub worn: Vec<CharacterPart>,
+    pub hides_slots: Vec<String>,
+    pub body_masks: Vec<BodyMask>,
+    pub material_overrides: MaterialOverrides,
 }
 
-/// Resolve a stats `new equipment` entry to item visuals: each `add equipmentgroup` contributes
-/// its first `add equipment entry` (assumption: the game may pick among a group's entries), whose
-/// stats `RootTemplate` gives the item template and so its `VisualTemplate`. Items whose template
-/// has no plain visual (armour uses per-race equipment visuals instead) are skipped.
+/// Each equipment group contributes its first entry. This selection remains an assumption:
+/// the data supplies alternative names but no conditions/weights (see the research note).
 pub fn resolve_equipment(
     equipment: &str,
+    race: Option<&str>,
     stats: &bg3_stats::Stats,
     templates: &RootTemplates,
     banks: &ResourceBanks,
@@ -496,19 +627,162 @@ pub fn resolve_equipment(
     let Some(eq) = stats.equipment.get(equipment) else {
         return Vec::new();
     };
-    eq.groups
-        .iter()
-        .filter_map(|g| g.first())
+    resolve_equipment_items(
+        eq.groups
+            .iter()
+            .filter_map(|g| g.first())
+            .map(String::as_str),
+        race,
+        stats,
+        templates,
+        banks,
+    )
+}
+
+/// Resolve explicit item stats names, including the sim's created character equipment list.
+pub fn resolve_equipment_items<'a>(
+    items: impl IntoIterator<Item = &'a str>,
+    race: Option<&str>,
+    stats: &bg3_stats::Stats,
+    templates: &RootTemplates,
+    banks: &ResourceBanks,
+) -> Vec<EquippedItem> {
+    items
+        .into_iter()
         .filter_map(|entry| {
             let obj = stats.get(entry)?;
+            let slot = obj.get("Slot").unwrap_or_default();
+            // Starting sets contain inventory supplies and camp outfits too. The viewer currently
+            // displays the adventuring set; it has no armour-set toggle.
+            if slot.is_empty() || slot.starts_with("Vanity") {
+                return None;
+            }
             let template = obj.get("RootTemplate")?.to_owned();
-            let visual = banks.visuals.get(templates.visual_for(&template)?)?.clone();
+            let equipment = templates.equipment_for(&template);
+            let worn = race
+                .and_then(|r| equipment.visuals_for(r, &banks.equipment))
+                .into_iter()
+                .flatten()
+                .filter_map(|id| banks.visuals.get(id))
+                .map(|v| CharacterPart {
+                    slot: v.slot.clone().unwrap_or_default(),
+                    attach_bone: v.attach_bone.clone(),
+                    visual: v.clone(),
+                })
+                .collect::<Vec<_>>();
+            let mut hides_slots = equipment.slots.clone();
+            if hides_slots.is_empty()
+                && !worn.is_empty()
+                && let Some(name) = banks.equipment.slot_names.get(slot)
+            {
+                hides_slots.push(name.clone());
+            }
+            for p in &worn {
+                if !p.slot.is_empty() && !hides_slots.contains(&p.slot) {
+                    hides_slots.push(p.slot.clone());
+                }
+            }
+            // Do not remove a preset part when no wearable visual could be resolved.
+            if worn.is_empty() {
+                hides_slots.clear();
+            }
             Some(EquippedItem {
-                stats: entry.clone(),
-                slot: obj.get("Slot").unwrap_or_default().to_owned(),
+                stats: entry.to_owned(),
+                slot: slot.to_owned(),
+                visual: templates
+                    .visual_for(&template)
+                    .and_then(|id| banks.visuals.get(id))
+                    .cloned(),
                 template,
-                visual,
+                body_masks: body_masks(&worn, &banks.equipment),
+                worn,
+                hides_slots,
+                material_overrides: equipment.material_overrides,
             })
+        })
+        .collect()
+}
+
+impl EquipmentVisuals {
+    // bg3: eoc::EquipmentData::ResolveAppliedRace (4.1.1.7631656)
+    // bg3: eoc::EquipmentData::GetVisualResources (4.1.1.7631656)
+    /// Direct visual first, then per-item ParentRace, then settings DefaultParent.
+    /// Ordering/null semantics are data-inferred; no engine runtime trace was captured.
+    fn visuals_for<'a>(
+        &'a self,
+        race: &'a str,
+        settings: &'a EquipmentSettings,
+    ) -> Option<&'a [String]> {
+        let mut current = race;
+        let mut visited = std::collections::HashSet::new();
+        while !is_null_guid(current) && visited.insert(current) {
+            if let Some(visuals) = self.visuals.get(current) {
+                return Some(visuals);
+            }
+            current = self
+                .parent_race
+                .get(current)
+                .or_else(|| settings.race_parents.get(current))?;
+        }
+        None
+    }
+}
+
+impl RootTemplates {
+    /// Merge sparse equipment fields from parent to child; explicit race entries (including
+    /// empty lists/null parents) override inherited entries. Data-inferred assumption.
+    pub fn equipment_for(&self, id: &str) -> EquipmentVisuals {
+        let mut chain = Vec::new();
+        let mut current = self.get(id);
+        for _ in 0..32 {
+            let Some(t) = current else { break };
+            if let Some(eq) = &t.equipment {
+                chain.push(eq);
+            }
+            current = t.parent.as_deref().and_then(|p| self.get(p));
+        }
+        let mut out = EquipmentVisuals::default();
+        for eq in chain.into_iter().rev() {
+            if !eq.slots.is_empty() {
+                out.slots.clone_from(&eq.slots);
+            }
+            out.visuals.extend(eq.visuals.clone());
+            out.parent_race.extend(eq.parent_race.clone());
+            if eq.material_overrides != MaterialOverrides::default() {
+                out.material_overrides = eq.material_overrides.clone();
+            }
+        }
+        out
+    }
+}
+
+impl ResolvedCharacter {
+    /// Replace matching preset slots and add every part of each wearable, preserving the
+    /// naked body for partial vertex-colour cuts. Call once on a freshly resolved character.
+    // bg3: eoc::EquipmentData::GetVisualResources (4.1.1.7631656)
+    pub fn apply_equipment(&mut self, items: &[EquippedItem], settings: &EquipmentSettings) {
+        if self.character_visual.show_equipment_visuals {
+            self.parts
+                .retain(|p| !items.iter().any(|i| i.hides_slots.contains(&p.slot)));
+            self.parts
+                .extend(items.iter().flat_map(|i| i.worn.iter().cloned()));
+        }
+        self.body_masks = body_masks(&self.parts, settings);
+    }
+}
+
+fn body_masks(parts: &[CharacterPart], settings: &EquipmentSettings) -> Vec<BodyMask> {
+    let mut names: Vec<_> = parts
+        .iter()
+        .flat_map(|p| p.visual.vertex_color_mask_slots.iter().cloned())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .map(|slot| BodyMask {
+            value: settings.body_mask_values.get(&slot).copied(),
+            slot,
         })
         .collect()
 }
@@ -675,6 +949,7 @@ pub fn resolve_character(
         props,
         character_visual: cv,
         skeleton,
+        body_masks: body_masks(&parts, &banks.equipment),
         parts,
         animation_sets,
         idle,
@@ -688,6 +963,326 @@ mod tests {
 
     fn fs(s: &str) -> Value {
         Value::FixedString(s.to_owned())
+    }
+
+    fn race_visual(race: &str, ids: &[&str]) -> Node {
+        let mut n = Node::new("Object").with_attr("MapKey", fs(race));
+        for id in ids {
+            n.children
+                .push(Node::new("MapValue").with_attr("Object", fs(id)));
+        }
+        n
+    }
+
+    #[test]
+    fn wearable_race_fallback_preserves_parts_and_explicit_empty_or_null() {
+        let mut eq = EquipmentVisuals::read(
+            &Node::new("Equipment")
+                .with_child(Node::new("Slot").with_attr("Object", fs("Body")))
+                .with_child(
+                    Node::new("Visuals").with_child(race_visual("parent", &["shirt", "pants"])),
+                ),
+        );
+        let mut settings = EquipmentSettings::default();
+        settings
+            .race_parents
+            .insert("child".into(), "parent".into());
+        assert_eq!(eq.slots, ["Body"]);
+        assert_eq!(
+            eq.visuals_for("child", &settings).unwrap(),
+            ["shirt", "pants"]
+        );
+        eq.parent_race.insert(
+            "child".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+        );
+        assert!(eq.visuals_for("child", &settings).is_none());
+        eq.visuals.insert("child".into(), vec![]);
+        assert_eq!(eq.visuals_for("child", &settings), Some([].as_slice()));
+        eq.visuals.remove("child");
+        eq.parent_race.insert("child".into(), "child".into());
+        assert!(eq.visuals_for("child", &settings).is_none());
+        eq.parent_race.insert("child".into(), "missing".into());
+        assert!(eq.visuals_for("child", &settings).is_none());
+    }
+
+    fn synthetic_templates(nodes: Vec<Node>) -> RootTemplates {
+        let mut root = Node::new("root");
+        root.children = nodes;
+        let res = bg3_lsf::Resource {
+            metadata: Default::default(),
+            regions: vec![bg3_lsf::Region {
+                name: "Templates".into(),
+                node: root,
+            }],
+        };
+        RootTemplates {
+            templates: crate::templates::game_objects(&res)
+                .map(|t| (t.id.clone(), t))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn explicit_cc_items_and_groups_resolve_without_a_dropped_visual() {
+        let templates = synthetic_templates(vec![
+            Node::new("GameObjects")
+                .with_attr("MapKey", fs("item"))
+                .with_child(Node::new("Equipment").with_child(
+                    Node::new("Visuals").with_child(race_visual("race", &["armor", "pants"])),
+                )),
+        ]);
+        let mut stats = bg3_stats::Stats::new();
+        stats
+            .load_str(
+                "test",
+                "test",
+                r#"
+new entry "shirt"
+type "Armor"
+data "Slot" "Breast"
+data "RootTemplate" "item"
+new entry "camp"
+type "Armor"
+data "Slot" "VanityBody"
+data "RootTemplate" "item"
+new equipment "set"
+add equipmentgroup
+add equipment entry "shirt"
+add equipment entry "camp"
+"#,
+            )
+            .unwrap();
+        stats.finish();
+        let mut banks = ResourceBanks::default();
+        for id in ["armor", "pants"] {
+            banks.visuals.insert(
+                id.into(),
+                VisualResource {
+                    id: id.into(),
+                    slot: Some("Body".into()),
+                    ..Default::default()
+                },
+            );
+        }
+        let items = resolve_equipment("set", Some("race"), &stats, &templates, &banks);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].visual.is_none());
+        assert_eq!(
+            items[0]
+                .worn
+                .iter()
+                .map(|p| p.visual.id.as_str())
+                .collect::<Vec<_>>(),
+            ["armor", "pants"]
+        );
+        assert_eq!(items[0].hides_slots, ["Body"]);
+        let cc_items = resolve_equipment_items(
+            ["camp", "shirt", "unknown"],
+            Some("race"),
+            &stats,
+            &templates,
+            &banks,
+        );
+        assert_eq!(cc_items.len(), 1);
+        assert_eq!(cc_items[0].stats, "shirt");
+        let unresolved = resolve_equipment("set", Some("missing_race"), &stats, &templates, &banks);
+        assert!(unresolved[0].worn.is_empty());
+        assert!(unresolved[0].hides_slots.is_empty());
+    }
+
+    #[test]
+    fn settings_read_race_slot_and_mask_mappings_from_nodes() {
+        let res = bg3_lsf::Resource {
+            metadata: Default::default(),
+            regions: vec![
+                bg3_lsf::Region {
+                    name: "EquipmentRaces".into(),
+                    node: Node::new("root").with_child(
+                        Node::new("EquipmentRace")
+                            .with_attr("Guid", fs("child"))
+                            .with_attr("DefaultParent", fs("parent")),
+                    ),
+                },
+                bg3_lsf::Region {
+                    name: "VisualSetSlotsSystem".into(),
+                    node: Node::new("root")
+                        .with_child(
+                            Node::new("EquipmentSlots").with_child(
+                                Node::new("Object")
+                                    .with_attr("MapKey", fs("Boots"))
+                                    .with_attr("MapValue", fs("Footwear")),
+                            ),
+                        )
+                        .with_child(
+                            Node::new("NakedBodySystem").with_child(
+                                Node::new("Object")
+                                    .with_attr("MapKey", fs("TestRegion"))
+                                    .with_attr("MapValue", Value::Byte(123)),
+                            ),
+                        ),
+                },
+            ],
+        };
+        let mut settings = EquipmentSettings::default();
+        settings.read(&res);
+        assert_eq!(settings.race_parents["child"], "parent");
+        assert_eq!(settings.slot_names["Boots"], "Footwear");
+        assert_eq!(settings.body_mask_values["TestRegion"], 123);
+    }
+
+    #[test]
+    fn sparse_item_templates_merge_race_entries_and_inherit_slots() {
+        let parent = Node::new("GameObjects")
+            .with_attr("MapKey", fs("parent"))
+            .with_child(
+                Node::new("Equipment")
+                    .with_child(Node::new("Slot").with_attr("Object", fs("Body")))
+                    .with_child(Node::new("Visuals").with_child(race_visual("race", &["old"]))),
+            );
+        let child = Node::new("GameObjects")
+            .with_attr("MapKey", fs("child"))
+            .with_attr("ParentTemplateId", fs("parent"))
+            .with_child(
+                Node::new("Equipment").with_child(
+                    Node::new("Visuals")
+                        .with_child(race_visual("race", &["new", "pants"]))
+                        .with_child(race_visual("other", &[])),
+                ),
+            );
+        let eq = synthetic_templates(vec![parent, child]).equipment_for("child");
+        assert_eq!(eq.slots, ["Body"]);
+        assert_eq!(eq.visuals["race"], ["new", "pants"]);
+        assert!(eq.visuals["other"].is_empty());
+    }
+
+    #[test]
+    fn equipment_replaces_preset_slots_keeps_naked_body_and_exposes_masks() {
+        let mut banks = ResourceBanks::default();
+        let mut body = VisualResource {
+            id: "body".into(),
+            slot: Some("NakedBody".into()),
+            ..Default::default()
+        };
+        banks.visuals.insert(body.id.clone(), body.clone());
+        body.id = "old_shirt".into();
+        banks.visuals.insert(body.id.clone(), body);
+        banks.characters.character_visuals.insert(
+            "cv".into(),
+            CharacterVisualResource::read(
+                &Node::new("Resource")
+                    .with_attr("ID", fs("cv"))
+                    .with_attr("ShowEquipmentVisuals", Value::Bool(true))
+                    .with_attr("BodySetVisual", fs("body"))
+                    .with_child(
+                        Node::new("Slots")
+                            .with_attr("Slot", fs("Body"))
+                            .with_attr("VisualResource", fs("old_shirt")),
+                    ),
+            ),
+        );
+        let obj = LevelObject {
+            id: "test".into(),
+            name: "test".into(),
+            kind: "character".into(),
+            template: None,
+            visual_template: None,
+            transform: Default::default(),
+            module: String::new(),
+            character: Some(CharacterProps {
+                character_visual: Some("cv".into()),
+                ..Default::default()
+            }),
+        };
+        let mut c = resolve_character(&obj, &RootTemplates::default(), &banks, "idle").unwrap();
+        let shirt = VisualResource {
+            vertex_color_mask_slots: vec!["Torso".into(), "Unknown".into()],
+            ..Default::default()
+        };
+        let item = EquippedItem {
+            stats: "shirt".into(),
+            slot: "Breast".into(),
+            template: "item".into(),
+            visual: None,
+            hides_slots: vec!["Body".into()],
+            worn: vec![CharacterPart {
+                slot: "Body".into(),
+                visual: shirt,
+                attach_bone: None,
+            }],
+            material_overrides: Default::default(),
+            body_masks: vec![],
+        };
+        banks.equipment.body_mask_values.insert("Torso".into(), 73);
+        let original = c.clone();
+        c.apply_equipment(std::slice::from_ref(&item), &banks.equipment);
+        assert_eq!(c.parts.len(), 2);
+        assert_eq!(c.parts[0].visual.id, "body");
+        assert!(!c.parts.iter().any(|p| p.visual.id == "old_shirt"));
+        assert_eq!(
+            c.body_masks,
+            [
+                BodyMask {
+                    slot: "Torso".into(),
+                    value: Some(73)
+                },
+                BodyMask {
+                    slot: "Unknown".into(),
+                    value: None
+                }
+            ]
+        );
+        let mut disabled = original;
+        disabled.character_visual.show_equipment_visuals = false;
+        disabled.apply_equipment(&[item], &banks.equipment);
+        assert_eq!(disabled.parts[1].visual.id, "old_shirt");
+        assert!(disabled.body_masks.is_empty());
+    }
+
+    #[test]
+    #[ignore = "needs BG3 install"]
+    fn worn_armour_resolves_laezel_and_human_fighter() {
+        let Ok(install) = bg3_install::Install::locate() else {
+            eprintln!("skipping: no BG3 install found");
+            return;
+        };
+        let vfs = bg3_vfs::Vfs::from_install(&install).unwrap();
+        let templates = RootTemplates::load(&vfs).unwrap();
+        let banks = ResourceBanks::load(&vfs).unwrap();
+        let stats =
+            bg3_stats::install::load(vfs.packages(), bg3_vfs::modules::BASE_LOAD_ORDER).unwrap();
+        let globals = crate::parse(
+            &vfs,
+            "Mods/Gustav/Globals/WLD_Main_A/Characters/_merged.lsf",
+        )
+        .unwrap();
+        let laezel = globals
+            .region("Templates")
+            .unwrap()
+            .children_named("GameObjects")
+            .find(|n| n.attr_str("Name") == Some("S_Player_Laezel"))
+            .unwrap();
+        let laezel_template = laezel.attr_str("TemplateName").unwrap();
+        let human = templates
+            .templates
+            .values()
+            .find(|t| t.name == "Humans_Male_Player")
+            .unwrap();
+        for (template, equipment) in [
+            (laezel_template, "EQ_Laezel"),
+            (human.id.as_str(), "EQP_CC_Fighter"),
+        ] {
+            let race = templates
+                .character_field(template, |p| p.equipment_race.as_ref())
+                .unwrap();
+            let items = resolve_equipment(equipment, Some(race), &stats, &templates, &banks);
+            let armor = items.iter().find(|i| i.slot == "Breast").unwrap();
+            assert!(!armor.worn.is_empty(), "{equipment}: no armour for {race}");
+            for p in &armor.worn {
+                assert!(vfs.exists(p.visual.source_file.as_deref().unwrap()));
+                eprintln!("{equipment} {race}: {}", p.visual.name);
+            }
+        }
     }
 
     fn anim(key: &str, id: &str) -> Node {
@@ -923,7 +1518,13 @@ mod tests {
                     with_skeleton += usize::from(skel_ok);
                     with_idle += usize::from(c.idle.is_some());
                     let items = c.props.equipment.as_deref().map_or(Vec::new(), |e| {
-                        resolve_equipment(e, &stats, &templates, &banks)
+                        resolve_equipment(
+                            e,
+                            c.props.equipment_race.as_deref(),
+                            &stats,
+                            &templates,
+                            &banks,
+                        )
                     });
                     equipped += items.len();
                     if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
@@ -944,7 +1545,12 @@ mod tests {
                         }
                     }
                     for i in &items {
-                        eprintln!("    equipment {} ({}) → {}", i.stats, i.slot, i.visual.name);
+                        eprintln!(
+                            "    equipment {} ({}) → {}",
+                            i.stats,
+                            i.slot,
+                            i.visual.as_ref().map_or("-", |v| v.name.as_str())
+                        );
                     }
                     let missing: Vec<_> = c
                         .parts

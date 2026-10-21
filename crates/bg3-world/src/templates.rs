@@ -15,6 +15,8 @@ pub struct RootTemplate {
     pub parent: Option<String>,
     pub visual_template: Option<String>,
     pub physics_template: Option<String>,
+    /// Worn visuals and per-item race fallback overrides (`Equipment` child).
+    pub equipment: Option<crate::characters::EquipmentVisuals>,
     /// Light fields set on this template (`light` / `CombinedLight` templates only).
     pub light: Option<crate::lights::LightProps>,
     /// Character fields set on this template (`character` templates only).
@@ -82,6 +84,9 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
                 parent: str_attr(n, "ParentTemplateId"),
                 visual_template: str_attr(n, "VisualTemplate"),
                 physics_template: str_attr(n, "PhysicsTemplate"),
+                equipment: n
+                    .child("Equipment")
+                    .map(crate::characters::EquipmentVisuals::read),
                 light,
                 character,
             })

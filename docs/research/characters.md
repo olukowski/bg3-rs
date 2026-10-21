@@ -61,8 +61,9 @@ with the sparse-template rule in `lighting.md`).
   `Eyes_IrisColour`, `Cloth_Primary`, …) with an `Enabled` flag, plus `MaterialPresets`. Read, not
   yet applied (needs the character shaders).
 
-Clothing meshes are drawn on top of the full body; vertex-colour masks on the body
-(`SupportsVertexColorMask`, `VertexCut` graphs) presumably hide what clothing covers. Not modelled.
+Clothing meshes are drawn on top of the body. Wearable visuals name the partial body cuts in
+`VertexColorMaskSlots`; resolution now exposes these requests (see Equipment below). Applying
+them to the body shader is separate work.
 
 ### Skeleton and skinning
 
@@ -226,26 +227,134 @@ level-rendering limitations remain visible in the shots.
 
 ### Equipment
 
-`resolve_equipment` follows stats `Equipment` → each `add equipmentgroup`'s first `add equipment
-entry` (**assumption**: the game may choose among a group's entries) → item stats (`Slot`,
-`RootTemplate`) → item root template → `VisualTemplate`. On the Nautiloid this gives 28 items:
-shortswords, longswords, scimitars, tridents, a greatsword, handaxes, crossbows, a shield, and
-body armour whose template visual is the loot (dropped-item) mesh.
+Surveyed directly from the installed 4.1.1.7631656 data with `bg3x lsx`, `bg3x find`,
+`bg3x stat` and `bg3x cat`; no reverse-engineering tools or original-game runtime tracing.
+Local XML and search output is under `.cache/equipment/`. The implementation reads the
+same resources at runtime; no extracted tables are embedded or committed.
 
-The viewer draws weapons in hand (**assumption**, the drawn/sheathed state isn't modelled): the
-weapon GR2's `Dummy_Attachment` bone is placed on the character's `Dummy_R_Hand` (melee main hand,
-or a ranged main weapon when there is no melee one) or `Dummy_L_Hand` (off hand). Both names occur
-in the game binary and in every humanoid skeleton; weapons also have a `Dummy_Sheath` bone that
-presumably meets the skeleton's `Dummy_Sheath_*` bones when sheathed. Worn armour uses per-race
-equipment visuals (`EquipmentRace`, `Mods/Shared/EquipmentSettings/*.lsx`,
-`VisualAttachmentMappings.lsf`); not followed yet.
+#### From starting items to worn meshes
+
+1. A level/global character's `Equipment` attribute inherits through its root-template
+   `ParentTemplateId` chain. For `S_Player_Laezel`, inspect
+   `Mods/Gustav/Globals/WLD_Main_A/Characters/_merged.lsf`: `TemplateName` points to
+   `ORIGIN_Laezel` in `Public/Gustav/RootTemplates/_merged.lsf`, and `Equipment` is
+   `EQ_Laezel`. Its parent `Githyanki_Female_Player`, then `BASE_Githyanki_Female` in
+   `Public/Shared/RootTemplates/_merged.lsf`, supplies `EquipmentRace`.
+2. `Public/<Module>/Stats/Generated/Equipment.txt` defines `new equipment`,
+   `add initialweaponset`, and groups of `add equipment entry` item stats names.
+   `EQ_Laezel` contains `ARM_HalfPlate_Body_Githyanki` and `ARM_Boots_Metal_Githyanki`,
+   alongside weapons, supplies, underwear and camp clothes. For the created avatar the
+   viewer uses `Sim::combat.created_characters[avatar].equipment`, the actual public
+   `bg3_sim::cc::CreatedCharacter` result, including race/class equipment and selected
+   items. It does not infer the avatar's class from the body template.
+3. Item stats inherit via `using`: their effective `Slot` selects the equipment slot,
+   and `RootTemplate` selects an item in `Public/<Module>/RootTemplates/_merged.lsf`.
+   `ARM_HalfPlate_Body_Githyanki` is a `Breast` item whose template is
+   `ARM_HalfPlate_Githyanki`. `VisualTemplate` on this template is the **dropped** visual;
+   drawing that on the character would be wrong.
+4. The item template's child `Equipment` supplies worn appearance:
+   `Visuals/Object/@MapKey` is an **equipment-race GUID**, and each of its child
+   `MapValue/@Object` values is a `VisualBank` resource ID. Keep every value, in order.
+   The separate child `Slot/@Object` names a visual slot such as `Body` or `Footwear`.
+   `VisualSet/MaterialOverrides` supplies item colour/material overrides; these are
+   exposed on `EquippedItem` for shader work, not applied by this change.
+5. The character's inherited `EquipmentRace` already identifies race **and body type**.
+   `Mods/Shared/EquipmentSettings/EquipmentRaces.lsx` names Human Male, Human Female,
+   strong variants, Githyanki Female, Gnome Male, etc.; `SharedDev` adds more definitions.
+   Each `EquipmentRace` uses `Guid`, optional `DefaultParent`, and `CharacterVisual`
+   (the associated base appearance, not an item visual). Modules load in the normal
+   override order. For a requested race, consult the item's direct visual entry first;
+   otherwise follow `Equipment/ParentRace/Object` (`MapKey` → `MapValue`) if explicitly
+   present, or `EquipmentRace/@DefaultParent`. For example Elf/Drow Female and
+   Githyanki Female have Human Female as their default parent. Loops and missing links
+   terminate safely. An explicit empty visual entry is kept empty. **Assumption:** a
+   null per-item parent stops fallback; the precedence and sparse per-race template
+   merge are inferred from the schema, not verified against engine execution.
+6. A worn `VisualBank/Resource` supplies `SourceFile` (GR2), `Slot`, `AttachBone`, and
+   `Objects` (`ObjectID`, `MaterialID`, `LOD`). The viewer draws all LOD-0 mesh objects.
+   The chain shirt's Human Male entry has trousers and torso visuals
+   (`HUM_M_ARM_ChainShirt_A_Pants`, `HUM_M_ARM_ChainShirt_A_0_Body`); the torso itself
+   includes solid and cloth meshes. Human scale mail likewise has body and trousers.
+   Lae'zel's Githyanki Female entry resolves
+   `GTY_F_ARM_Laezel_Githyanki_HalfPlate_A_Body`, with separate gith metal boots.
+   These are race-fitting skinned meshes, bound by mesh `BoneBindings` names to the
+   character skeleton. Extra cloth bones extend that skeleton just like head/hair bones;
+   cloth simulation remains absent.
+7. Replacement operates on visual slots, not item stats slot names:
+   `Mods/Shared/EquipmentSettings/EquipmentSlots.lsx` maps `Breast` → `Body`,
+   `Boots` → `Footwear`, `Helmet` → `Headwear`, etc. The item `Equipment/Slot` and
+   selected visuals' `Slot` identify preset parts to replace; settings are used when
+   the item omits its visual slot. Every part of a multipart item survives replacement.
+   `ShowEquipmentVisuals=false` preserves the preset and suppresses equipment rendering,
+   including rigid hand items. The naked `BodySet` remains for partial cuts.
+   **Assumption:** same-slot preset replacement and adventuring-set visibility; the viewer
+   excludes `VanityBody`/`VanityBoots` because it has no camp-outfit toggle. Helmet hair
+   variants (`LongHair`, `ShortHair`, etc.) are not yet selected.
+
+#### Partial cuts and attachments
+
+No `HideSlots` field was found on the inspected armour templates. Instead each worn
+visual has repeatable `VertexColorMaskSlots/@Object`, with names such as `Torso`,
+`Thighs`, `Private_Parts`, `Underwear_Bra`, and `ModestyLeaf`. The definitions live in
+`Mods/Shared/EquipmentSettings/VisualSlots.lsx` under
+`VisualSetSlotsSystem/NakedBodySystem/Object`: `MapKey` is the name, `MapValue` is a
+vertex-colour byte identifier. `SupportsVertexColorMask` is a visual capability.
+These are identifiers, not a guessed bitmask or whole-body hide flag.
+
+`EquippedItem::body_masks` exposes each item's requests; after `apply_equipment`,
+`ResolvedCharacter::body_masks` is the deduplicated union from active preset/equipment
+parts, each with its name and optional byte value. Unknown names stay visible in the
+API as `None`. This is the shader integration hook: cut only matching vertex-colour
+regions of compatible underlying meshes. No whole naked-body deletion is substituted
+for partial cuts. Exact channel/comparison and interactions between layered garments
+remain **unverified**; this change does not implement mask shading.
+
+`VisualAttachmentMappings.lsf` is a separate visual-ID → list-of-visual-IDs table:
+`VisualSetSlotsSystem/AttachmentsMappings/Object/@MapKey` → child `MapValue/@Object`.
+For example its Cambion female naked-body key maps to a wing visual (confirmed with
+`bg3x find` in the creature's Female_Body/Female_Wings banks). It is not the
+race-selection map. None of the chain-shirt, scale-mail or gith half-plate visuals
+surveyed needs this table. It is loaded into `EquipmentSettings::attachments`, but
+automatic expansion is not implemented: how it interacts with explicit character
+slots still needs observation. This limitation does not block the tested wearables.
+
+Rigid visuals use their `AttachBone` when present. Weapons retain the existing
+`Dummy_Attachment` anchor alignment to `Dummy_R_Hand`/`Dummy_L_Hand`; a ranged main
+weapon is shown only without a melee main weapon. The cleric shield has no `AttachBone`,
+so it uses that existing offhand anchor path. Drawn versus sheathed state, shield-on-back
+selection, and weapon-specific animation subsets remain **assumptions/unimplemented**.
+Related symbols found by grepping the supplied symbol index:
+`eoc::EquipmentData::Visit`, `ResolveAppliedRace`, `GetVisualResources`, and
+`ecl::equipment::GetAttachmentBoneName` (4.1.1.7631656). Symbol references identify the
+original subsystem; they do not claim its implementation was inspected.
+
+#### Equipment groups
+
+The surveyed Shared, SharedDev and Gustav `Equipment.txt` files contain respectively
+1,187, 151 and 180 groups, all with a single `add equipment entry "name"` and no
+condition or weight arguments. This includes Lae'zel and the CC cleric/fighter sets.
+Thus there is no alternative to choose for these subjects. The resolver keeps the
+first entry for a hypothetical multi-entry group, explicitly an **assumption**;
+the data inspected does not establish whether such entries mean random choices or
+some other policy. Synthetic tests retain this assumption without calling it verified.
+
+#### Verification
+
+Synthetic tests cover multipart race entries, default and item-parent fallback,
+explicit empty entries, null/cyclic/missing parents, sparse item-template inheritance,
+preset-slot replacement, equipment visibility, mask metadata and actual item-list
+resolution without any dropped visual. The ignored install test
+`worn_armour_resolves_laezel_and_human_fighter` checks Lae'zel's global/template race
+and a Human Male player template with `EQP_CC_Fighter`, requiring real worn `Breast`
+visuals and existing GR2s for both. Visual inspection and final check results are
+recorded below after capture.
 
 ## Open
 
 - Character shaders: skin (`CHAR_Skin_*`, melanin/hemoglobin model), hair, eyes, `VertCut`
   masking, material overrides and presets. The viewer's `StandardMaterial` approximation shows
   some skin parts in the graph's default (red) texture.
-- Subset selection, sheathing, and the armour equipment-visual chain.
+- Subset selection, sheathing, helmet hair, camp-outfit switching and automatic visual attachments.
 - Facial animation and physics/cloth for the extra mesh bones.
 - Initial death/lying poses for scenery corpses (combat deaths now animate).
 - Confirm the waterfall/override order and the fallback rule against the original

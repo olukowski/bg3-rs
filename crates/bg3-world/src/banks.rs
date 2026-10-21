@@ -32,7 +32,7 @@ impl MeshObject {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct VisualResource {
     pub id: String,
     pub name: String,
@@ -47,6 +47,9 @@ pub struct VisualResource {
     pub slot: Option<String>,
     /// `AttachBone`: bone a rigid visual attaches to.
     pub attach_bone: Option<String>,
+    /// Named body regions this visual asks to cut from underlying meshes.
+    pub vertex_color_mask_slots: Vec<String>,
+    pub supports_vertex_color_mask: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +88,7 @@ pub struct ResourceBanks {
     pub virtual_textures: HashMap<String, VirtualTextureResource>,
     /// Character visuals, skeletons, animations and animation sets.
     pub characters: crate::characters::CharacterBanks,
+    pub equipment: crate::characters::EquipmentSettings,
     /// Bank region (`EffectBank`, `SkeletonBank`, …) of every resource ID, including the typed ones.
     pub kinds: HashMap<String, String>,
     /// Bank files that failed to parse (path, error).
@@ -142,6 +146,7 @@ impl ResourceBanks {
                 }
             }
         }
+        banks.equipment = crate::characters::EquipmentSettings::load(vfs, modules)?;
         Ok(banks)
     }
 
@@ -218,6 +223,14 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
                     .collect(),
                 slot: str_attr(n, "Slot"),
                 attach_bone: str_attr(n, "AttachBone"),
+                vertex_color_mask_slots: n
+                    .children_named("VertexColorMaskSlots")
+                    .filter_map(|c| str_attr(c, "Object"))
+                    .collect(),
+                supports_vertex_color_mask: n
+                    .attr("SupportsVertexColorMask")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             }
         })
         .collect();

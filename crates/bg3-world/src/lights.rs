@@ -500,6 +500,7 @@ mod tests {
             parent: parent.map(Into::into),
             visual_template: None,
             physics_template: None,
+            equipment: None,
             light: Some(LightProps::read(&light)),
             character: None,
         }
