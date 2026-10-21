@@ -19,6 +19,8 @@ pub mod exec;
 pub mod expr;
 pub mod fields;
 pub mod functor;
+pub mod install;
+pub mod levelmap;
 pub mod natives;
 pub mod rules;
 pub mod survey;

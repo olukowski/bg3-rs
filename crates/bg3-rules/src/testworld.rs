@@ -6,7 +6,8 @@ use crate::context::{
     Ability, Advantage, AttackType, DamageType, EntityId, Hand, Resistance, RulesContext, Size,
     Weapon,
 };
-use crate::expr::Number;
+use crate::dice::RollDefinition;
+use crate::levelmap::LevelMaps;
 
 #[derive(Debug, Clone)]
 pub struct Combatant {
@@ -31,7 +32,8 @@ pub struct Combatant {
     pub passives: BTreeSet<String>,
     /// Status id → remaining turns (-1 = permanent).
     pub statuses: BTreeMap<String, i32>,
-    pub level_map: BTreeMap<String, Number>,
+    /// Per-entity level map overrides (name → value).
+    pub level_map: BTreeMap<String, RollDefinition>,
     pub advantage_on_attacks: bool,
     pub disadvantage_on_attacks: bool,
 }
@@ -95,6 +97,8 @@ impl Combatant {
 #[derive(Debug, Clone, Default)]
 pub struct TestWorld {
     pub entities: BTreeMap<EntityId, Combatant>,
+    /// Level maps for `LevelMapValue(...)` (e.g. loaded from the install).
+    pub level_maps: LevelMaps,
     next: u32,
 }
 
@@ -190,8 +194,12 @@ impl RulesContext for TestWorld {
             disadvantage: c.disadvantage_on_attacks,
         })
     }
-    fn level_map_value(&self, e: EntityId, name: &str) -> Option<Number> {
-        self.entities.get(&e)?.level_map.get(name).copied()
+    fn level_map_value(&self, e: EntityId, name: &str) -> Option<RollDefinition> {
+        let c = self.entities.get(&e)?;
+        c.level_map
+            .get(name)
+            .copied()
+            .or_else(|| self.level_maps.roll(name, c.level))
     }
     fn is_ally(&self, a: EntityId, b: EntityId) -> bool {
         self.exists(a) && self.exists(b) && self.get(a).team == self.get(b).team

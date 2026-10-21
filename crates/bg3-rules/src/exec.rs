@@ -119,13 +119,18 @@ impl ExprEnv for EntityEnv<'_> {
             VarKind::Builtin(BuiltinVar::SpellDC) => {
                 rules::spell_dc(c, e, None, self.base_spell_dc)
             }
-            VarKind::LevelMapValue(name) => {
-                return c
-                    .level_map_value(e, name)
-                    .ok_or_else(|| EvalError::Unsupported(format!("LevelMapValue({name})")));
-            }
             _ => return Err(EvalError::UnknownVariable(v.text.clone())),
         })
+    }
+
+    fn level_map(&mut self, v: &Variable, name: &str) -> Result<RollDefinition, EvalError> {
+        let e = match v.context {
+            VarContext::Target => self.target.unwrap_or(self.source),
+            _ => self.source,
+        };
+        self.ctx
+            .level_map_value(e, name)
+            .ok_or_else(|| EvalError::Unsupported(format!("LevelMapValue({name})")))
     }
 
     fn placeholder(&mut self, n: u32) -> Result<RollDefinition, EvalError> {

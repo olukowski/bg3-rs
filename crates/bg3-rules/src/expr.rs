@@ -470,6 +470,11 @@ pub trait ExprEnv {
     fn placeholder(&mut self, n: u32) -> Result<RollDefinition, EvalError> {
         Err(EvalError::Unsupported(format!("Placeholder{n}")))
     }
+    /// `LevelMapValue(name)` as a roll.
+    fn level_map(&mut self, v: &Variable, name: &str) -> Result<RollDefinition, EvalError> {
+        let _ = v;
+        Err(EvalError::Unsupported(format!("LevelMapValue({name})")))
+    }
     fn resource_roll(&mut self, name: &str, level: u8) -> Result<RollDefinition, EvalError> {
         Err(EvalError::Unsupported(format!(
             "ResourceRoll({name},{level})"
@@ -585,7 +590,14 @@ impl<'a> Evaluator<'a> {
                 let r = self.env.resource_roll(name, *level)?;
                 self.roll(r, mode)
             }
-            Expr::Var(v) => self.env.variable(v)?,
+            Expr::Var(v) => match &v.kind {
+                // Level map values are rolls: rolled, averaged and crit-doubled like dice.
+                VarKind::LevelMapValue(name) => {
+                    let r = self.env.level_map(v, name)?;
+                    self.roll(r, mode)
+                }
+                _ => self.env.variable(v)?,
+            },
         })
     }
 }

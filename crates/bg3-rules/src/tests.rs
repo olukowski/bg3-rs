@@ -613,3 +613,52 @@ fn cast_save_spell() {
     assert_eq!(ex.cast(&spell, a, b), CastOutcome::Failure);
     assert_eq!(w.hp(b), 6);
 }
+
+// ---- level maps ---------------------------------------------------------------------------
+
+const LEVEL_MAP_LSX: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="0" build="0"/>
+    <region id="LevelMapValues">
+        <node id="root">
+            <children>
+                <node id="LevelMapSeries">
+                    <attribute id="Level1" type="LSString" value="1d6"/>
+                    <attribute id="Level3" type="LSString" value="2d6"/>
+                    <attribute id="Name" type="FixedString" value="TestSeries"/>
+                    <attribute id="UUID" type="guid" value="00000000-0000-0000-0000-000000000001"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>
+"#;
+
+#[test]
+fn level_maps() {
+    let res = bg3_lsf::parse(LEVEL_MAP_LSX.as_bytes()).unwrap();
+    let mut maps = crate::levelmap::LevelMaps::default();
+    maps.add_resource(&res);
+    let d6 = |n| RollDefinition::dice(n, DiceType::D6, 0);
+    assert_eq!(maps.roll("TestSeries", 1), Some(d6(1)));
+    assert_eq!(maps.roll("TestSeries", 2), Some(d6(1)));
+    assert_eq!(maps.roll("TestSeries", 7), Some(d6(2)));
+    assert_eq!(maps.roll("Nope", 1), None);
+
+    // In an expression the value is a roll: averaged, rolled, and doubled on crits.
+    let (mut w, a, _) = world();
+    w.level_maps = maps;
+    w.get_mut(a).level = 3;
+    let e = expr::parse("LevelMapValue(TestSeries)+1").unwrap();
+    let mut env = crate::exec::EntityEnv {
+        ctx: &w,
+        source: a,
+        target: None,
+        weapon: None,
+        base_spell_dc: 8,
+    };
+    let mut rng = ScriptedDice::new(&[6, 6, 6, 6]);
+    let mut ev = Evaluator::new(&mut env, &mut rng);
+    assert_eq!(ev.eval(&e, Mode::Average).unwrap(), 8);
+    assert_eq!(ev.eval(&e, Mode::Roll { critical: true }).unwrap(), 25);
+}

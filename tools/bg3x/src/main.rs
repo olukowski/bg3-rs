@@ -1,6 +1,7 @@
 //! `bg3x` — inspect a Baldur's Gate 3 install. Output stays local; see ADR 0001.
 
 mod materials;
+mod rules;
 
 use std::path::PathBuf;
 
@@ -117,6 +118,11 @@ enum Command {
         #[arg(long)]
         kinds: bool,
     },
+    /// Stats expression languages: evaluate an expression, survey the install, cast a spell.
+    Rules {
+        #[command(subcommand)]
+        cmd: rules::RulesCmd,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -186,6 +192,7 @@ fn main() -> Result<()> {
         Command::Materials { level, verbose } => materials::survey(&level, verbose),
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),
+        Command::Rules { cmd } => rules::run(cmd),
         Command::Lsx { pak, path } => {
             use std::io::Write;
             let data = read_file(&pak, &path)?;

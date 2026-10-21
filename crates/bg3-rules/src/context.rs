@@ -231,8 +231,9 @@ pub trait RulesContext {
         let _ = attacker;
         0
     }
-    /// `LevelMapValue(name)` for an entity, if the context knows the level map.
-    fn level_map_value(&self, e: EntityId, name: &str) -> Option<crate::expr::Number> {
+    /// `LevelMapValue(name)` for an entity (usually dice, e.g. a cantrip's damage at the
+    /// entity's level), if the context knows the level maps.
+    fn level_map_value(&self, e: EntityId, name: &str) -> Option<crate::dice::RollDefinition> {
         let _ = (e, name);
         None
     }
