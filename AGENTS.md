@@ -4,7 +4,7 @@ Guidance for AI agents (Claude, Codex, …) and humans working in this repo.
 
 ## What this project is
 
-An open-source, **behaviour-faithful (1:1) reimplementation of Baldur's Gate 3** in Rust on
+**bg3-rs** is an open-source, **behaviour-faithful (1:1) reimplementation of Baldur's Gate 3** in Rust on
 [Bevy](https://bevyengine.org). It runs on top of the user's own legally obtained BG3 install and
 reads all game content from it. Spiritual sibling of [nv-rs](https://github.com/slaterain/nv-rs)
 (Fallout: New Vegas).
@@ -100,7 +100,7 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
 - `cargo test --workspace` must pass **without** a game install (unit tests, synthetic fixtures we
   author ourselves).
 - Tests that need the install are marked `#[ignore = "needs BG3 install"]` and run with
-  `cargo test --workspace -- --ignored`. They locate the game via `BG3_APP` or the default path and
+  `cargo test --workspace -- --ignored`. They locate the game via `BG3_INSTALL` or the default search paths and
   must skip cleanly-with-message rather than panic if it's missing.
 - Behaviour tests compare against reference traces captured from the original game; the capture
   tooling is committed, the traces are not.
