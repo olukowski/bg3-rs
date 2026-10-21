@@ -12,6 +12,7 @@ bg3-loca.workspace = true
 bg3-lsf.workspace = true
 bg3-pak.workspace = true
 bg3-stats.workspace = true
+bg3-story.workspace = true
 bg3-vfs.workspace = true
 clap.workspace = true
 

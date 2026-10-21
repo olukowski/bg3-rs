@@ -60,6 +60,21 @@ enum Command {
         #[arg(short, long, default_value = "")]
         prefix: String,
     },
+    /// Dump a compiled Osiris story as pseudo-Osiris source (full dump, or one goal).
+    Story {
+        /// Pak name or path containing the story (`-` searches all paks).
+        #[arg(default_value = "Gustav")]
+        pak: String,
+        /// Story path inside the pak.
+        #[arg(default_value = "Mods/GustavDev/Story/story.div.osi")]
+        path: String,
+        /// Only dump this goal (exact name).
+        #[arg(short, long)]
+        goal: Option<String>,
+        /// Only print the summary.
+        #[arg(short, long)]
+        summary: bool,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -106,6 +121,12 @@ fn main() -> Result<()> {
         }
         Command::Verify { pak } => verify(pak),
         Command::Dups => dups(),
+        Command::Story {
+            pak,
+            path,
+            goal,
+            summary,
+        } => story(&pak, &path, goal.as_deref(), summary),
         Command::Find { value, prefix } => find(&value, &prefix),
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),
@@ -318,6 +339,23 @@ fn find(value: &str, prefix: &str) -> Result<()> {
         for hit in hits {
             println!("{}: {hit}", file.entry.name);
         }
+    }
+    Ok(())
+}
+
+fn story(pak: &str, path: &str, goal: Option<&str>, summary: bool) -> Result<()> {
+    use std::io::Write;
+    let story = bg3_story::Story::parse(&read_file(pak, path)?).with_context(|| path.to_owned())?;
+    let mut out = std::io::stdout().lock();
+    if summary {
+        out.write_all(story.dump_summary().as_bytes())?;
+    } else if let Some(name) = goal {
+        let g = story
+            .goal_by_name(name)
+            .with_context(|| format!("goal {name} not found"))?;
+        out.write_all(story.dump_goal(g).as_bytes())?;
+    } else {
+        write!(out, "{story}")?;
     }
     Ok(())
 }

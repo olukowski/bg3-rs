@@ -1,0 +1,16 @@
+[package]
+name = "bg3-story"
+description = "Loader for compiled Osiris story files (story.div.osi) as used by Baldur's Gate 3"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+bg3-install.workspace = true
+bg3-pak.workspace = true
+
+[lints]
+workspace = true

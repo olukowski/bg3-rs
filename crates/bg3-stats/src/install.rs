@@ -6,25 +6,7 @@ use bg3_pak::Package;
 
 use crate::{Error, Stats};
 
-/// Module load order for the base game (no Honour mode), lowest priority first.
-///
-/// Derived from `Mods/*/meta.lsx` dependencies in the reference build: `Shared` and `SharedDev`
-/// are not listed as anyone's dependency (always-loaded engine-level modules) and go first;
-/// `Gustav` depends on the dice sets, `MainUI`, `ModBrowser`, `PhotoMode` and `CrossplayUI`;
-/// `GustavDev` → `Gustav`; `GustavX` → `GustavDev`. Of those, only `PhotoMode` ships stats.
-/// See `docs/formats/stats.md` for the uncertainty around this order.
-pub const BASE_LOAD_ORDER: &[&str] = &[
-    "Shared",
-    "SharedDev",
-    "PhotoMode",
-    "Gustav",
-    "GustavDev",
-    "GustavX",
-];
-
-/// Additional modules for Honour mode, appended after [`BASE_LOAD_ORDER`]
-/// (`Honour` → `GustavDev`; `HonourX` → `GustavX`, `Honour`).
-pub const HONOUR_MODULES: &[&str] = &["Honour", "HonourX"];
+pub use bg3_vfs::modules::{BASE_LOAD_ORDER, HONOUR_MODULES};
 
 /// A stats text file found in a pak.
 #[derive(Debug, Clone)]

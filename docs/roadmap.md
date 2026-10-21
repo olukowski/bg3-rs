@@ -28,7 +28,8 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [ ] Turn-based combat loop for a scripted encounter
 
 ## M4 — Story
-- [ ] `bg3-story` + `bg3-osiris` VM, run Nautiloid goals headlessly
+- [x] `bg3-story`: compiled story loader (formats 1.13–1.15, byte-exact round-trip of all 6 stories) + `bg3x story`
+- [ ] `bg3-osiris` VM, run Nautiloid goals headlessly
 - [ ] Dialog trees (`.lsf` dialogs) with flags/checks
 
 ## M5 — First playable slice

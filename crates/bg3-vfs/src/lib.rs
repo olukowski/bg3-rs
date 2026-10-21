@@ -4,6 +4,8 @@
 //! e.g. `.GR2` vs `.gr2`). When the same path exists in several paks, the pak mounted **last**
 //! wins. See `docs/research/vfs-load-order.md` for what is and isn't known about the original order.
 
+pub mod modules;
+
 use std::collections::HashMap;
 use std::path::Path;
 

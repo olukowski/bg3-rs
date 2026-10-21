@@ -13,7 +13,9 @@ bg3-loca = { path = "crates/bg3-loca" }
 bg3-lsf = { path = "crates/bg3-lsf" }
 bg3-pak = { path = "crates/bg3-pak" }
 bg3-stats = { path = "crates/bg3-stats" }
+bg3-story = { path = "crates/bg3-story" }
 bg3-vfs = { path = "crates/bg3-vfs" }
+bg3-world = { path = "crates/bg3-world" }
 
 anyhow = "1"
 bevy = "0.20"
@@ -23,6 +25,7 @@ lz4_flex = "0.14"
 memmap2 = "0.9"
 plist = "1.10"
 quick-xml = "0.42"
+rayon = "1.12"
 serde_json = "1"
 thiserror = "2"
 zstd = "0.14"
