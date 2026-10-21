@@ -68,9 +68,11 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `stat <name>`, `story [--goal NAME | -s]`, `materials [LEVEL] [-v]` (material/texture survey of a level),
   `osiris-replay [TRACE] [--vm-log OUT] [--kinds]` (replay a libOsiris runtime log through the VM,
   see `docs/research/osiris-runtime-log.md`), `dialog <name> [--walk] [--choices 1,2] [--rolls s,f]
-  [--events] | --list <substr>` (dialog tree with loca text, or a walk with the runner; output is
-  game text, keep it local), `sim-replay [TRACE] [--check|--both] [--inventory] [--dump OUT]`
-  (the same with `bg3-sim` as the engine, see `docs/research/osiris-engine-api.md`),
+  [--events] [--sim [--speakers A,B] [--seed N]] | --list <substr>` (dialog tree with loca text,
+  or a walk with the runner, `--sim` on bg3-sim's world with rules-engine rolls; output is game
+  text, keep it local), `sim-replay [TRACE] [--check|--both] [--inventory] [--dump OUT]
+  [--no-dialogs]` (the same with `bg3-sim` as the engine, running the story's dialogs too, see
+  `docs/research/osiris-engine-api.md`),
   `rules eval "<expr>" --kind condition|functor|roll|expr`, `rules cast <spell>`, `rules survey`
   (stats expression languages, see `docs/formats/stats-expressions.md`).
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a

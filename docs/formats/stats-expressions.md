@@ -324,6 +324,17 @@ keep the first.
 (if proficient in that save) against the DC; pass on total ≥ DC. **Natural 1 and 20 have no
 special effect.**
 
+**Ability checks** (dialog rolls; `bg3_rules::rules::roll_ability_check`): d20 (with
+advantage/disadvantage) + ability modifier + proficiency bonus when proficient in the skill
+(twice with expertise) + flat `Skill(X, n)` boosts; for `RollType` `SavingThrow` the
+saving-throw proficiency counts instead, for `RawAbility` nothing. Pass on total ≥ DC. The
+modifier sources are the ones `eoc::active_roll::DetermineStaticModifiers` gathers
+(`CheckProficiencyBoost`, `CheckExpertiseBoost`, `CheckSkillBoost`) [code, only the sources;
+other boosts like roll bonuses and Guidance are not modelled]. A natural 20 always passes and a
+natural 1 always fails, reported as critical success/failure [guess: how the game presents dialog
+checks, branch not located]. The DC is the `Difficulties` value of the roll's
+`DifficultyClasses` entry.
+
 **Spell save DC** [code: `ls::thoth::shared::CalculateSpellDC` 0x10202c118]:
 `BaseSpellDifficultyCheck` (8 in `Data.txt`) + proficiency + DC boosts +
 `floor((score-10)/2)`. With no stats, the modifier is −5.
@@ -345,14 +356,16 @@ from the `ProficiencyBonusScaling` level map, so it's a query, not a formula.
 
 - **`context::RulesContext`:** the game-state interface the simulation implements:
   - Required: identity, ability scores, level, proficiency, AC, HP, and `set_hp`.
-  - Defaulted: save proficiencies, spellcasting ability, weapons, resistances, attack and save
-    advantage, critical threshold, level maps, relations, tags, statuses, passives, generic
-    `property` lookup for scripts, and the status mutations.
-  - `testworld::TestWorld` is a small in-memory implementation.
+  - Defaulted: save and skill proficiencies, expertise, skill bonuses, spellcasting ability,
+    weapons, resistances, attack and save advantage, critical threshold, level maps, relations,
+    tags, statuses, passives, generic `property` lookup for scripts, and the status mutations.
+  - `testworld::TestWorld` is a small in-memory implementation; `bg3_sim::Sim` implements it
+    over the game's entities (`crates/bg3-sim/src/rules.rs`, characters' stats from their
+    `Character` stats entries).
 - **`dice`:** `RollDefinition`, `DiceRng`, `RollStream` (seeded MT19937-64), and `ScriptedDice`
   for tests.
-- **`rules`:** `roll_attack`, `roll_saving_throw`, `spell_dc`, `apply_resistance`,
-  `weapon_damage_roll`.
+- **`rules`:** `roll_attack`, `roll_saving_throw`, `roll_ability_check`, `spell_dc`,
+  `apply_resistance`, `weapon_damage_roll`.
 - **`condition::ConditionEngine`:** a Thoth machine with the natives registered. Load the
   shipped helpers with `install::load_helpers`; `evaluate` returns the `ConditionResult` and any
   rolls it made.

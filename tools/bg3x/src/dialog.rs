@@ -63,6 +63,12 @@ pub struct Options {
     pub rolls: Vec<bool>,
     /// Print the Osiris events the walk raises.
     pub events: bool,
+    /// Walk on bg3-sim's world instead of an empty memory world.
+    pub sim: bool,
+    /// With `sim`: speakers by slot (object names or UUIDs).
+    pub speakers: Vec<String>,
+    /// With `sim`: seed of the dice.
+    pub seed: u64,
 }
 
 pub fn run(opts: Options) -> Result<()> {
@@ -88,7 +94,9 @@ pub fn run(opts: Options) -> Result<()> {
         .clone();
     let dialog = ctx.lib.load_resource(&resource.id)?;
     eprintln!("{}  {}", resource.osiris_name(), resource.binary_path());
-    if opts.walk {
+    if opts.walk && opts.sim {
+        walk_dialog_sim(&ctx, &resource, &dialog, &opts)
+    } else if opts.walk {
         walk_dialog(&ctx, &dialog, &opts)
     } else {
         print_tree(&ctx, &dialog);
@@ -338,6 +346,135 @@ fn walk_dialog(ctx: &Ctx, d: &Arc<Dialog>, opts: &Options) -> Result<()> {
                     },
                 };
                 if let Err(e) = run.choose(&mut world, pick.wrapping_sub(1)) {
+                    eprintln!("{e}");
+                }
+            }
+            Step::Ended => {
+                println!("(dialog ended)");
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Walks a dialog on bg3-sim: the game's flags and tags (as at the start of a new game, with
+/// the startup level loaded), the speakers' character sheets, rolls through the rules engine.
+/// Flags and tags the dialog sets stay in the sim for the rest of the walk.
+fn walk_dialog_sim(
+    ctx: &Ctx,
+    resource: &bg3_dialog::library::DialogResource,
+    d: &Arc<Dialog>,
+    opts: &Options,
+) -> Result<()> {
+    use bg3_sim::{DialogBank, DialogScript, Notification, Sim};
+    let data = crate::sim::load_data(&[])?;
+    let mut sim = Sim::new(data);
+    let startup = sim.data.module_levels.startup.clone();
+    sim.load_level(&startup);
+    sim.set_dialog_bank(Arc::new(DialogBank::from_library(ctx.lib.clone())));
+    sim.dice = bg3_sim::rules::SimDice::new(opts.seed);
+    sim.take_events();
+    let find = |s: &str| -> Option<bg3_sim::Guid> {
+        bg3_sim::Guid::from_osiris(s)
+            .filter(|g| sim.exists(*g))
+            .or_else(|| sim.entities.iter().find(|e| e.name == s).map(|e| e.id))
+    };
+    let slots = d
+        .speakers
+        .iter()
+        .map(|s| s.index + 1)
+        .max()
+        .unwrap_or(0)
+        .max(0) as usize;
+    let mut speakers = Vec::new();
+    for slot in 0..slots {
+        let given = opts.speakers.get(slot).filter(|s| !s.is_empty());
+        let actor = match given {
+            Some(s) => Some(find(s).with_context(|| format!("no object {s} in the sim"))?),
+            None => d.speaker(slot as i32).and_then(|s| {
+                s.list
+                    .iter()
+                    .map(bg3_sim::dialog::from_lsf)
+                    .find(|g| sim.exists(*g))
+            }),
+        };
+        match actor {
+            Some(a) => eprintln!("speaker {slot}: {}", sim.render(a)),
+            None => eprintln!("speaker {slot}: none (pass --speakers to fill it)"),
+        }
+        speakers.push(actor.unwrap_or(bg3_sim::Guid::NULL));
+    }
+    let id = sim
+        .request_dialog(bg3_sim::dialog::from_lsf(&resource.id), &speakers)
+        .context("the sim could not start the dialog")?;
+    sim.set_dialog_script(
+        id,
+        DialogScript {
+            choices: Default::default(),
+            rolls: opts.rolls.iter().copied().collect(),
+        },
+    );
+    sim.update_dialogs();
+    let mut choices = opts.choices.iter().copied();
+    loop {
+        if opts.events {
+            for e in sim.take_events() {
+                println!("    >>> {}", e.key());
+            }
+        }
+        for n in sim.take_notifications() {
+            if let Notification::DialogRoll { roll, .. } = n {
+                let what = match &roll.check {
+                    Some(c) => c.to_string(),
+                    None => "roll without rules data".to_owned(),
+                };
+                let forced = if roll.forced { ", outcome given" } else { "" };
+                println!(
+                    "  [{} {what}{forced}]",
+                    if roll.active { "active" } else { "passive" }
+                );
+            }
+        }
+        let Some(step) = sim.dialog(id).and_then(|i| i.step()).cloned() else {
+            return Ok(());
+        };
+        match step {
+            Step::Line(l) => {
+                let text = l
+                    .text
+                    .as_ref()
+                    .map(|t| loca_text(ctx, &t.handle))
+                    .unwrap_or_else(|| format!("[{}]", l.constructor));
+                let who = l
+                    .actor
+                    .map(|a| sim.render(bg3_sim::dialog::from_lsf(&a)))
+                    .unwrap_or_else(|| speaker_label(l.speaker));
+                println!("{who}: {text}");
+                sim.dialog_advance(id)?;
+            }
+            Step::Choices(options) => {
+                for (i, c) in options.iter().enumerate() {
+                    let text = c
+                        .text
+                        .as_ref()
+                        .map(|t| loca_text(ctx, &t.handle))
+                        .unwrap_or_else(|| format!("[{}]", c.constructor));
+                    let roll = c
+                        .roll
+                        .as_ref()
+                        .map(|r| format!(" [{} {}]", r.ability, r.skill))
+                        .unwrap_or_default();
+                    let disabled = if c.enabled { "" } else { " (unavailable)" };
+                    println!("  {}. {text}{roll}{disabled}", i + 1);
+                }
+                let pick = match choices.next() {
+                    Some(n) => n,
+                    None => match prompt("> ").and_then(|a| a.trim().parse::<usize>().ok()) {
+                        Some(n) => n,
+                        None => return Ok(()),
+                    },
+                };
+                if let Err(e) = sim.dialog_choose(id, pick.wrapping_sub(1)) {
                     eprintln!("{e}");
                 }
             }

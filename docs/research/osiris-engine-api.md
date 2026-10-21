@@ -1,7 +1,8 @@
 # The engine side of Osiris: API inventory and `bg3-sim`
 
-Status: inventory of the opening complete; `crates/bg3-sim` answers 87% of the engine queries
-of the opening and raises 82% of the engine events the story's own calls cause, matching the
+Status: inventory of the opening complete; `crates/bg3-sim` answers 88% of the engine queries
+of the opening, raises 82% of the engine events the story's own calls cause and runs the
+opening's dialogs itself (every event of the six dialogs the story starts), matching the
 original game on every graded answer (details below). This page is the to-do list for the rest.
 
 Sources: the runtime log of a new game from `InitGame` through character creation into the
@@ -15,8 +16,10 @@ is reproduced here).
 ```sh
 cargo run --release -p bg3x -- sim-replay --inventory   # the tables at the end of this page
 cargo run --release -p bg3x -- sim-replay --both        # replay, check mode then sim mode
+cargo run --release -p bg3x -- sim-replay --no-dialogs  # dialog events fed from the log instead
 cargo run --release -p bg3x -- sim-replay --dump .cache/sim.tsv   # every miss, for analysis
 cargo test --release -p bg3-sim --test sim_replay -- --ignored    # the same as a test
+cargo test --release -p bg3-sim --test dialog_e2e -- --ignored    # the dialogs, end to end
 ```
 
 The trace defaults to `.cache/traces/full-nautiloid.log` (override with a path or
@@ -60,12 +63,14 @@ Which engine events the sim must raise itself and which come from outside. The h
 | `TimerFinished`, `ObjectTimerFinished` | a story timer runs out | `esv::GameTimerSystem`, `OsirisGameFunctions::OnGameTimerFinished` |
 | `StatusAttempt`, `StatusApplied`, `StatusRemoved` | `ApplyStatus`/`RemoveStatus` from the story (story action id -1), `StatusList` statuses at spawn (id 0) | the status machine (not modelled beyond this) |
 | `BaseFactionChanged` | `SetFaction` changes a character's faction (old and new faction as bare UUIDs) | trace: each of the 9 `SetFaction` calls is followed by one, the old faction being the level data's `Faction` |
+| `DialogStarted`/`AutomatedDialogStarted`, `DialogActorJoined`, `DialogActorLeft`, `DialogEnded`/`AutomatedDialogEnded`, `NestedDialogPlayed`, `InstanceDialogChanged`, `RollResult`, `DialogRollResult`, `FlagSet`/`FlagCleared` with a dialog instance | a dialog the story started (`StartDialog_Internal`) plays on the sim | `esv::StoryDialogEventManager`, `esv::DialogRollListener`; the order is the runner's (`docs/formats/dialog.md`, "Events") |
 
 Some sim-owned events have causes the sim does not model yet; the report counts them as "fed,
 caused outside the sim", separately from real gaps:
 
-- `FlagSet` with a non-zero dialog instance (third argument): set by a dialog node. The
-  dialogue runner will raise these through `StoryState::set_flag`.
+- Dialog events of dialogs the sim did not start: the engine starts world dialogs on its own
+  (`WRLD_TUT_DragonFlyBy_001`, instance 5 of the opening). The sim learns them from the event
+  (`Sim::observe`), so instance ids and the involved-actor queries stay right.
 - `TagSet`/status events on objects the sim did not load: loot made by treasure generation, the
   avatar made by character creation. The sim learns those objects from the events that name
   them (see below).
@@ -81,7 +86,7 @@ source:
 | inventory and equipment (treasure generation, equipment sets) | `AddedTo`, `TemplateAddedTo`, `Equipped`, `TemplateEquipped`, `EquipFailed`, `StackedWith`, `GoldChanged`, `UnlockedRecipe` |
 | combat, HP, death, perception, AI | `HitpointsChanged`, `Died`, `Dying`, `Saw`, `LostSightOf`, `ReactionInterruptAdded`, `MoveCapabilityChanged`, `CanBeLootedCapabilityChanged`, `ObscuredStateChanged`, `SwarmAIGroupJoined`, `CastSpell`, `UsingSpell`, `RollResult`, `Fell`, `Falling` |
 | interaction | `UseStarted`/`Finished`, `RequestCanUse`, `Opened`, `Closed`, `TemplateOpening`, `EnteredTrigger`, `LeftTrigger`, `Activated`, `Deactivated`, `WentOnStage`, `ReposeAdded` |
-| dialog | `DialogStarted`/`Ended`, `AutomatedDialogStarted`/`Ended`, `DialogActorJoined`/`Left`, `DialogRollResult`, `DialogStartRequested` |
+| dialog | `DialogStartRequested` (the player clicks someone); dialog events of dialogs the sim did not start |
 | crime | `CrimeIsRegistered`, `CrimeProcessingStarted`, `OnCrimeRemoved` |
 | scripts and misc | `EntityEvent`, `UserEvent`, `TagEvent`, `CharacterTagEvent`, `OnStoryOverride`, `TutorialEvent`, `TutorialClosed`, `QuestAccepted`, `QuestUpdateUnlocked`, `RelationChanged`, `Teleported`, … |
 
@@ -119,6 +124,9 @@ and queue events; nothing is delivered to the story during a call, matching the 
 | module levels | `Mods/<Module>/meta.lsx`: `StartupLevelName`, `CharacterCreationLevelName`, `MenuLevelName`, `LobbyLevelName` (a new game starts in the character-creation level and goes to the startup level; their objects are loaded) |
 | global objects (759) | `Mods/<Module>/Globals/<Level>/{Characters,Items,Triggers}/_merged.lsf`, all levels: they exist all game |
 | level objects | `Mods/<Module>/Levels/<Level>/{Characters,Items,Triggers}/_merged.lsf`, while the level is loaded |
+| character sheets | stats `Character` entries (abilities, `Level`, `Vitality`, `Armor`, `ProficiencyBonus`/`ProficiencyBonusScaling`, `SpellCastingAbility`, `Passives`, proficiency boosts in `DefaultBoosts`); `LevelOverride` of objects and templates; level maps from `Public/<Module>/Levelmaps/LevelMapValues.lsx` |
+| difficulty classes | `Public/<Module>/DifficultyClasses/DifficultyClasses.lsx`: `UUID`, `Difficulties` (the DC) |
+| dialogs | the dialog library (`bg3_dialog::library`, `DialogBank` resources) |
 
 **Entities.** Identified by UUID (the engine resolves only the UUID,
 `esv::StoryUtils::OsirisParamGUIDToGameObject`) and rendered back as `Name_<uuid>`
@@ -177,6 +185,41 @@ Flags: `TimerLaunch` 1, `ObjectTimerLaunch` 8 (+1 if its fourth argument is non-
 `ObjectTimerCancel`). Relaunching restarts (trace: two launches, one finish). `Sim::advance`
 fires due timers in due-time order.
 
+**Dialogs** (`bg3_sim::dialog`). `StartDialog_Internal(dialog, ?, speaker × 6, [out] ok, [out]
+instance, ?)` creates an instance with the next id (ids count from 1 in request order; the
+engine's own world dialogs take ids too, the sim follows them from their start event) and the
+non-null speakers in slots 0, 1, …; it starts at the next update (`Sim::update_dialogs`, part of
+`Sim::tick`), a frame later as in the trace, where `DialogAddActorAtReservedSlot` adds an actor
+in between (to the slot whose speaker list names it) and `DialogStarted` already lists it. A
+`bg3_dialog::DialogRunner` plays it with the sim as its `DialogWorld` (`SimDialogWorld`):
+check/set-flags on the sim's flags with the `scr::SetFlag` holder rules, tag checks on the merged
+tags plus Osiris and dialog tags, `Tag` set-flags into the dialog tag source (announced by the tag
+merge), `Quest` set-flags into a set of unlocked steps, rolls through `bg3-rules` (below). The
+runner's events become the story events listed above. `DialogRequestStop(actor)` stops the
+dialogs the actor speaks in (a requested one that has not started is dropped).
+`IsSpeakerReserved` is true for actors of requested and running dialogs.
+`DialogGetInvolvedPlayer/NPC(instance, n)` and the counts split the actors (slot order) into
+players (party members or user-controlled characters) and NPCs; ended instances still answer
+(the trace asks after `DialogEnded`). `DialogIsAutomated`, `DialogIsAllowingJoinCombat` and
+`DialogAllowDeadSpeakers` read the resource's switches; `DialogSpeakerHasLines(dialog, n)` is
+true when any node is spoken by slot `n − 1`, text or not (a slot whose only node is a cinematic
+answers 1, an item that never speaks 0).
+
+**Character sheets and rules** (`bg3_sim::character`, `bg3_sim::rules`). Characters with a
+`Character` stats entry get a sheet at spawn: abilities, level (`LevelOverride` if set, else the
+entry's `Level`), hit points (`Vitality`, *inferred*), armour class (`Armor`; no equipment),
+proficiency bonus (`ProficiencyBonus`, else the `ProficiencyBonusScaling` level map), saving
+throw and skill proficiencies, expertise and skill bonuses from the unconditional
+`DefaultBoosts`, spellcasting ability and passives. The sim implements `bg3_rules::RulesContext`
+over these (entities by a stable handle that survives level unloads), so conditions
+(`HasStatus`, `Tagged`, `Dead`, ability scores, …) and functors (`ApplyStatus`, `RemoveStatus`,
+`DealDamage`, `RegainHitPoints`) run on sim entities; HP changes raise `HitpointsChanged`
+(`esv::StoryGameEventManager::ThrowHitpointsChanged`), statuses from functors raise
+`StatusAttempt`/`StatusApplied` with story action id 0 (*unverified*). Dialog rolls are ability
+checks (`bg3_rules::rules::roll_ability_check`) of the roll node's speaker against the
+difficulty class's DC, on the sim's seeded dice; a `DialogScript` can force the outcomes (the
+trace harness does, and checks each forced outcome is reachable with a non-critical d20).
+
 **Queries answered by the sim:** `Exists`, `IsCharacter`, `IsItem`, `GetTemplate`, `GetRegion`
 (follows inventory holders), `GetFlag`, `GetFlagName`, `IsTagged`, `HasActiveStatus`,
 `HasAppliedStatus`, `HasActiveStatusWithGroup`, `HasAppliedStatusWithGroup`,
@@ -184,7 +227,11 @@ fires due timers in due-time order.
 `IsWeapon` (stats type `Weapon`), `IsPartyMember`, `GetFaction`, `GetActiveModStartupLevel`,
 `IsCharacterCreationLevel`, `IsGameLevel` (not the character-creation, menu or lobby level;
 *inferred*), and the math/string functions
-(`IntegerSum` & co., `Concatenate`, `ConcatenateInteger`, `GUIDToString`, `StringToGUID`). A
+(`IntegerSum` & co., `Concatenate`, `ConcatenateInteger`, `GUIDToString`, `StringToGUID`), and
+with dialogs loaded `StartDialog_Internal`, `DialogIsAutomated`, `DialogIsAllowingJoinCombat`,
+`DialogAllowDeadSpeakers`, `DialogSpeakerHasLines`, `IsSpeakerReserved`,
+`DialogGetInvolvedPlayer`, `DialogGetInvolvedNPC`, `DialogGetNumberOfInvolvedPlayers`,
+`DialogGetNumberOfInvolvedNPCs`. A
 query the sim implements still falls back when it lacks the data: objects created outside the
 sim (their tags may come from character-creation choices), objects of unknown kind, statuses
 without a stats entry.
@@ -192,12 +239,15 @@ without a stats entry.
 **Calls run by the sim:** `SetFlag`, `ClearFlag`, `SetTag`, `ClearTag`, `TimerLaunch`,
 `TimerCancel`, `ObjectTimerLaunch`, `ObjectTimerCancel`, `RealtimeObjectTimerLaunch`,
 `RealtimeObjectTimerCancel`, `ApplyStatus`, `RemoveStatus`, `TeleportPartiesToLevelWithMovie`,
-`SetFaction`.
+`SetFaction`, `DialogRequestStop`, `DialogAddActorAtReservedSlot`.
 
-**For other systems:** `bg3_sim::StoryState` (flags, tags, existence, kind, rendering, names);
-`Sim` implements it. Writes queue the same events as the Osiris calls. `bg3_sim::driver` runs the
-story on the sim without a trace: `Sim::advance` moves the clock, `driver::run_events` delivers
-the queued events one at a time.
+**For other systems:** `bg3_sim::StoryState` (flags, tags, existence, kind, rendering, names),
+`bg3_dialog::DialogWorld` (`SimDialogWorld`) and `bg3_rules::RulesContext`; writes queue the
+same events as the Osiris calls. `bg3_sim::driver` runs the story on the sim without a trace:
+`driver::run_events` delivers the queued events one at a time, and `bg3_sim::Game` owns the VM
+and the sim for a front end: `tick(dt)` (dialogs start, timers fire, events are delivered),
+`dialog_advance` / `dialog_choose` (player input), `take_notifications` (dialog lines, choices,
+rolls to show). `bg3x dialog <name> --walk --sim` plays a dialog on the sim's world.
 
 ## Validation: `sim-replay`
 
@@ -213,22 +263,36 @@ the rest fall back to the log. Two modes:
 - **sim**: the story runs on the sim's answers (the honest end-to-end number: a wrong answer
   changes what the story does next).
 
+Dialogs: when the log delivers an event of a dialog the sim runs and the sim has not raised it
+yet, the dialog plays on (lines finish, choices are taken) until it does. The player's choices
+are not in the log; when a dialog starts, the harness searches them on a copy of the sim (depth
+first, like `bg3-dialog`'s trace test: the walk whose events equal the logged ones) and plays
+them as the player's input. Roll outcomes come from the log's `RollResult`s.
+
 Results on `full-nautiloid.log` (12 382 segments = `InitGame` + 12 381 events):
 
 | | check mode | sim mode |
 |---|---|---|
 | segments identical to the game (every fact, rule, call, query, PROC, goal record) | 100.00% | **100.00%** |
 | databases with identical fact history | 1 133 / 1 133 | 1 133 / 1 133 |
-| queries answered by the sim | 11 742 / 13 543 (86.7%) | 11 742 / 13 543 (86.7%) |
+| queries answered by the sim | 11 917 / 13 543 (88.0%) | 11 917 / 13 543 (88.0%) |
 | sim answers that disagree with the game | 0 | 0 |
-| queries from the log: not implemented / implemented, no data | 1 355 / 446 | 1 355 / 446 |
-| calls run by the sim | 458 / 1 115 (41.1%) | 458 / 1 115 |
+| queries from the log: not implemented / implemented, no data | 1 180 / 446 | 1 180 / 446 |
+| calls run by the sim | 473 / 1 115 (42.4%) | 473 / 1 115 |
+| dialog instances run by the sim, every event equal to the log | 6 / 6 | 6 / 6 |
+
+Before the dialogs ran on the sim (`--no-dialogs`, and the state of this page before): 11 742
+queries answered (86.7%), 458 calls, 5 863 sim-owned events generated, otherwise the same.
 
 Sim-owned events (both modes):
 
 | Event | In the log | Raised by the sim | Fed: cause outside the sim | Fed: gap | Raised but not in the log |
 |---|---:|---:|---:|---:|---:|
-| `FlagSet` | 34 | 20 | 12 (dialog) | 2 | 0 |
+| `FlagSet` | 34 | 32 | 0 | 2 | 0 |
+| `DialogStarted` / `AutomatedDialogStarted` | 3 / 4 | 3 / 3 | 0 / 1 (world dialog) | 0 | 0 |
+| `DialogActorJoined` / `DialogActorLeft` | 10 / 10 | 10 / 10 | 0 | 0 | 0 |
+| `DialogEnded` / `AutomatedDialogEnded` | 3 / 3 | 3 / 3 | 0 | 0 | 0 |
+| `RollResult` / `DialogRollResult` | 6 / 4 | 6 / 4 | 0 | 0 | 0 |
 | `TagSet` | 6 673 | 5 516 | 1 015 | 142 | 18 |
 | `TagCleared` | 4 | 2 | 0 | 2 | 0 |
 | `TimerFinished` | 16 | 16 | 0 | 0 | 0 |
@@ -286,14 +350,24 @@ created outside the sim fell back to the log and the instance `Race` was read.
    (passives, auras).
 4. **Status machine**: when exactly `HasActiveStatus` turns true relative to `StatusApplied`;
    immunities, stacking, turn durations; built-in status types from the binary.
-5. **Next queries by volume**: `GetHitpointsPercentage` 370 and `IsDead` (needs HP and death),
-   `HasPassive` 182 (progressions), `GetInventoryOwner` 97 and `TemplateIsInInventory` 63
-   (inventory), `DialogIsAutomated` 71 and the other dialog
-   queries (dialogue runner), `CharacterHasDLC` 66, `GetReservedUserID` 64.
+5. **Next queries by volume**: `GetHitpointsPercentage` 370 and `IsDead` (HP exist on character
+   sheets now, but the opening's HP changes come from combat and scripted deaths the sim does
+   not run), `HasPassive` 182 (progressions), `GetInventoryOwner` 97 and
+   `TemplateIsInInventory` 63 (inventory), `CharacterHasDLC` 66, `GetReservedUserID` 64.
 6. **Timing**: the trace has no timestamps; a capture with frame numbers or game time would let
    the sim drive timers and event batching itself instead of following the log's order.
 7. `SetMagicPocketsFlag`/`ClearMagicPocketsFlag` (flags that follow an item into a character's
    inventory) explain the two `FlagSet` gaps.
+8. **Dialogs.** The meaning of `StartDialog_Internal`'s second and last integer arguments (0
+   in every call of the opening); whether the engine maps the given speakers onto the dialog's
+   speaker list instead of taking them in order (in order fits every call of the opening);
+   `DialogIsAutomated` reads `automated` only (fits the opening; world/behaviour dialogs not
+   seen); when a requested dialog really starts (the sim: the next update).
+9. **Character sheets.** The created avatar's sheet comes from its template's stats entry, not
+   from character creation (race, class, abilities chosen by the player), and origins' class
+   proficiencies come from progressions the sim does not run; dialog checks of player
+   characters therefore use too few modifiers. Max HP is `Vitality` (*inferred*; boosts, class
+   levels and Constitution not modelled).
 
 ## Inventory
 
@@ -308,9 +382,9 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | Subsystem | calls (uses) | queries (uses) | events (deliveries) | in bg3-sim |
 |---|---|---|---|---|
 | Character creation | 3 (12) | 1 (6) | 5 (5) | 1 of 9 |
-| Combat, AI & perception | 13 (168) | 8 (652) | 21 (1941) | 3 of 42 |
+| Combat, AI & perception | 13 (168) | 8 (652) | 21 (1941) | 4 of 42 |
 | Crime | 5 (51) | 10 (48) | 3 (9) | 0 of 18 |
-| Dialog | 5 (40) | 11 (177) | 8 (38) | 0 of 24 |
+| Dialog | 5 (40) | 11 (177) | 8 (38) | 19 of 24 |
 | Entities & templates | 10 (180) | 12 (4518) | 9 (229) | 4 of 31 |
 | Flags | 5 (83) | 2 (63) | 1 (34) | 5 of 8 |
 | Inventory & items | 8 (19) | 15 (673) | 19 (2456) | 1 of 42 |
@@ -375,7 +449,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | event | `SwarmAIGroupJoined/2` | 17 | 17 | external | `SwarmAIGroupJoined/2` |
 | event | `BaseFactionChanged/3` | 9 |  | raises | `BaseFactionChanged(S_Player_Karlach_…, …, …)` |
 | event | `ObscuredStateChanged/2` | 8 |  | external | `ObscuredStateChanged(S_WYR_VampireSpawns_Dalyria_…, "HeavilyObscured")` |
-| event | `RollResult/6` | 6 |  | external | `RollResult("…_3", Gnomes_Male_Deep_Player_…, Gnomes_Male_Deep_Player_…, 0, 1, CRITICALITYTYPE.NONE)` |
+| event | `RollResult/6` | 6 |  | raises | `RollResult("…_3", Gnomes_Male_Deep_Player_…, Gnomes_Male_Deep_Player_…, 0, 1, CRITICALITYTYPE.NONE)` |
 | event | `ShortRestCapable/2` | 6 | 6 | external | `ShortRestCapable/2` |
 | event | `RelationChanged/4` | 4 |  | external | `RelationChanged(…, …, 0, 1)` |
 | event | `CastSpell/5` | 1 |  | external | `CastSpell(S_TUT_Lab_TrappedDevourer_…, "Projectile_Jump", "projectile", "", 2)` |
@@ -415,28 +489,28 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
 | call | `SetHasDialog/2` | 17 |  |  | `SetHasDialog(S_Player_Jaheira_…, 1)` |
-| call | `DialogRequestStop/1` | 14 |  |  | `DialogRequestStop(Gnomes_Male_Deep_Player_…)` |
+| call | `DialogRequestStop/1` | 14 |  | yes | `DialogRequestStop(Gnomes_Male_Deep_Player_…)` |
 | call | `DialogSetVariableTranslatedString/3` | 7 |  |  | `DialogSetVariableTranslatedString((DIALOGRESOURCE)GLO_CompanionSwap_Camp_…, "GLO_CompanionSwap_AvatarName1_…", "h…")` |
-| call | `DialogAddActorAtReservedSlot/5` | 1 |  |  | `DialogAddActorAtReservedSlot(7, S_TUT_Lab_TrappedDevourer_…, 0, 0, 0)` |
+| call | `DialogAddActorAtReservedSlot/5` | 1 |  | yes | `DialogAddActorAtReservedSlot(7, S_TUT_Lab_TrappedDevourer_…, 0, 0, 0)` |
 | call | `SetLevelStartingDialog/2` | 1 |  |  | `SetLevelStartingDialog(1, 1)` |
-| query | `DialogIsAutomated/2` | 71 |  |  | `DialogIsAutomated(TUT_Start_OriginIntroduction_Default_…, [out] (INTEGER))` |
-| query | `IsSpeakerReserved/2` | 25 |  |  | `IsSpeakerReserved(Gnomes_Male_Deep_Player_…, [out] 0)` |
-| query | `DialogGetInvolvedNPC/3` | 16 | 8 |  | `DialogGetInvolvedNPC(1, 1, [out] (GUIDSTRING))` |
-| query | `DialogSpeakerHasLines/3` | 13 |  |  | `DialogSpeakerHasLines(TUT_Start_OriginIntroduction_Default_…, 1, [out] (INTEGER))` |
-| query | `DialogGetInvolvedPlayer/3` | 11 | 7 |  | `DialogGetInvolvedPlayer(1, 1, [out] (GUIDSTRING))` |
-| query | `DialogIsAllowingJoinCombat/2` | 10 |  |  | `DialogIsAllowingJoinCombat(TUT_Start_OriginIntroduction_Default_…, [out] (INTEGER))` |
-| query | `DialogAllowDeadSpeakers/2` | 9 |  |  | `DialogAllowDeadSpeakers(TUT_Start_OriginIntroduction_Default_…, [out] (INTEGER))` |
-| query | `DialogGetNumberOfInvolvedNPCs/2` | 7 |  |  | `DialogGetNumberOfInvolvedNPCs(1, [out] (INTEGER))` |
-| query | `DialogGetNumberOfInvolvedPlayers/2` | 7 |  |  | `DialogGetNumberOfInvolvedPlayers(1, [out] (INTEGER))` |
-| query | `StartDialog_Internal/11` | 6 |  |  | `StartDialog_Internal(TUT_Start_OriginIntroduction_Default_…, 0, Gnomes_Male_Deep_Player_…, NULL_…, NULL_…, NULL_…, NULL_…, NULL_…, [out] 1, [out] (INTEGER), 0)` |
+| query | `DialogIsAutomated/2` | 71 |  | yes | `DialogIsAutomated(TUT_Start_OriginIntroduction_Default_…, [out] (INTEGER))` |
+| query | `IsSpeakerReserved/2` | 25 |  | yes | `IsSpeakerReserved(Gnomes_Male_Deep_Player_…, [out] 0)` |
+| query | `DialogGetInvolvedNPC/3` | 16 | 8 | yes | `DialogGetInvolvedNPC(1, 1, [out] (GUIDSTRING))` |
+| query | `DialogSpeakerHasLines/3` | 13 |  | yes | `DialogSpeakerHasLines(TUT_Start_OriginIntroduction_Default_…, 1, [out] (INTEGER))` |
+| query | `DialogGetInvolvedPlayer/3` | 11 | 7 | yes | `DialogGetInvolvedPlayer(1, 1, [out] (GUIDSTRING))` |
+| query | `DialogIsAllowingJoinCombat/2` | 10 |  | yes | `DialogIsAllowingJoinCombat(TUT_Start_OriginIntroduction_Default_…, [out] (INTEGER))` |
+| query | `DialogAllowDeadSpeakers/2` | 9 |  | yes | `DialogAllowDeadSpeakers(TUT_Start_OriginIntroduction_Default_…, [out] (INTEGER))` |
+| query | `DialogGetNumberOfInvolvedNPCs/2` | 7 |  | yes | `DialogGetNumberOfInvolvedNPCs(1, [out] (INTEGER))` |
+| query | `DialogGetNumberOfInvolvedPlayers/2` | 7 |  | yes | `DialogGetNumberOfInvolvedPlayers(1, [out] (INTEGER))` |
+| query | `StartDialog_Internal/11` | 6 |  | yes | `StartDialog_Internal(TUT_Start_OriginIntroduction_Default_…, 0, Gnomes_Male_Deep_Player_…, NULL_…, NULL_…, NULL_…, NULL_…, NULL_…, [out] 1, [out] (INTEGER), 0)` |
 | query | `GetHasDefaultDialog/2` | 2 |  |  | `GetHasDefaultDialog(S_TUT_Lab_TrappedDevourer_…, [out] 1)` |
-| event | `DialogActorJoined/4` | 10 |  | external | `DialogActorJoined(TUT_Start_OriginIntroduction_Default_…, 1, Gnomes_Male_Deep_Player_…, 0)` |
-| event | `DialogActorLeft/4` | 10 |  | external | `DialogActorLeft(TUT_Start_OriginIntroduction_Default_…, 1, Gnomes_Male_Deep_Player_…, 1)` |
-| event | `AutomatedDialogStarted/2` | 4 |  | external | `AutomatedDialogStarted(TUT_Start_PAD_Start_…, 2)` |
-| event | `DialogRollResult/5` | 4 |  | external | `DialogRollResult(Gnomes_Male_Deep_Player_…, 0, TUT_Start_Brinepool_…, 0, CRITICALITYTYPE.NONE)` |
-| event | `AutomatedDialogEnded/2` | 3 |  | external | `AutomatedDialogEnded(TUT_Start_PAD_Start_…, 2)` |
-| event | `DialogEnded/2` | 3 |  | external | `DialogEnded(TUT_Start_OriginIntroduction_Default_…, 1)` |
-| event | `DialogStarted/2` | 3 |  | external | `DialogStarted(TUT_Start_OriginIntroduction_Default_…, 1)` |
+| event | `DialogActorJoined/4` | 10 |  | raises | `DialogActorJoined(TUT_Start_OriginIntroduction_Default_…, 1, Gnomes_Male_Deep_Player_…, 0)` |
+| event | `DialogActorLeft/4` | 10 |  | raises | `DialogActorLeft(TUT_Start_OriginIntroduction_Default_…, 1, Gnomes_Male_Deep_Player_…, 1)` |
+| event | `AutomatedDialogStarted/2` | 4 |  | raises | `AutomatedDialogStarted(TUT_Start_PAD_Start_…, 2)` |
+| event | `DialogRollResult/5` | 4 |  | raises | `DialogRollResult(Gnomes_Male_Deep_Player_…, 0, TUT_Start_Brinepool_…, 0, CRITICALITYTYPE.NONE)` |
+| event | `AutomatedDialogEnded/2` | 3 |  | raises | `AutomatedDialogEnded(TUT_Start_PAD_Start_…, 2)` |
+| event | `DialogEnded/2` | 3 |  | raises | `DialogEnded(TUT_Start_OriginIntroduction_Default_…, 1)` |
+| event | `DialogStarted/2` | 3 |  | raises | `DialogStarted(TUT_Start_OriginIntroduction_Default_…, 1)` |
 | event | `DialogStartRequested/2` | 1 |  | external | `DialogStartRequested(S_TUT_Lab_DevourerVictim_…, Gnomes_Male_Deep_Player_…)` |
 
 ### Entities & templates

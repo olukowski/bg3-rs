@@ -143,6 +143,17 @@ enum Command {
         /// With --walk: print the Osiris events the dialog raises.
         #[arg(long)]
         events: bool,
+        /// With --walk: play the dialog on bg3-sim's world (flags, tags, character stats from
+        /// the install; rolls through the rules engine) instead of an empty memory world.
+        #[arg(long)]
+        sim: bool,
+        /// With --sim: the speakers, by slot (object names like `S_Player_ShadowHeart` or
+        /// UUIDs); default: the first object of each slot's speaker list that exists.
+        #[arg(long, value_delimiter = ',')]
+        speakers: Vec<String>,
+        /// With --sim: seed of the dice.
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
     },
     /// Replay a libOsiris runtime log with bg3-sim answering engine queries and raising engine
     /// events (see docs/research/osiris-engine-api.md); prints sim vs fallback rates.
@@ -247,6 +258,9 @@ fn main() -> Result<()> {
             choices,
             rolls,
             events,
+            sim,
+            speakers,
+            seed,
         } => dialog::run(dialog::Options {
             name,
             walk,
@@ -255,6 +269,9 @@ fn main() -> Result<()> {
             choices,
             rolls: rolls.iter().map(|r| r.starts_with('s')).collect(),
             events,
+            sim,
+            speakers,
+            seed,
         }),
         Command::Dups => dups(),
         Command::Gr2 {

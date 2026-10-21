@@ -16,8 +16,13 @@
 //!     delivers one, the harness looks for the same event in the sim's queue; if the sim
 //!     produced it, the sim's event is delivered ("generated"), else the logged one is fed
 //!     and counted as a fallback ("fed").
-//!   - *external* (level loading, character creation, perception, dialog, combat, …): fed
+//!   - *external* (level loading, character creation, perception, combat, …): fed
 //!     from the log, and the sim observes them ([`Sim::observe`]) so its state follows.
+//!
+//!   With a dialog bank ([`Options::dialogs`]) the sim runs the story's dialogs: when the log
+//!   delivers an event of one that the sim has not raised yet, the dialog plays on until it
+//!   does. The player's choices, which the log doesn't show, are searched for when the dialog
+//!   starts (the walk that raises the logged events); roll outcomes come from the log.
 //!
 //!   The log gives the order; the sim decides whether the event happens. The log has no
 //!   timestamps, so timers are not driven by the clock here: when the log delivers a timer

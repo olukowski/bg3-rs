@@ -65,3 +65,6 @@ pub use tags::{TagDef, TagDefs, TagSource};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_integration;
