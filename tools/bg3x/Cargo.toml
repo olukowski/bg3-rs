@@ -13,6 +13,7 @@ bg3-gr2.workspace = true
 bg3-install.workspace = true
 bg3-loca.workspace = true
 bg3-material.workspace = true
+bg3-nav.workspace = true
 bg3-osiris.workspace = true
 bg3-lsf.workspace = true
 bg3-pak.workspace = true

@@ -2044,6 +2044,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bg3-nav"
+version = "0.0.0"
+dependencies = [
+ "bg3-install",
+ "bg3-vfs",
+ "flate2",
+ "lz4_flex",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bg3-osiris"
 version = "0.0.0"
 dependencies = [
@@ -2181,6 +2193,7 @@ dependencies = [
  "bg3-loca",
  "bg3-lsf",
  "bg3-material",
+ "bg3-nav",
  "bg3-osiris",
  "bg3-pak",
  "bg3-rules",

@@ -2,6 +2,7 @@
 
 mod dialog;
 mod materials;
+mod nav;
 mod rules;
 mod sim;
 
@@ -178,6 +179,27 @@ enum Command {
         #[command(subcommand)]
         cmd: rules::RulesCmd,
     },
+    /// A level's navigation data: AI grid summary, tile probes and path finding (BG3 world
+    /// coordinates, e.g. `bg3x nav TUT_Avernus_C --path=-60,17.8,-389 --path=-20,17.6,-400`).
+    Nav {
+        #[arg(default_value = "TUT_Avernus_C")]
+        level: String,
+        /// Path end points `x,y,z`, given in pairs (start, goal, start, goal, …).
+        #[arg(long, value_parser = nav::parse_vec3, allow_hyphen_values = true)]
+        path: Vec<[f32; 3]>,
+        /// Print the tiles of the column containing `x,y,z`.
+        #[arg(long, value_parser = nav::parse_vec3, allow_hyphen_values = true)]
+        at: Option<[f32; 3]>,
+        /// Agent bound radius in metres (0.499 = humanoid).
+        #[arg(long, default_value_t = 0.499)]
+        radius: f32,
+        /// List the subgrids.
+        #[arg(long)]
+        subgrids: bool,
+        /// List connected walkable regions.
+        #[arg(long)]
+        regions: bool,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -299,6 +321,21 @@ fn main() -> Result<()> {
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),
         Command::Rules { cmd } => rules::run(cmd),
+        Command::Nav {
+            level,
+            path,
+            at,
+            radius,
+            subgrids,
+            regions,
+        } => nav::run(nav::Options {
+            level,
+            path,
+            at,
+            radius,
+            subgrids,
+            regions,
+        }),
         Command::Lsx { pak, path } => {
             use std::io::Write;
             let data = read_file(&pak, &path)?;
