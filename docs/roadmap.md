@@ -34,9 +34,14 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [ ] Rolls, boosts, statuses, action resources — validated against traces from the original
 - [x] Turn-based combat loop for a scripted encounter: `bg3_sim::combat` (initiative, turn
   order with shared turns, resources, weapon attacks and spells through `bg3-rules`, death,
-  story events in the order of a recorded fight, approximate AI); the Nautiloid imp fight runs
+  story events in the order of a recorded fight); the Nautiloid imp fight runs
   headless with the story (`combat_nautiloid`, `bg3x combat`; docs/research/combat.md)
-- [ ] The real AI (`esv::ai` scoring), reactions, swarms, downed/death rules from the binary
+- [x] The combat AI's structure: archetypes read from the install, candidate actions ×
+  targets × tiles, expected effects from the rules engine, the engine's per-target and action
+  scores, position and attack-of-opportunity terms, deterministic choice; `bg3x combat
+  --ai-debug` (docs/research/ai.md). The trace's imp decisions: spell 3/3, targets tied
+- [ ] AI: score probes from a trace, statuses/surfaces/auras/AoE in the scores, the engine's
+  tile search and tie-breaks; reactions, swarms, downed/death rules from the binary
 
 ## M4 — Story
 - [x] `bg3-story`: compiled story loader (formats 1.13–1.15, byte-exact round-trip of all 6 stories) + `bg3x story`
@@ -63,7 +68,7 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
   length, animated AI turns, combat log (`viewer/src/combat_ui.rs`); clicking an item uses it
   (`Game::use_item`, the Brinepool)
 - [ ] Live game gaps: character creation (the avatar gets the trace avatar's class), perception
-  (noticing is distance + AI-grid line of sight), the real AI and AI path finding, attack/death
+  (noticing is distance + AI-grid line of sight), the rest of the AI (see M3) and AI path finding, attack/death
   animations, spell choices and ground-targeted spells, path-found scripted moves, the story
   functions `bg3x play` lists as missing
 

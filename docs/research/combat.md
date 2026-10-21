@@ -1,8 +1,8 @@
 # Combat
 
 Turn-based combat in `bg3-sim` (`crates/bg3-sim/src/combat/`): how a fight starts, initiative,
-the turn order, action resources, attacks and spells, damage, death, the story events, and an
-approximate enemy AI. Reference build 4.1.1.7631656 (macOS, arm64 slice). This note says, for
+the turn order, action resources, attacks and spells, damage, death, the story events, and the
+enemy AI (`docs/research/ai.md`). Reference build 4.1.1.7631656 (macOS, arm64 slice). This note says, for
 each rule, where it comes from and whether it is **verified** (by the reference trace or the
 binary), **read** (from the binary, not yet seen in a trace) or **approximate** (a stand-in).
 
@@ -208,46 +208,39 @@ are larger because other actions use the same counter).
 Story functions: `EnterCombat`, `EndTurn`, `IsInCombat`, and `SetOnStage` (off-stage set only).
 `sim-replay` of the opening still agrees with the game on every graded answer.
 
-## AI (approximate)
+## AI
 
-`combat::ai`: approach the nearest living hostile and use the first affordable damaging
-spell that reaches (melee first when adjacent), else close in. Not from the binary.
+`combat::ai` follows the structure of the engine's combat AI (`esv::AiHelpers`,
+`esv::CombatAIAction`, `esv::AiScoreInternal`): every usable single-target spell × target ×
+reachable tile is simulated with the rules engine (exact d20 odds, dice averages), scored with
+the character's archetype modifiers read from `Public/<Module>/AI/Archetypes` (the objects'
+`Archetype` attribute, e.g. `imp_melee`), with end-position and attack-of-opportunity terms,
+and the best is executed; then the AI plans again with what is left. The pipeline, formulas,
+what is faithful and the comparison with the reference trace are in `docs/research/ai.md`.
 
-With `Sim::set_pathfinder(Some(...))`, AI movement follows a walkable route on the level's AI
-grid. It stops at attack range (retaining the 5 cm safety margin when affordable), or at the
-movement budget, charging the walked polyline length. An unreachable target causes no movement;
-an attack already in range still works. Without a pathfinder, the original straight-line
-placeholder behavior is preserved for existing headless consumers and reference replays.
-`AiAction::path()` exposes the walked waypoints, including both endpoints, for animation.
+Movement: with `Sim::set_pathfinder(Some(...))` routes follow the level's AI grid
+(`bg3-sim-nav::GridPathfinder`, used by `bg3-viewer --play` and `bg3x combat --nav`); the walk
+into a spell's range stops 5 cm inside it or at the movement budget and pays the walked
+polyline length. Without a pathfinder routes are straight lines. An unreachable target gets no
+walk; an attack already in range still works. `AiAction::path()` exposes the walked waypoints
+(both endpoints) for animation. The adapter rejects a blocked start column rather than
+connecting it to a sideways-snapped start; the destination uses the grid's standable
+projection; disconnected goals return no path.
 
-The shared `bg3-sim-nav::GridPathfinder` adapter depends on both core crates, keeping `bg3-sim`
-independent of `bg3-nav` and Bevy and keeping `bg3-nav` independent of the sim. It wraps an
-`Arc<NavGrid>` and is used by `bg3-viewer --play` and `bg3x combat --nav`. The viewer animates
-all walked waypoints, starting at the recorded origin before applying the final sim position.
-The adapter rejects a blocked start column rather than connecting it to a sideways-snapped
-start through geometry; valid starts may need a short vertical approach to the grid surface.
-The destination uses the grid's existing standable projection; disconnected goals return no
-path. This does not search for a best partial route in a disconnected component.
+Still approximate here: centre-to-centre ranges, a fixed **0.5 m** radius (the sim does not
+load AI bound radii), default humanoid step height and collision mask, the grid
+search/smoothing limitations in `docs/formats/navcloud.md`, and interpolation between smoothed
+floor waypoints.
 
-Still approximate: target/spell selection (no tactical scoring or attack line of sight),
-centre-to-centre ranges, a fixed **0.5 m** radius (the sim does not load AI bound radii), default
-humanoid step height and collision mask, the grid search/smoothing limitations documented in
-`docs/formats/navcloud.md`, and interpolation between smoothed floor waypoints. This is a fix
-to our placeholder AI, not newly verified original-engine AI behavior.
+Validation: synthetic tests in `bg3-sim` (route truncation around a wall, path-length costs,
+range stops, unreachable targets, exact hit chance, kill bonus, attacks of opportunity,
+ranged positioning); the ignored `bg3-sim-nav` tests
+`nautiloid_nav_endpoints_are_standable_and_fight_finishes` (every move endpoint standable, the
+fight finishes) and `ai_trace` (the trace's imp decisions). With seed 0, Lae'zel and
+Shadowheart against the lower deck imps, `bg3x combat` with and without `--nav` both finish in
+**8 turns**, the party winning and the story defeat flag set.
 
-Validation: synthetic wall-detour tests in `bg3-sim` check route truncation, path-length costs,
-range stops and unreachable targets. The ignored `bg3-sim-nav` test
-`nautiloid_nav_endpoints_are_standable_and_fight_finishes` checks each move endpoint's actual
-column (no sideways standability snap, within 0.6 m of the floor) and fight completion.
-With seed 0, Lae'zel and Shadowheart against the lower deck imps, the CLI fight with and
-without `--nav` both finished in **9 turns**, with the party winning and the story defeat flag
-set. All **5** nav move endpoints were standable; routes and movement costs differ.
-
-The real AI scores actions, targets and positions: `esv::ai::…`, `esv::AiHelpers` (e.g.
-`esv::AiHelpers::CalculateMovementScore`), archetypes (`Public/<Module>/AI/Archetypes`), the
-objects' `Archetype` attribute (`imp_melee`), swarm groups (`esv::ai::swarm`). The trace's
-imps: the ranged imp used `Projectile_Generic_Imp` on Lae'zel, the melee imp
-`Target_MainHandAttack` on the avatar and Lae'zel.
+Swarms (`esv::ai::swarm`) are a separate system and not modelled.
 
 ## API
 
@@ -267,8 +260,9 @@ On `Sim` (state) and `Game` (the same, with the story events delivered after eac
   `Game::set_companion_factions(party)` (`Companion1`, `Companion2`, … as the story assigns
   on recruitment; the trace: Lae'zel → `Companion1`)
 
-`bg3x combat [LEVEL] --party A,B [--target X] [--seed N] [--events] [--nav]` runs a fight on
-the AI and prints the log. `--nav` loads the level's AI grid and prints endpoint standability
+`bg3x combat [LEVEL] --party A,B [--target X] [--seed N] [--events] [--nav] [--ai-debug
+[--ai-top N]]` runs a fight on the AI and prints the log; `--ai-debug` prints each AI
+decision's best candidates with their score breakdowns. `--nav` loads the level's AI grid and prints endpoint standability
 and walked path length for each AI move.
 `cargo test -p bg3-sim --test combat_nautiloid -- --ignored` runs the original headless imp
 fight test; `cargo test --release -p bg3-sim-nav --test combat_nautiloid -- --ignored` runs
@@ -284,7 +278,7 @@ the nav endpoint/completion test.
 - **Movement**: positions per turn and the Movement resource (`eoc::ActionResourcesComponent`)
   at turn start and after moving, for the path-length rule.
 - **A downed party member** and death saves; **a late joiner**; **a swarm** (many identical
-  enemies) for shared AI turns; the AI's choices (`esv::ai` scoring) for a rules-faithful AI.
+  enemies) for shared AI turns; the AI's scores (probe points in `docs/research/ai.md`).
 - `CombatGetGuidFor`, `IsEnemy`, `GetHitpoints` answers during combat, to grade the sim's
   queries in `sim-replay` (the combat trace starts from a save, which the replay can't load
   yet).
