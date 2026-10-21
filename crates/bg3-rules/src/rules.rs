@@ -5,7 +5,7 @@
 use std::fmt;
 
 use crate::context::{
-    Ability, Advantage, AttackType, DamageType, EntityId, Hand, Resistance, RulesContext, Skill,
+    Ability, Advantage, AttackType, DamageType, EntityId, Resistance, RulesContext, Skill,
 };
 use crate::dice::{D20, DiceRng, RollDefinition, roll_d20};
 
@@ -92,22 +92,19 @@ pub fn attack_ability(
             .unwrap_or(Ability::Intelligence);
         return (a, None);
     }
-    let hand = if attack.is_offhand() {
-        Hand::Off
-    } else {
-        Hand::Main
-    };
     let weapon = if attack.is_unarmed() {
         None
     } else {
-        ctx.weapon(attacker, hand)
+        ctx.attack_weapon(attacker, attack)
     };
     let str_mod = ctx.ability_modifier(attacker, Ability::Strength);
     let dex_mod = ctx.ability_modifier(attacker, Ability::Dexterity);
     let ability = match &weapon {
         Some(w) if w.ranged => Ability::Dexterity,
         Some(w) if w.finesse && dex_mod > str_mod => Ability::Dexterity,
-        _ => Ability::Strength,
+        Some(_) => Ability::Strength,
+        None if attack.is_unarmed() || !attack.is_ranged() => ctx.unarmed_attack_ability(attacker),
+        None => Ability::Strength,
     };
     (ability, weapon)
 }

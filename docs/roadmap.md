@@ -32,7 +32,11 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [x] Functor/condition/boost/formula parsing, Thoth (`.khn`) parser + interpreter, condition evaluation (`bg3-rules`, docs/formats/stats-expressions.md)
 - [ ] Validate roll streams and roll outcomes against traces of the original
 - [ ] Rolls, boosts, statuses, action resources — validated against traces from the original
-- [ ] Turn-based combat loop for a scripted encounter
+- [x] Turn-based combat loop for a scripted encounter: `bg3_sim::combat` (initiative, turn
+  order with shared turns, resources, weapon attacks and spells through `bg3-rules`, death,
+  story events in the order of a recorded fight, approximate AI); the Nautiloid imp fight runs
+  headless with the story (`combat_nautiloid`, `bg3x combat`; docs/research/combat.md)
+- [ ] The real AI (`esv::ai` scoring), reactions, swarms, downed/death rules from the binary
 
 ## M4 — Story
 - [x] `bg3-story`: compiled story loader (formats 1.13–1.15, byte-exact round-trip of all 6 stories) + `bg3x story`

@@ -32,6 +32,9 @@ pub const CALLS: &[(&str, usize)] = &[
     ("SetFaction", 2),
     ("DialogRequestStop", 1),
     ("DialogAddActorAtReservedSlot", 5),
+    ("EnterCombat", 2),
+    ("EndTurn", 1),
+    ("SetOnStage", 2),
 ];
 
 pub const QUERIES: &[(&str, usize)] = &[
@@ -83,6 +86,7 @@ pub const QUERIES: &[(&str, usize)] = &[
     ("DialogGetInvolvedNPC", 3),
     ("DialogGetNumberOfInvolvedPlayers", 2),
     ("DialogGetNumberOfInvolvedNPCs", 2),
+    ("IsInCombat", 2),
 ];
 
 /// Dialog functions: answered only when the sim has a dialog bank
@@ -199,6 +203,22 @@ impl<'a> SimFunctions<'a> {
             ("DialogRequestStop", 1) => sim.dialog_request_stop(g(0)),
             // bg3: esv::OsirisLSDialogsFunctions::DialogAddActorAtReservedSlot (4.1.1.7631656)
             ("DialogAddActorAtReservedSlot", 5) => sim.dialog_add_actor(int(&args[0]) as u32, g(1)),
+            // bg3: esv::OsirisGameFunctions::EnterCombat (4.1.1.7631656); see crate::combat
+            ("EnterCombat", 2) => sim.enter_combat(g(0), g(1)).is_some(),
+            // bg3: esv::OsirisGameFunctions::EndTurn (4.1.1.7631656)
+            ("EndTurn", 1) => sim.combat_end_turn(g(0)).is_ok(),
+            // bg3: esv::OsirisGameFunctions::SetOnStage (4.1.1.7631656). Only the off-stage
+            // set is kept (used by combat); the engine's WentOnStage/visibility side effects
+            // are not modelled.
+            ("SetOnStage", 2) => {
+                let o = g(0);
+                if int(&args[1]) == 0 {
+                    sim.combat.off_stage.insert(o);
+                } else {
+                    sim.combat.off_stage.remove(&o);
+                }
+                sim.exists(o)
+            }
             _ => return None,
         })
     }
@@ -403,6 +423,8 @@ impl<'a> SimFunctions<'a> {
             )),
             // bg3: esv::OsirisLSDialogsFunctions::IsSpeakerReserved (4.1.1.7631656)
             ("IsSpeakerReserved", 2) => Some(bool_out(sim.is_speaker_reserved(g(ctx, 0)))),
+            // bg3: esv::OsirisGameFunctions::IsInCombat (4.1.1.7631656)
+            ("IsInCombat", 2) => Some(bool_out(sim.in_combat(g(ctx, 0)))),
             // bg3: esv::OsirisDialogFunctions::DialogGetInvolvedPlayer / DialogGetInvolvedNPC
             // (4.1.1.7631656): the n-th (from 1) player / NPC as a bare UUID; out of range fails.
             ("DialogGetInvolvedPlayer" | "DialogGetInvolvedNPC", 3) => {

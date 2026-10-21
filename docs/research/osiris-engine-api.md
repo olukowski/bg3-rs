@@ -127,6 +127,14 @@ and queue events; nothing is delivered to the story during a call, matching the 
 | character sheets | stats `Character` entries (abilities, `Level`, `Vitality`, `Armor`, `ProficiencyBonus`/`ProficiencyBonusScaling`, `SpellCastingAbility`, `Passives`, proficiency boosts in `DefaultBoosts`); `LevelOverride` of objects and templates; level maps from `Public/<Module>/Levelmaps/LevelMapValues.lsx` |
 | difficulty classes | `Public/<Module>/DifficultyClasses/DifficultyClasses.lsx`: `UUID`, `Difficulties` (the DC) |
 | dialogs | the dialog library (`bg3_dialog::library`, `DialogBank` resources) |
+| combat | factions and relations, action resources, weapons, armour, equipment sets, spells, classes, origins, progressions, spell lists, objects' `Equipment`/`SkillList`/`CombatGroupID` (`bg3_sim::combat::data`, see [combat.md](combat.md)) |
+
+**Combat** (`bg3_sim::combat`, see [combat.md](combat.md)) raises the combat events
+(`EnteredCombat`, `CombatStarted`, `CombatRoundStarted`, `TurnStarted`, `ShareInitiative`,
+`TurnEnded`, `UsingSpell`, `UsingSpellOnTarget`, `StartAttack`, `CastSpell`, `AttackedBy`,
+`CastedSpell`, `Dying`, `KilledBy`, `Died`, `LeftCombat`, `CombatEnded`, `DownedChanged`) in the
+order of a recorded fight, and implements `EnterCombat`, `EndTurn`, `IsInCombat` and
+`SetOnStage` (the off-stage set only).
 
 **Entities.** Identified by UUID (the engine resolves only the UUID,
 `esv::StoryUtils::OsirisParamGUIDToGameObject`) and rendered back as `Name_<uuid>`
@@ -405,7 +413,9 @@ combat, perception; `bg3x play` lists the ~60 story functions still unimplemente
    from character creation (race, class, abilities chosen by the player), and origins' class
    proficiencies come from progressions the sim does not run; dialog checks of player
    characters therefore use too few modifiers. Max HP is `Vitality` (*inferred*; boosts, class
-   levels and Constitution not modelled).
+   levels and Constitution not modelled) — except for origin characters once they fight:
+   combat gives them their class HP and their race/class progressions' resources (see
+   [combat.md](combat.md)).
 
 ## Inventory
 
@@ -420,10 +430,10 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | Subsystem | calls (uses) | queries (uses) | events (deliveries) | in bg3-sim |
 |---|---|---|---|---|
 | Character creation | 3 (12) | 1 (6) | 5 (5) | 1 of 9 |
-| Combat, AI & perception | 13 (168) | 8 (652) | 21 (1941) | 4 of 42 |
+| Combat, AI & perception | 13 (168) | 8 (652) | 21 (1941) | 5 of 42 |
 | Crime | 5 (51) | 10 (48) | 3 (9) | 0 of 18 |
 | Dialog | 5 (40) | 11 (177) | 8 (38) | 19 of 24 |
-| Entities & templates | 10 (180) | 12 (4518) | 9 (229) | 4 of 31 |
+| Entities & templates | 10 (180) | 12 (4518) | 9 (229) | 5 of 31 |
 | Flags | 5 (83) | 2 (63) | 1 (34) | 5 of 8 |
 | Inventory & items | 8 (19) | 15 (673) | 19 (2456) | 1 of 42 |
 | Levels & game flow | 5 (7) | 6 (226) | 10 (358) | 4 of 21 |
@@ -475,7 +485,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | query | `CanFight/2` | 5 |  |  | `CanFight(Gnomes_Male_Deep_Player_…, [out] 1)` |
 | query | `GetRelation/3` | 4 |  |  | `GetRelation((FACTION)ACT0_TUT_LabDevourer_…, (FACTION)Hero_…, [out] (INTEGER))` |
 | query | `CanLearnSpell/4` | 2 | 2 |  | `CanLearnSpell(Gnomes_Male_Deep_Player_…, LOOT_SCROLL_Revivify_…, 0, [out] 1)` |
-| query | `IsInCombat/2` | 2 |  |  | `IsInCombat(S_TUT_Lab_TrappedDevourer_…, [out] 0)` |
+| query | `IsInCombat/2` | 2 |  | yes | `IsInCombat(S_TUT_Lab_TrappedDevourer_…, [out] 0)` |
 | query | `CombatGetGuidFor/2` | 1 | 1 |  | `CombatGetGuidFor(S_Player_Laezel_…, [out] (GUIDSTRING))` |
 | event | `HitpointsChanged/2` | 583 |  | external | `HitpointsChanged(S_GLO_CharacterCreationDummy_003_…, 100.0)` |
 | event | `Saw/3` | 457 |  | external | `Saw(S_GLO_CharacterCreationDummy_004_…, OriginIntro_Player1_…, 0)` |
@@ -557,7 +567,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 |---|---|---:|---:|---|---|
 | call | `TriggerRegisterForCharacter/2` | 82 |  |  | `TriggerRegisterForCharacter((TRIGGER)S_Tutorials_AdvancedMovement_04_…, Gnomes_Male_Deep_Player_…)` |
 | call | `RegisterWaypoint/2` | 40 |  |  | `RegisterWaypoint("WAYP_CRE_Exterior", (ITEM)S_CRE_Exterior_Waypoint_…)` |
-| call | `SetOnStage/2` | 37 |  |  | `SetOnStage((CHARACTER)S_PLA_ZhentShipment_Spectator_…, 0)` |
+| call | `SetOnStage/2` | 37 |  | yes | `SetOnStage((CHARACTER)S_PLA_ZhentShipment_Spectator_…, 0)` |
 | call | `SetCanInteract/2` | 8 |  |  | `SetCanInteract((ITEM)S_TUT_Lab_OperationChair_…, 0)` |
 | call | `SetDetached/2` | 3 |  |  | `SetDetached(S_TUT_Misc_PodMindflayer_…, 1)` |
 | call | `SetVisible/2` | 3 |  |  | `SetVisible(S_TUT_Misc_PodMindflayer_…, 0)` |

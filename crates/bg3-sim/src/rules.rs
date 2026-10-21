@@ -7,7 +7,9 @@
 //! (items, triggers, characters without a `Character` stats entry) have neutral scores (10),
 //! no hit points and are never dead.
 
-use bg3_rules::context::{Ability, EntityId, RulesContext, Skill};
+use bg3_rules::context::{
+    Ability, AttackType, DamageType, EntityId, Hand, Resistance, RulesContext, Skill, Weapon,
+};
 use bg3_rules::dice::{DiceRng, RollDefinition, RollStream};
 
 use crate::character::CharacterSheet;
@@ -185,6 +187,57 @@ impl RulesContext for Sim {
 
     fn spellcasting_ability(&self, e: EntityId) -> Option<Ability> {
         self.sheet(e)?.spellcasting_ability
+    }
+
+    // ---- combat (see crate::combat) ------------------------------------------------------
+
+    fn is_downed(&self, e: EntityId) -> bool {
+        self.entity_guid(e)
+            .and_then(|g| self.combatant(g))
+            .is_some_and(|c| c.downed)
+    }
+
+    fn in_combat(&self, e: EntityId) -> bool {
+        self.entity_guid(e).is_some_and(|g| Sim::in_combat(self, g))
+    }
+
+    fn weapon(&self, e: EntityId, hand: Hand) -> Option<Weapon> {
+        let g = self.entity_guid(e)?;
+        self.combat_weapon(g, false, hand)
+            .or_else(|| self.combat_weapon(g, true, hand))
+    }
+
+    fn attack_weapon(&self, e: EntityId, attack: AttackType) -> Option<Weapon> {
+        self.rules_attack_weapon(self.entity_guid(e)?, attack)
+    }
+
+    fn unarmed_attack_ability(&self, e: EntityId) -> Ability {
+        self.entity_guid(e)
+            .and_then(|g| self.combatant(g))
+            .map_or(Ability::Strength, |c| c.unarmed_ability)
+    }
+
+    fn resistance(&self, e: EntityId, t: DamageType) -> Resistance {
+        self.entity_guid(e)
+            .and_then(|g| self.combatant(g))
+            .and_then(|c| c.resistances.iter().find(|(x, _)| *x == t).map(|(_, r)| *r))
+            .unwrap_or_default()
+    }
+
+    fn is_enemy(&self, a: EntityId, b: EntityId) -> bool {
+        match (self.entity_guid(a), self.entity_guid(b)) {
+            (Some(a), Some(b)) => self.is_hostile(a, b),
+            _ => false,
+        }
+    }
+
+    fn is_ally(&self, a: EntityId, b: EntityId) -> bool {
+        match (self.entity_guid(a), self.entity_guid(b)) {
+            (Some(x), Some(y)) => {
+                x == y || self.relation(x, y) == crate::combat::data::RELATION_ALLIED
+            }
+            _ => a == b,
+        }
     }
 
     fn armor_class(&self, e: EntityId) -> i32 {

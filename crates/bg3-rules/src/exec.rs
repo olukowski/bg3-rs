@@ -112,9 +112,8 @@ impl ExprEnv for EntityEnv<'_> {
                     )));
                 }
             },
-            // Unarmed attacks use Strength.
             VarKind::Builtin(BuiltinVar::UnarmedMeleeAbility) => {
-                ability_value(crate::context::Ability::Strength)
+                ability_value(c.unarmed_attack_ability(e))
             }
             VarKind::Builtin(BuiltinVar::SpellDC) => {
                 rules::spell_dc(c, e, None, self.base_spell_dc)
@@ -143,6 +142,43 @@ impl ExprEnv for EntityEnv<'_> {
     }
 }
 
+/// What happened during a cast, structured (the same as the text log, for front ends and
+/// combat logs).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExecEvent {
+    /// A roll made by a condition (attack roll, saving throw, raw die).
+    Roll(RollEvent),
+    Damage {
+        source: EntityId,
+        target: EntityId,
+        damage_type: crate::context::DamageType,
+        /// Before resistances.
+        raw: i32,
+        /// Dealt.
+        amount: i32,
+        critical: bool,
+        /// Each dice roll as `NdM=total`.
+        rolls: Vec<String>,
+        hp_after: i32,
+    },
+    StatusApplied {
+        source: EntityId,
+        target: EntityId,
+        status: String,
+        /// Turns; -1 = until removed.
+        duration: i32,
+    },
+    StatusRemoved {
+        target: EntityId,
+        status: String,
+    },
+    Healed {
+        target: EntityId,
+        amount: i32,
+        hp_after: i32,
+    },
+}
+
 /// What a cast did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CastOutcome {
@@ -157,6 +193,7 @@ pub struct Executor<'a> {
     pub ctx: &'a mut dyn RulesContext,
     pub rng: &'a mut dyn DiceRng,
     pub log: Vec<String>,
+    pub events: Vec<ExecEvent>,
 }
 
 impl<'a> Executor<'a> {
@@ -170,6 +207,7 @@ impl<'a> Executor<'a> {
             ctx,
             rng,
             log: Vec::new(),
+            events: Vec::new(),
         }
     }
 
@@ -183,6 +221,7 @@ impl<'a> Executor<'a> {
 
     fn log_rolls(&mut self, rolls: &[RollEvent]) {
         for r in rolls {
+            self.events.push(ExecEvent::Roll(r.clone()));
             let line = match r {
                 RollEvent::Attack(a) => format!(
                     "  {} attacks {}: {a}",
@@ -356,6 +395,12 @@ impl<'a> Executor<'a> {
                     None => 1,
                 };
                 self.ctx.apply_status(tgt, &a.status, duration, Some(src));
+                self.events.push(ExecEvent::StatusApplied {
+                    source: src,
+                    target: tgt,
+                    status: a.status.clone(),
+                    duration,
+                });
                 let line = format!(
                     "  {} gains status {} ({duration} turns)",
                     self.name(tgt),
@@ -365,6 +410,10 @@ impl<'a> Executor<'a> {
             }
             Params::RemoveStatus { status } => {
                 self.ctx.remove_status(tgt, status);
+                self.events.push(ExecEvent::StatusRemoved {
+                    target: tgt,
+                    status: status.clone(),
+                });
                 let line = format!("  {} loses status {status}", self.name(tgt));
                 self.say(line);
             }
@@ -373,6 +422,11 @@ impl<'a> Executor<'a> {
                     Ok(n) => {
                         let hp = (self.ctx.hp(tgt) + n.max(0)).min(self.ctx.max_hp(tgt));
                         self.ctx.set_hp(tgt, hp);
+                        self.events.push(ExecEvent::Healed {
+                            target: tgt,
+                            amount: n.max(0),
+                            hp_after: hp,
+                        });
                         let line = format!(
                             "  {} regains {n} HP ({hp}/{})",
                             self.name(tgt),
@@ -447,6 +501,16 @@ impl<'a> Executor<'a> {
         let amount = rules::apply_resistance(raw, resistance);
         let hp = (self.ctx.hp(tgt) - amount).max(0);
         self.ctx.set_hp(tgt, hp);
+        self.events.push(ExecEvent::Damage {
+            source: src,
+            target: tgt,
+            damage_type,
+            raw,
+            amount,
+            critical,
+            rolls: rolls.clone(),
+            hp_after: hp,
+        });
         let mut line = format!(
             "  {} deals {amount} {damage_type} damage to {}",
             self.name(src),
