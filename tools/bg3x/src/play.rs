@@ -65,6 +65,22 @@ pub fn run(a: Args) -> Result<()> {
                 started.events,
                 started.story_requested_level
             );
+            let off: Vec<String> = game
+                .sim
+                .presences()
+                .into_iter()
+                .filter(|p| !p.on_stage)
+                .map(|p| p.name)
+                .collect();
+            println!("off stage: {}", off.join(", "));
+            for p in game.sim.presences() {
+                if p.name.contains("Player") {
+                    println!(
+                        "  {} at {:?} (on stage {}, visible {})",
+                        p.name, p.position, p.on_stage, p.visible
+                    );
+                }
+            }
             let mut choices = a.choices.iter().copied();
             let mut before = snapshot(&game.sim);
             let mut talked = false;

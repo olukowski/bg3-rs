@@ -406,23 +406,38 @@ impl Sim {
         true
     }
 
-    /// Put an object somewhere (teleport): `Teleported(character, NULL, old, new, "Invalid")`
-    /// or `ItemTeleported(item, old, new)`, then `EntityEvent(object, event)` if an event name
-    /// was given (trace: `TeleportTo(…, "TUT_Start_PodFilled", …)` → `Teleported` →
-    /// `EntityEvent(…, "TUT_Start_PodFilled")`; *inferred* order).
+    /// Put an object somewhere (teleport) in `level` (`None`: the loaded level). Into another
+    /// level: `LeftLevel(object, old)`, `EnteredLevel(object, template, new)`, then
+    /// `Teleported(character, NULL, old, new, "RegionSwap")`; within a level `Teleported(…,
+    /// "Invalid")`, or `ItemTeleported(item, old, new)` for items; then `EntityEvent(object,
+    /// event)` if an event name was given (trace: Shadowheart's `TeleportTo(…,
+    /// "TUT_TransformChamber_ShadowheartTeleport", …)` from `WLD_Main_A`; *inferred* order).
     // bg3: esv::OsirisGameFunctions::TeleportTo / TeleportToPosition (4.1.1.7631656)
-    pub fn teleport(&mut self, id: Guid, to: [f32; 3], event: &str) -> bool {
-        let level = self.level.clone();
+    pub fn teleport(&mut self, id: Guid, to: [f32; 3], level: Option<String>, event: &str) -> bool {
+        let level = level.or_else(|| self.level.clone());
         let Some(e) = self.entities.get_mut(id) else {
             return false;
         };
         let from = e.position;
+        let old_level = e.level.clone();
         e.position = to;
-        if e.level.is_none() {
-            e.level = level;
+        let swap = level.is_some() && old_level != level;
+        if level.is_some() {
+            e.level = level.clone();
         }
-        let kind = e.kind;
+        let (kind, template) = (e.kind, e.template);
         let who = SimValue::Guid(self.render(id));
+        if swap && kind == EntityKind::Character {
+            if let Some(old) = old_level {
+                self.push_event("LeftLevel", vec![who.clone(), SimValue::Str(old)]);
+            }
+            let template = template.map_or(NULL_OBJECT.to_owned(), |t| t.to_string());
+            let new = level.clone().unwrap_or_default();
+            self.push_event(
+                "EnteredLevel",
+                vec![who.clone(), SimValue::Guid(template), SimValue::Str(new)],
+            );
+        }
         let reals = from.iter().chain(&to).map(|v| SimValue::Real(*v));
         match kind {
             EntityKind::Item => {
@@ -430,15 +445,17 @@ impl Sim {
                 self.push_event("ItemTeleported", args);
             }
             _ => {
+                let reason = if swap { "RegionSwap" } else { "Invalid" };
                 let args = [who.clone(), SimValue::Guid(NULL_OBJECT.to_owned())]
                     .into_iter()
                     .chain(reals)
-                    .chain(std::iter::once(SimValue::Str("Invalid".to_owned())))
+                    .chain(std::iter::once(SimValue::Str(reason.to_owned())))
                     .collect();
                 self.push_event("Teleported", args);
             }
         }
         self.stage.moves.retain(|m| m.who != id);
+        self.stage.checked.remove(&id);
         if !event.is_empty() {
             self.entity_event(who, event);
         }
@@ -622,15 +639,18 @@ pub(crate) fn call(
         }
         // TeleportTo(source, target, event, …): to the target object's position.
         ("TeleportTo", 8) => {
-            let Some(to) = sim.entity(g(1)).map(|e| e.position) else {
+            let target = g(1);
+            let Some(to) = sim.entity(target).map(|e| e.position) else {
                 return Some(false);
             };
-            sim.teleport(g(0), to, &text(ctx, &args[2]))
+            let level = sim.region(target).map(str::to_owned);
+            sim.teleport(g(0), to, level, &text(ctx, &args[2]))
         }
         // TeleportToPosition(object, x, y, z, event, …)
         ("TeleportToPosition", 10) => sim.teleport(
             g(0),
             [real(&args[1]), real(&args[2]), real(&args[3])],
+            None,
             &text(ctx, &args[4]),
         ),
         // CharacterMoveTo(character, target, "Run"/"Walk"/…, event, ?): a straight-line move

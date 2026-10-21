@@ -92,6 +92,36 @@ impl Level {
     }
 }
 
+/// Characters defined in any level's `Globals` directory
+/// (`Mods/<Module>/Globals/<Level>/Characters/_merged.lsf`): they exist in every level and
+/// move between levels (origins, companions). A later module replaces a character by `MapKey`.
+pub fn load_global_characters(vfs: &Vfs) -> Result<Vec<LevelObject>> {
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    let mut objects: Vec<LevelObject> = Vec::new();
+    for module in BASE_LOAD_ORDER {
+        let prefix = format!("Mods/{module}/Globals/");
+        let mut paths: Vec<String> = vfs
+            .files_under(&prefix)
+            .map(|f| f.entry.name.clone())
+            .filter(|n| n.ends_with("/Characters/_merged.lsf"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            let res = parse(vfs, &path)?;
+            for obj in read_objects(&res, module) {
+                match by_id.get(&obj.id) {
+                    Some(&i) => objects[i] = obj,
+                    None => {
+                        by_id.insert(obj.id.clone(), objects.len());
+                        objects.push(obj);
+                    }
+                }
+            }
+        }
+    }
+    Ok(objects)
+}
+
 fn read_objects<'a>(
     res: &'a bg3_lsf::Resource,
     module: &'a str,

@@ -28,6 +28,9 @@ pub struct NavOptions {
     pub overlay: bool,
     /// Pick the controlled character by name (substring, case-insensitive).
     pub player: Option<String>,
+    /// Pick the controlled character by level object id (wins over `player`; `--play` sets
+    /// it to the avatar).
+    pub player_id: Option<String>,
     /// Walk here on start (BG3 world coordinates), for screenshots.
     pub walk_to: Option<[f32; 3]>,
 }
@@ -198,7 +201,12 @@ fn select_character(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let focus = focus(&start).unwrap_or(Vec3::ZERO);
+    let by_id = options
+        .player_id
+        .as_ref()
+        .and_then(|id| roots.iter().find(|(_, r, _)| &r.id == id));
     let chosen = match &options.player {
+        _ if by_id.is_some() => by_id,
         Some(name) => {
             let name = name.to_lowercase();
             roots
@@ -302,7 +310,7 @@ fn walk_on_start(
     }
 }
 
-fn click_to_move(
+pub fn click_to_move(
     buttons: Res<ButtonInput<MouseButton>>,
     nav: Res<Navigation>,
     windows: Query<&Window>,

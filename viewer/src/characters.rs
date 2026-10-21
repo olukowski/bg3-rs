@@ -203,7 +203,13 @@ pub struct LevelCharacters {
 }
 
 impl LevelCharacters {
-    pub fn load(vfs: &Vfs, level: &LoadedLevel) -> Self {
+    /// Resolve and convert the characters among `objects` (the level's, plus global ones the
+    /// simulation placed in it with `--play`); non-characters are skipped.
+    pub fn load_objects<'a>(
+        vfs: &Vfs,
+        level: &LoadedLevel,
+        objects: impl Iterator<Item = &'a bg3_world::LevelObject>,
+    ) -> Self {
         let started = std::time::Instant::now();
         let idle = idle_simple_name(vfs);
         let stats = bg3_stats::install::load(vfs.packages(), bg3_vfs::modules::BASE_LOAD_ORDER)
@@ -211,7 +217,7 @@ impl LevelCharacters {
             .ok();
         let mut out = Self::default();
         let mut resolved = Vec::new();
-        for obj in level.level.objects.iter().filter(|o| o.kind == "character") {
+        for obj in objects.filter(|o| o.kind == "character") {
             match resolve_character(obj, &level.templates, &level.banks, &idle) {
                 Ok(c) => {
                     let items = match (&c.props.equipment, &stats) {
@@ -565,6 +571,8 @@ pub type BoundClip = (Arc<PreparedAnimation>, Vec<(usize, usize)>);
 /// Root entity of a spawned level character.
 #[derive(Component)]
 pub struct CharacterRoot {
+    /// Level object id (`MapKey`).
+    pub id: String,
     pub name: String,
     pub run_speed: f32,
     pub step_height: f32,
@@ -668,6 +676,7 @@ pub fn spawn_characters(
             }
         }
         commands.entity(root).insert(CharacterRoot {
+            id: c.id.clone(),
             name: c.name.clone(),
             run_speed: c.run_speed,
             step_height: c.step_height,

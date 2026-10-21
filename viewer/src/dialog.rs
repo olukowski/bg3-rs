@@ -115,7 +115,7 @@ impl Plugin for DialogPlugin {
     }
 }
 
-fn load_loca(vfs: &Vfs, language: &str) -> Result<Loca> {
+pub(crate) fn load_loca(vfs: &Vfs, language: &str) -> Result<Loca> {
     let mut loca = Loca::new();
     let mut files: Vec<_> = vfs
         .files_under(&format!("Localization/{language}/"))
@@ -130,7 +130,7 @@ fn load_loca(vfs: &Vfs, language: &str) -> Result<Loca> {
 
 /// Level characters and items (`Mods/*/Levels/<level>/{Characters,Items}` and every
 /// `Mods/*/Globals/*/{Characters,Items}`; speakers can be items, e.g. speaker helpers) by UUID: (internal name, display-name loca handle).
-fn level_characters(vfs: &Vfs, level: &str) -> HashMap<Guid, (String, Option<String>)> {
+pub(crate) fn level_characters(vfs: &Vfs, level: &str) -> HashMap<Guid, (String, Option<String>)> {
     let level = level.to_ascii_lowercase();
     let mut out = HashMap::new();
     for f in vfs.files_under("mods/") {
@@ -329,7 +329,7 @@ fn refresh_panel(
 }
 
 /// Drops loca markup the panel can't render (`<i>`, `<br>`, `<LSTag …>`).
-fn clean_markup(text: &str) -> String {
+pub(crate) fn clean_markup(text: &str) -> String {
     let text = text.replace("<br>", "\n");
     let mut out = String::with_capacity(text.len());
     let mut in_tag = false;

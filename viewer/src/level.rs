@@ -8,6 +8,10 @@ use bg3_world::{Level, LevelObject, ResourceBanks, RootTemplates};
 use crate::fly_camera::FlyCamera;
 use crate::meshes::VisualMeshes;
 
+/// The level object (`MapKey`) an entity was spawned from.
+#[derive(Component)]
+pub struct ObjectId(pub String);
+
 /// A mesh and its material, ready to spawn.
 type MeshPart = (Handle<Mesh>, Handle<StandardMaterial>);
 
@@ -116,6 +120,7 @@ pub fn spawn_level(
             commands
                 .spawn((
                     Name::new(obj.name.clone()),
+                    ObjectId(obj.id.clone()),
                     transform,
                     Visibility::default(),
                 ))
@@ -138,6 +143,7 @@ pub fn spawn_level(
         };
         commands.spawn((
             Name::new(obj.name.clone()),
+            ObjectId(obj.id.clone()),
             Mesh3d(cube.clone()),
             MeshMaterial3d(mat),
             transform,
