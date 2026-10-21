@@ -277,18 +277,21 @@ fn to_image(t: Texture, srgb: bool) -> anyhow::Result<Image> {
         (TexelFormat::Rgba8, true) => F::Rgba8UnormSrgb,
         (TexelFormat::Bc(f), _) => anyhow::bail!("unsupported format {f:?}"),
     };
-    let mut image = Image::new(
+    let (data, mip_count) = fit_mip_chain(format, t.width, t.height, t.mip_count, t.data)?;
+    // `Image::new` checks the data against the top level only, so a mip chain trips its
+    // `debug_assert`; the chain was checked above.
+    let mut image = Image::new_uninit(
         Extent3d {
             width: t.width,
             height: t.height,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        t.data,
         format,
         RenderAssetUsages::RENDER_WORLD,
     );
-    image.texture_descriptor.mip_level_count = t.mip_count;
+    image.data = Some(data);
+    image.texture_descriptor.mip_level_count = mip_count;
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
         address_mode_v: ImageAddressMode::Repeat,
@@ -299,6 +302,46 @@ fn to_image(t: Texture, srgb: bool) -> anyhow::Result<Image> {
         ..default()
     });
     Ok(image)
+}
+
+/// Bytes of one mip level: whole blocks for block-compressed formats (a 2×1 BC level still
+/// takes one 4×4 block), rows of texels otherwise.
+fn mip_size(format: TextureFormat, width: u32, height: u32) -> usize {
+    let (bw, bh) = format.block_dimensions();
+    let block_bytes = format.block_copy_size(None).unwrap_or(4) as usize;
+    let w = width.max(1).div_ceil(bw) as usize;
+    let h = height.max(1).div_ceil(bh) as usize;
+    w * h * block_bytes
+}
+
+/// Check `data` against the mip chain wgpu expects for `mips` levels (each level half the
+/// previous, at least 1×1). Extra bytes are dropped; a chain cut short keeps the levels that
+/// are complete. Errors if not even the top level is there.
+fn fit_mip_chain(
+    format: TextureFormat,
+    width: u32,
+    height: u32,
+    mips: u32,
+    mut data: Vec<u8>,
+) -> anyhow::Result<(Vec<u8>, u32)> {
+    let mut total = 0usize;
+    let mut levels = 0u32;
+    for level in 0..mips.max(1) {
+        let size = mip_size(format, width >> level, height >> level);
+        if total + size > data.len() {
+            break;
+        }
+        total += size;
+        levels += 1;
+    }
+    if levels == 0 {
+        anyhow::bail!(
+            "{} bytes for a {width}×{height} {format:?} texture",
+            data.len()
+        );
+    }
+    data.truncate(total);
+    Ok((data, levels))
 }
 
 /// Emissive scale: glow colours are ~1, Bevy's default exposure needs a few hundred nits to
@@ -373,4 +416,30 @@ pub fn upload(
         out.by_id.insert(id, Some(materials.add(material)));
     }
     commands.insert_resource(out);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bc_mips_below_a_block_take_a_whole_block() {
+        // 8×8 BC1: 4 blocks, then 1 block for 4×4, 2×2 and 1×1.
+        let f = TextureFormat::Bc1RgbaUnorm;
+        assert_eq!(mip_size(f, 8, 8), 32);
+        assert_eq!(mip_size(f, 2, 2), 8);
+        let (data, mips) = fit_mip_chain(f, 8, 8, 4, vec![0; 32 + 8 * 3]).unwrap();
+        assert_eq!((data.len(), mips), (56, 4));
+    }
+
+    #[test]
+    fn short_chain_keeps_complete_levels_and_extra_bytes_are_dropped() {
+        let f = TextureFormat::Rgba8Unorm;
+        // 4×4 + 2×2 complete, 1×1 missing.
+        let (data, mips) = fit_mip_chain(f, 4, 4, 3, vec![0; 64 + 16]).unwrap();
+        assert_eq!((data.len(), mips), (80, 2));
+        let (data, mips) = fit_mip_chain(f, 4, 4, 1, vec![0; 100]).unwrap();
+        assert_eq!((data.len(), mips), (64, 1));
+        assert!(fit_mip_chain(f, 4, 4, 1, vec![0; 10]).is_err());
+    }
 }

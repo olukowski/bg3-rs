@@ -84,7 +84,6 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `--dialog <name>` runs a dialog in an on-screen panel (number keys pick options).
   `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled
   character (`--player <name>`, default nearest the camera target), `--walk-to x,y,z` on start.
-  Use `--release` for the viewer: debug builds trip a Bevy `debug_assert` on mipmapped textures.
 - Scratch output goes in `.cache/` only.
 - Thin arm64 slices for REA/Ghidra (it can't open the universal binary):
   `lipo -thin arm64 -output .cache/bin/bg3-arm64 "<app>/Contents/MacOS/Baldur's Gate 3"`.
