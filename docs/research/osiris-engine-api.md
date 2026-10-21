@@ -437,9 +437,11 @@ created outside the sim fell back to the log and the instance `Race` was read.
 `CharacterReservedUserIDChanged`, `GainedControl`, `CharacterSelectedForUser`,
 `CompanionSelectedForUser`, `CharacterJoinedParty`, `CharacterCreationFinished`, the story's
 `TeleportPartiesToLevelWithMovie`, `LevelUnloading`, `LevelLoaded`, `LevelGameplayStarted`,
-`LevelGameplayReady`). **Placeholder:** character creation is skipped; the avatar and guardian are
-made from the trace's preset root templates with fixed UUIDs, and the user profile id is a fixed
-string. The party lands on the level's `TriggerStart` trigger (`S_TUT_StartPoint_001`, the
+`LevelGameplayReady`). The avatar is made by character creation from a `CharacterChoice`
+(default: the trace's), its template being the chosen body preset's, and the result is applied
+after `CharacterCreationFinished` (`docs/research/character-creation.md`). **Placeholder:** the
+avatar and guardian get fixed UUIDs, the guardian is the trace's, and the user profile id is a
+fixed string. The party lands on the level's `TriggerStart` trigger (`S_TUT_StartPoint_001`, the
 position of the trace's `Teleported(…, "RegionSwap")`).
 
 `bg3_sim::presentation` adds, for live games only (`Stage::live`; the replay numbers above don't
@@ -505,9 +507,9 @@ names); being registered does not imply that every call has enough data to answe
 
 ## Open questions and next steps
 
-1. **Character creation and loot** create objects the sim only learns from events; with
-   `CharacterCreationFinished`-time data (race, body type, deity, class) and treasure tables,
-   the sim could create them itself.
+1. **Loot and starting items** create objects the sim only learns from events; the created
+   avatar's stats and tags now come from `bg3_sim::cc` (also in `sim-replay`, with the trace's
+   choice), its items are not entities yet.
 2. **Tags the sim misses** (142 gaps): gender tags not on the template chain (body type of the
    character visual?), passive/boost tags (`Tag()` boosts in passives), shapeshift tag removal.
 3. **Spawn statuses**: `StatusList` on doors (`DEBRIS_THRESHOLD_LESSER`) and some characters

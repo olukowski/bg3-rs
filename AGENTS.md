@@ -71,8 +71,12 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   [--events] [--sim [--speakers A,B] [--seed N]] | --list <substr>` (dialog tree with loca text,
   or a walk with the runner, `--sim` on bg3-sim's world with rules-engine rolls; output is game
   text, keep it local), `sim-replay [TRACE] [--check|--both] [--inventory] [--dump OUT]
-  [--no-dialogs]` (the same with `bg3-sim` as the engine, running the story's dialogs too, see
-  `docs/research/osiris-engine-api.md`),
+  [--no-dialogs] [--no-cc]` (the same with `bg3-sim` as the engine, running the story's dialogs
+  too and applying the trace's character creation, see `docs/research/osiris-engine-api.md`),
+  `cc [--list] [--race R --subrace S --body m|f --class C --subclass S --background B --deity D
+  --abilities 15,14,13,12,10,8 --bonus Wis,Con --skills … --spells … --passives …] [--spec]`
+  (character creation headless: options, rule check, the level-1 sheet; `--spec` prints the
+  choice for the viewer's `--character`, see `docs/research/character-creation.md`),
   `play [--seconds N] [--choices 1,2] [--talk NAME] [--move-to x,y,z] [--triggers SUBSTR]`
   (the viewer's `--play` headless: new game, dialogs with rolls, stage changes, the story
   functions still missing; output is game text, keep it local),
@@ -88,6 +92,8 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),
   `--terrain-only` hides objects, `--light-scale` tunes local-light brightness.
   `--dialog <name>` runs a dialog in an on-screen panel (number keys pick options).
+  `--play --cc` opens a character creation screen first (Start re-runs the viewer with
+  `--character <spec>`; default character: the trace's deep gnome cleric).
   `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled
   character (`--player <name>`, default nearest the camera target), `--walk-to x,y,z` on start.
   `--play` starts a new game on `bg3_sim::Game` (thread with a 1 GiB stack) and drives the level

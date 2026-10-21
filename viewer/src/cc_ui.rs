@@ -32,7 +32,7 @@ pub fn run(vfs: &Vfs, shot: Option<PathBuf>) -> Result<()> {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
-            title: "bg3-viewer — character creation".into(),
+            title: "bg3-viewer: character creation".into(),
             ..default()
         }),
         ..default()
@@ -164,13 +164,13 @@ impl Screen {
     fn race_name(&self, id: Option<Guid>) -> String {
         id.and_then(|g| self.data.race(g))
             .map(|r| self.text(r.display.as_ref(), &r.name))
-            .unwrap_or_else(|| "—".into())
+            .unwrap_or_else(|| "-".into())
     }
 
     fn class_name(&self, id: Option<Guid>) -> String {
         id.and_then(|g| self.data.class(g))
             .map(|c| self.text(c.display.as_ref(), &c.name))
-            .unwrap_or_else(|| "—".into())
+            .unwrap_or_else(|| "-".into())
     }
 
     fn option_name(&self, o: &str) -> String {
@@ -438,8 +438,8 @@ fn button(p: &mut ChildSpawnerCommands, label: &str, action: Action, color: Colo
     p.spawn((
         action,
         Node {
-            padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
-            margin: UiRect::all(Val::Px(2.0)),
+            padding: UiRect::axes(Val::Px(6.0), Val::Px(1.0)),
+            margin: UiRect::all(Val::Px(1.0)),
             ..default()
         },
         BackgroundColor(if on {
@@ -448,7 +448,7 @@ fn button(p: &mut ChildSpawnerCommands, label: &str, action: Action, color: Colo
             Color::srgba(0.18, 0.16, 0.18, 0.95)
         }),
     ))
-    .with_child((Text::new(label), font(15.0), TextColor(color)));
+    .with_child((Text::new(label), font(14.0), TextColor(color)));
 }
 
 fn row(p: &mut ChildSpawnerCommands, f: impl FnOnce(&mut ChildSpawnerCommands)) {
@@ -485,7 +485,7 @@ fn cycler(p: &mut ChildSpawnerCommands, name: &str, value: &str, field: Field, e
                 ..default()
             },
             Text::new(value),
-            font(16.0),
+            font(14.0),
             TextColor(if enabled { WHITE } else { GREY }),
         ));
         if enabled {
@@ -513,7 +513,7 @@ fn redraw(mut commands: Commands, mut screen: ResMut<Screen>, root: Query<Entity
         // Left: identity, abilities, result.
         root.spawn(Node {
             flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(6.0),
+            row_gap: Val::Px(2.0),
             width: Val::Percent(42.0),
             ..default()
         })
@@ -562,13 +562,13 @@ fn redraw(mut commands: Commands, mut screen: ResMut<Screen>, root: Query<Entity
                 .deity
                 .and_then(|g| d.god(g))
                 .map(|g| s.text(g.display.as_ref(), &g.name))
-                .unwrap_or_else(|| "—".into());
+                .unwrap_or_else(|| "-".into());
             cycler(col, "Deity", &god, Field::Deity, has_god);
 
             let spent = bg3_sim::cc::point_buy_spent(&c.abilities).unwrap_or(0);
             col.spawn((
                 Text::new(format!(
-                    "Abilities — {} of {} points left",
+                    "Abilities: {} of {} points left",
                     bg3_sim::cc::POINT_BUY_POINTS - spent,
                     bg3_sim::cc::POINT_BUY_POINTS
                 )),
@@ -584,7 +584,7 @@ fn redraw(mut commands: Commands, mut screen: ResMut<Screen>, root: Query<Entity
                     button(r, "+", Action::Ability(i, 1), WHITE, false);
                     label(
                         r,
-                        &format!("→ {fin} ({:+})", (fin - 10).div_euclid(2)),
+                        &format!("= {fin} ({:+})", (fin - 10).div_euclid(2)),
                         110.0,
                         GREY,
                     );
@@ -601,7 +601,7 @@ fn redraw(mut commands: Commands, mut screen: ResMut<Screen>, root: Query<Entity
                     .map(|p| p.items.clone())
                     .unwrap_or_default();
                 for (which, amount) in slot.selector.amounts.iter().enumerate().take(2) {
-                    let v = items.get(which).cloned().unwrap_or_else(|| "—".into());
+                    let v = items.get(which).cloned().unwrap_or_else(|| "-".into());
                     row(col, |r| {
                         label(r, &format!("Bonus {amount:+}"), 110.0, GOLD);
                         button(r, "<", Action::Bonus(which, -1), WHITE, false);
@@ -628,7 +628,7 @@ fn redraw(mut commands: Commands, mut screen: ResMut<Screen>, root: Query<Entity
                     ),
                     format!("Equipment: {}", list(b.equipment.clone())),
                 ] {
-                    col.spawn((Text::new(line), font(14.0), TextColor(GREY)));
+                    col.spawn((Text::new(line), font(13.0), TextColor(GREY)));
                 }
             }
             for e in &errors {
