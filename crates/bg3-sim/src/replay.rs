@@ -53,7 +53,8 @@ pub enum Mode {
 #[derive(Clone, Debug)]
 pub struct Options {
     pub mode: Mode,
-    /// Level loaded at the start (the campaign starts in character creation).
+    /// Level loaded at the start; empty = the module's character-creation level (a new
+    /// campaign starts there).
     pub start_level: String,
     pub keep_vm_log: bool,
 }
@@ -62,7 +63,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             mode: Mode::Sim,
-            start_level: "SYS_CC_I".to_owned(),
+            start_level: String::new(),
             keep_vm_log: false,
         }
     }
@@ -586,7 +587,12 @@ pub fn sim_replay(story: &Story, log: &str, data: GameData, opts: &Options) -> S
     let mut vm = Vm::new(story);
     vm.set_logging(true);
     let mut sim = Sim::new(data);
-    sim.load_level(&opts.start_level);
+    let start = if opts.start_level.is_empty() {
+        sim.data.module_levels.character_creation.clone()
+    } else {
+        opts.start_level.clone()
+    };
+    sim.load_level(&start);
     let mut cmp = Comparer::new(segs.len(), opts.keep_vm_log);
     let mut events: BTreeMap<String, EventStats> = BTreeMap::new();
     let mut pending = Pending::default();

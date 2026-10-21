@@ -40,7 +40,9 @@ pub use events::{SimEvent, SimValue};
 pub use flags::{FlagDef, FlagDefs, FlagError, FlagUsage};
 pub use guid::Guid;
 pub use host::{SimFunctions, SimHost};
-pub use sim::{GameData, ObservedArg, PlacedObject, RaceInfo, Sim, TemplateInfo, WeightCategory};
+pub use sim::{
+    GameData, ModuleLevels, ObservedArg, PlacedObject, RaceInfo, Sim, TemplateInfo, WeightCategory,
+};
 pub use status::{StatusDef, StatusDefs};
 pub use tags::{TagDef, TagDefs, TagSource};
 

@@ -49,6 +49,9 @@ pub const QUERIES: &[(&str, usize)] = &[
     ("IsWeapon", 2),
     ("IsPartyMember", 3),
     ("GetFaction", 2),
+    ("IsGameLevel", 2),
+    ("IsCharacterCreationLevel", 2),
+    ("GetActiveModStartupLevel", 1),
     ("IsStatusFromGroup", 3),
     ("GetStatusType", 2),
     ("TimerExists", 2),
@@ -265,6 +268,22 @@ impl<'a> SimFunctions<'a> {
             // `IsPartyMember(character, include_followers)`: in the party as reported by
             // `CharacterJoinedParty` / `CharacterLeftParty`.
             ("IsPartyMember", 3) => Some(bool_out(sim.party.contains(&g(ctx, 0)))),
+            // Module metadata (`Mods/<Module>/meta.lsx`).
+            ("IsGameLevel", 2) => {
+                let l = text(ctx, &args[0]);
+                Some(bool_out(sim.data.module_levels.is_game_level(&l)))
+            }
+            ("IsCharacterCreationLevel", 2) => {
+                let l = text(ctx, &args[0]);
+                Some(bool_out(l == sim.data.module_levels.character_creation))
+            }
+            ("GetActiveModStartupLevel", 1) => {
+                let l = sim.data.module_levels.startup.clone();
+                if l.is_empty() {
+                    return None;
+                }
+                Some(ctx.string(&l))
+            }
             // bg3: esv::OsirisGameFunctions::GetFaction (4.1.1.7631656)
             ("GetFaction", 2) => {
                 let f = sim.faction_text(g(ctx, 0))?;

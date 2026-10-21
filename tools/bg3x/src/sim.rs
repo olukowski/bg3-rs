@@ -58,7 +58,7 @@ pub fn run(a: Args) -> Result<()> {
         data.statuses.len(),
         data.templates.len(),
         data.globals.len(),
-        a.levels,
+        data.levels.keys().collect::<Vec<_>>(),
         t.elapsed()
     );
     let modes: Vec<Mode> = if a.both {

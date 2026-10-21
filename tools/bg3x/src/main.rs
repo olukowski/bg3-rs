@@ -133,8 +133,9 @@ enum Command {
         /// Run both modes (check, then sim).
         #[arg(long)]
         both: bool,
-        /// Levels whose objects to load; the first is loaded at the start.
-        #[arg(long, value_delimiter = ',', default_value = "SYS_CC_I,TUT_Avernus_C")]
+        /// Levels whose objects to load; the first is loaded at the start (default: the
+        /// module's character-creation and startup levels).
+        #[arg(long, value_delimiter = ',')]
         levels: Vec<String>,
         /// Also write the VM's own log, in libOsiris' format, to this file.
         #[arg(long)]

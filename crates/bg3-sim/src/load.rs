@@ -22,7 +22,7 @@ use rayon::prelude::*;
 use crate::entity::EntityKind;
 use crate::flags::{FlagDef, FlagDefs, FlagUsage};
 use crate::guid::Guid;
-use crate::sim::{GameData, PlacedObject, RaceInfo, TemplateInfo, WeightCategory};
+use crate::sim::{GameData, ModuleLevels, PlacedObject, RaceInfo, TemplateInfo, WeightCategory};
 use crate::status::StatusDefs;
 use crate::tags::{TagDef, TagDefs};
 
@@ -228,6 +228,37 @@ pub fn stats_weights(stats: &bg3_stats::Stats) -> HashMap<String, f32> {
         .collect()
 }
 
+fn find_attr(n: &Node, name: &str) -> Option<String> {
+    s(n, name).or_else(|| n.children.iter().find_map(|c| find_attr(c, name)))
+}
+
+/// Level names from `Mods/<Module>/meta.lsx` (`ModuleInfo`: `StartupLevelName`,
+/// `CharacterCreationLevelName`, `MenuLevelName`, `LobbyLevelName`); a later module's
+/// non-empty value wins.
+pub fn load_module_levels(vfs: &Vfs) -> Result<ModuleLevels, LoadError> {
+    let mut out = ModuleLevels::default();
+    for m in BASE_LOAD_ORDER {
+        let path = format!("Mods/{m}/meta.lsx");
+        if !vfs.exists(&path) {
+            continue;
+        }
+        let res = parse(vfs, &path)?;
+        for r in &res.regions {
+            for (field, attr) in [
+                (&mut out.startup, "StartupLevelName"),
+                (&mut out.character_creation, "CharacterCreationLevelName"),
+                (&mut out.menu, "MenuLevelName"),
+                (&mut out.lobby, "LobbyLevelName"),
+            ] {
+                if let Some(v) = find_attr(&r.node, attr) {
+                    *field = v;
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Faction names (`Public/<Module>/Factions/Factions.lsx`, region `FactionContainer`,
 /// `Faction` nodes with `Faction` (name) and `UUID`).
 pub fn load_factions(vfs: &Vfs) -> Result<HashMap<Guid, String>, LoadError> {
@@ -401,7 +432,8 @@ pub fn load_level_objects(vfs: &Vfs, level: &str) -> Result<Vec<PlacedObject>, L
 }
 
 impl GameData {
-    /// Load everything the sim needs, with the objects of the given levels.
+    /// Load everything the sim needs, with the objects of the given levels (none given: the
+    /// module's character-creation and startup levels, where a new game begins).
     pub fn load(vfs: &Vfs, stats: &bg3_stats::Stats, levels: &[&str]) -> Result<Self, LoadError> {
         let mut data = Self {
             flags: load_flags(vfs)?,
@@ -410,6 +442,7 @@ impl GameData {
             templates: load_templates(vfs)?,
             races: load_races(vfs)?,
             factions: load_factions(vfs)?,
+            module_levels: load_module_levels(vfs)?,
             weight_categories: load_weight_categories(vfs)?,
             stats_weight: stats_weights(stats),
             stats_type: stats
@@ -419,9 +452,18 @@ impl GameData {
             globals: load_globals(vfs)?,
             levels: HashMap::new(),
         };
-        for l in levels {
-            data.levels
-                .insert((*l).to_owned(), load_level_objects(vfs, l)?);
+        let mut names: Vec<String> = levels.iter().map(|l| (*l).to_owned()).collect();
+        if names.is_empty() {
+            let m = &data.module_levels;
+            names = [&m.character_creation, &m.startup]
+                .into_iter()
+                .filter(|l| !l.is_empty())
+                .cloned()
+                .collect();
+        }
+        for l in names {
+            let objs = load_level_objects(vfs, &l)?;
+            data.levels.insert(l, objs);
         }
         Ok(data)
     }

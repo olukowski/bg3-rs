@@ -41,7 +41,7 @@
 | `bg3-stats` | Stats text files with `using` inheritance across modules | parsing done; expressions not yet evaluated |
 | `bg3-story` | Compiled Osiris story loader and pseudo-source dump | done |
 | `bg3-osiris` | Osiris VM, plus trace parser and replay | matches the real game on the recorded opening |
-| `bg3-sim` | Headless world state and the engine side of Osiris: entities, flags, tags, statuses, timers; `Host` impl; trace validation (`sim-replay`) | answers 86% of the opening's engine queries, all graded answers equal the game's |
+| `bg3-sim` | Headless world state and the engine side of Osiris: entities, flags, tags, statuses, timers; `Host` impl; trace validation (`sim-replay`) | answers 87% of the opening's engine queries, all graded answers equal the game's |
 | `bg3-gr2` | Granny GR2 reader with BitKnit2 decompression | meshes and skeletons done; animations not yet |
 | `bg3-vt` | Granite virtual textures | done |
 | `bg3-material` | Shader-graph parameters, material instances, texture slot/channel mapping | first approximation |

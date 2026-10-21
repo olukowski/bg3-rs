@@ -71,6 +71,31 @@ pub struct WeightCategory {
     pub tags: Vec<Guid>,
 }
 
+/// Level names from the modules' `meta.lsx` (`ModuleInfo`), a later module's non-empty value
+/// replacing an earlier one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModuleLevels {
+    /// `StartupLevelName`: where a new game goes after character creation.
+    pub startup: String,
+    /// `CharacterCreationLevelName`.
+    pub character_creation: String,
+    /// `MenuLevelName`.
+    pub menu: String,
+    /// `LobbyLevelName`.
+    pub lobby: String,
+}
+
+impl ModuleLevels {
+    /// `IsGameLevel`: not one of the module's system levels (character creation, menu,
+    /// lobby). *Inferred*: `SYS_CC_I` → 0 and `TUT_Avernus_C` → 1 in the trace.
+    pub fn is_game_level(&self, level: &str) -> bool {
+        !level.is_empty()
+            && ![&self.character_creation, &self.menu, &self.lobby]
+                .iter()
+                .any(|l| l.as_str() == level)
+    }
+}
+
 /// Static game data the sim runs on. Built by [`crate::load`] from an install, or by hand in
 /// tests.
 #[derive(Clone, Debug, Default)]
@@ -80,6 +105,8 @@ pub struct GameData {
     pub statuses: StatusDefs,
     pub templates: HashMap<Guid, TemplateInfo>,
     pub races: HashMap<Guid, RaceInfo>,
+    /// Level names from the module metadata.
+    pub module_levels: ModuleLevels,
     /// Faction names (`Public/<Module>/Factions/Factions.lsx`).
     pub factions: HashMap<Guid, String>,
     /// Ascending by `max_weight`.

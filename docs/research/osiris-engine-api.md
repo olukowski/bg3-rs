@@ -1,6 +1,6 @@
 # The engine side of Osiris: API inventory and `bg3-sim`
 
-Status: inventory of the opening complete; `crates/bg3-sim` answers 86% of the engine queries
+Status: inventory of the opening complete; `crates/bg3-sim` answers 87% of the engine queries
 of the opening and raises 82% of the engine events the story's own calls cause, matching the
 original game on every graded answer (details below). This page is the to-do list for the rest.
 
@@ -116,6 +116,7 @@ and queue events; nothing is delivered to the story during a call, matching the 
 | races | `Public/<Module>/Races/Races.lsx`: `ParentGuid`, `Tags` |
 | weight categories | `Public/<Module>/WeightCategories/WeightCategories.lsx`: `MaxWeight` (g), `Tags`; stats `Weight` (kg) |
 | factions | `Public/<Module>/Factions/Factions.lsx`: `Faction` (name), `UUID`; objects' `Faction` |
+| module levels | `Mods/<Module>/meta.lsx`: `StartupLevelName`, `CharacterCreationLevelName`, `MenuLevelName`, `LobbyLevelName` (a new game starts in the character-creation level and goes to the startup level; their objects are loaded) |
 | global objects (759) | `Mods/<Module>/Globals/<Level>/{Characters,Items,Triggers}/_merged.lsf`, all levels: they exist all game |
 | level objects | `Mods/<Module>/Levels/<Level>/{Characters,Items,Triggers}/_merged.lsf`, while the level is loaded |
 
@@ -180,7 +181,9 @@ fires due timers in due-time order.
 (follows inventory holders), `GetFlag`, `GetFlagName`, `IsTagged`, `HasActiveStatus`,
 `HasAppliedStatus`, `HasActiveStatusWithGroup`, `HasAppliedStatusWithGroup`,
 `IsStatusFromGroup`, `GetStatusType`, `TimerExists`, `ObjectTimerExists`, `IsSummon`,
-`IsWeapon` (stats type `Weapon`), `IsPartyMember`, `GetFaction`, and the math/string functions
+`IsWeapon` (stats type `Weapon`), `IsPartyMember`, `GetFaction`, `GetActiveModStartupLevel`,
+`IsCharacterCreationLevel`, `IsGameLevel` (not the character-creation, menu or lobby level;
+*inferred*), and the math/string functions
 (`IntegerSum` & co., `Concatenate`, `ConcatenateInteger`, `GUIDToString`, `StringToGUID`). A
 query the sim implements still falls back when it lacks the data: objects created outside the
 sim (their tags may come from character-creation choices), objects of unknown kind, statuses
@@ -214,9 +217,9 @@ Results on `full-nautiloid.log` (12 382 segments = `InitGame` + 12 381 events):
 |---|---|---|
 | segments identical to the game (every fact, rule, call, query, PROC, goal record) | 100.00% | **100.00%** |
 | databases with identical fact history | 1 133 / 1 133 | 1 133 / 1 133 |
-| queries answered by the sim | 11 702 / 13 543 (86.4%) | 11 702 / 13 543 (86.4%) |
+| queries answered by the sim | 11 742 / 13 543 (86.7%) | 11 742 / 13 543 (86.7%) |
 | sim answers that disagree with the game | 0 | 0 |
-| queries from the log: not implemented / implemented, no data | 1 395 / 446 | 1 395 / 446 |
+| queries from the log: not implemented / implemented, no data | 1 355 / 446 | 1 355 / 446 |
 | calls run by the sim | 458 / 1 115 (41.1%) | 458 / 1 115 |
 
 Sim-owned events (both modes):
@@ -284,7 +287,7 @@ created outside the sim fell back to the log and the instance `Race` was read.
 5. **Next queries by volume**: `GetHitpointsPercentage` 370 and `IsDead` (needs HP and death),
    `HasPassive` 182 (progressions), `GetInventoryOwner` 97 and `TemplateIsInInventory` 63
    (inventory), `DialogIsAutomated` 71 and the other dialog
-   queries (dialogue runner), `CharacterHasDLC` 66, `GetReservedUserID` 64, `IsGameLevel` 33.
+   queries (dialogue runner), `CharacterHasDLC` 66, `GetReservedUserID` 64.
 6. **Timing**: the trace has no timestamps; a capture with frame numbers or game time would let
    the sim drive timers and event batching itself instead of following the log's order.
 7. `SetMagicPocketsFlag`/`ClearMagicPocketsFlag` (flags that follow an item into a character's
@@ -302,14 +305,14 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 
 | Subsystem | calls (uses) | queries (uses) | events (deliveries) | in bg3-sim |
 |---|---|---|---|---|
-| Character creation | 3 (12) | 1 (6) | 5 (5) | 0 of 9 |
+| Character creation | 3 (12) | 1 (6) | 5 (5) | 1 of 9 |
 | Combat, AI & perception | 13 (168) | 8 (652) | 21 (1941) | 3 of 42 |
 | Crime | 5 (51) | 10 (48) | 3 (9) | 0 of 18 |
 | Dialog | 5 (40) | 11 (177) | 8 (38) | 0 of 24 |
 | Entities & templates | 10 (180) | 12 (4518) | 9 (229) | 4 of 31 |
 | Flags | 5 (83) | 2 (63) | 1 (34) | 5 of 8 |
 | Inventory & items | 8 (19) | 15 (673) | 19 (2456) | 1 of 42 |
-| Levels & game flow | 5 (7) | 6 (226) | 10 (358) | 2 of 21 |
+| Levels & game flow | 5 (7) | 6 (226) | 10 (358) | 4 of 21 |
 | Math & strings | 0 (0) | 9 (635) | 0 (0) | 6 of 9 |
 | Movement | 2 (7) | 0 (0) | 3 (7) | 0 of 5 |
 | Other | 2 (11) | 0 (0) | 0 (0) | 0 of 2 |
@@ -328,7 +331,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | call | `InitializePlayerData/1` | 10 |  |  | `InitializePlayerData((CHARACTER)S_Player_Karlach_…)` |
 | call | `NotifyCharacterCreationFinished/0` | 1 |  |  | `NotifyCharacterCreationFinished()` |
 | call | `StartCharacterCreation/0` | 1 |  |  | `StartCharacterCreation()` |
-| query | `IsCharacterCreationLevel/2` | 6 |  |  | `IsCharacterCreationLevel("SYS_CC_I", [out] 1)` |
+| query | `IsCharacterCreationLevel/2` | 6 |  | yes | `IsCharacterCreationLevel("SYS_CC_I", [out] 1)` |
 | event | `CharacterCreationFinished/0` | 1 |  | external | `CharacterCreationFinished()` |
 | event | `CharacterCreationStarted/0` | 1 |  | external | `CharacterCreationStarted()` |
 | event | `CharacterSelectedForUser/2` | 1 |  | external | `CharacterSelectedForUser(Gnomes_Male_Deep_Player_…, 65537)` |
@@ -540,10 +543,10 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | call | `StartActivity/1` | 1 |  |  | `StartActivity("Tutorial")` |
 | call | `TeleportPartiesToLevelWithMovie/3` | 1 |  | yes | `TeleportPartiesToLevelWithMovie("TUT_Avernus_C", "", "GUS_CGI01_Part2")` |
 | query | `GetRegion/2` | 182 |  | yes | `GetRegion((ITEM)S_SCL_SpidersLyre_…, [out] "SYS_CC_I")` |
-| query | `IsGameLevel/2` | 33 |  |  | `IsGameLevel("SYS_CC_I", [out] 1)` |
+| query | `IsGameLevel/2` | 33 |  | yes | `IsGameLevel("SYS_CC_I", [out] 1)` |
 | query | `CheckRulesetModifierBool/3` | 6 |  |  | `CheckRulesetModifierBool((RULESETMODIFIER)HONOUR_STATS_…, 1, [out] 1)` |
 | query | `IsGameStateRunning/1` | 3 |  |  | `IsGameStateRunning([out] 0)` |
-| query | `GetActiveModStartupLevel/1` | 1 |  |  | `GetActiveModStartupLevel([out] (STRING))` |
+| query | `GetActiveModStartupLevel/1` | 1 |  | yes | `GetActiveModStartupLevel([out] (STRING))` |
 | query | `GetModuleVersion/5` | 1 |  |  | `GetModuleVersion("GustavX", [out] (INTEGER), [out] (INTEGER), [out] (INTEGER), [out] (INTEGER))` |
 | event | `EnteredLevel/3` | 330 |  | external | `EnteredLevel(S_OriginIntro_DarkUrgeDummy_…, …, "SYS_CC_I")` |
 | event | `LevelTemplateLoaded/1` | 13 |  | external | `LevelTemplateLoaded(…)` |

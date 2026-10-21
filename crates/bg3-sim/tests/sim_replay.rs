@@ -12,7 +12,6 @@ use bg3_sim::replay::{Mode, Options, sim_replay};
 use bg3_story::Story;
 
 const STORY: (&str, &str) = ("GustavX", "Mods/GustavX/Story/story.div.osi");
-const LEVELS: &[&str] = &["SYS_CC_I", "TUT_Avernus_C"];
 
 fn trace_path() -> PathBuf {
     if let Some(p) = std::env::var_os("BG3_OSIRIS_TRACE") {
@@ -43,7 +42,8 @@ fn load() -> Option<(Vec<u8>, GameData)> {
         .collect();
     let stats =
         bg3_stats::install::load(&paks, bg3_stats::install::BASE_LOAD_ORDER).expect("stats");
-    let data = GameData::load(&vfs, &stats, LEVELS).expect("game data");
+    // No levels given: the module's character-creation and startup levels.
+    let data = GameData::load(&vfs, &stats, &[]).expect("game data");
     Some((story, data))
 }
 
@@ -66,8 +66,7 @@ fn sim_replay_trace() {
             [Mode::Check, Mode::Sim].map(|mode| {
                 let opts = Options {
                     mode,
-                    start_level: LEVELS[0].to_owned(),
-                    keep_vm_log: false,
+                    ..Options::default()
                 };
                 sim_replay(&story, &log, data.clone(), &opts)
             })
