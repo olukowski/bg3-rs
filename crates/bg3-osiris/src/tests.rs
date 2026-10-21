@@ -353,10 +353,7 @@ fn guid_strings_match_by_uuid() {
         g,
         [Act::call(
             "DB_Friend",
-            [typed(
-                character,
-                Lit::Str(format!("S_Player_Hero_{uuid}")),
-            )],
+            [typed(character, Lit::Str(format!("S_Player_Hero_{uuid}")))],
         )],
     );
     b.rule(
