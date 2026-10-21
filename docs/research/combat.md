@@ -51,6 +51,33 @@ the party, with no story call. The story can also start fights (`EnterCombat`,
   `S_FirstFight_Imp_Ranged_02` off stage (`TUT_LowerDeck` INIT), and the trace's fight has three
   imps.
 
+### In a live game
+
+The live path to the imp fight is the trace's: the avatar enters
+`S_TUT_LowerDeck_GuideDialogTrigger`, the story runs `TUT_LowerDeck_AfterImpFight` with Lae'zel
+(the root for a guide tagged `REALLY_LAEZEL`; origin characters carry their `Origins.lsx`
+`ReallyTags`, *verified by trace*: `IsTagged(S_Player_Gale, REALLY_GALE)` is 1), the recruiting
+answer sets `OriginAddToParty`, `PROC_GLO_PartyMembers_Add` calls `MakePlayer` and
+`RegisterAsCompanion` (`crates/bg3-sim/src/party.rs`: `CharacterMadePlayer`,
+`CharacterReservedUserIDChanged`, `CharacterJoinedParty`) and `SetFaction` (companion faction), the
+story teleports the party into the imp room (`IsInTrigger`), and the imps notice the party.
+
+- **Noticing** (*approximate*): `Sim::start_combat_on_sight` (`combat/notice.rs`), called once per
+  frame by a live front end: a hostile character within the `Sight` (`Character` stats, cm;
+  `_Base` 1600) of a party member, both on stage, alive, not in a fight or a dialog, starts a fight
+  (`enter_combat(hostile, party member)`). The engine's sight system (field of view, light,
+  stealth, hearing, `Saw` events) is not modelled; `start_combat_on_sight_with` takes a
+  line-of-sight test, and the viewer passes one on the AI grid (walkable tiles near the straight
+  line between the two), so other decks and walls don't count.
+- **The avatar** (*approximate*): character creation is skipped, so the placeholder avatar gets the
+  reference combat trace's class (Cleric) and its template's race (`start::TRACE_AVATAR_CLASS`,
+  `CombatState::created_origins`): class hit points and the race's movement.
+- **Spell slots** (*approximate*): `SpellSlotsGroup:n:…:level` costs are paid from `SpellSlot`,
+  slot levels not told apart.
+- Characters the story took off stage (`SetOnStage(x, 0)`, live) don't join fights; test
+  `live_imp_fight` checks the trace's line-up (avatar and Lae'zel sharing the first turn, three
+  imps).
+
 ## Initiative
 
 - **Roll** (*verified by trace*): `InitiativeDie` (Data.txt: 4) + the initiative bonus. The

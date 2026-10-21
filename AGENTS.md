@@ -91,8 +91,13 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   character (`--player <name>`, default nearest the camera target), `--walk-to x,y,z` on start.
   `--play` starts a new game on `bg3_sim::Game` (thread with a 1 GiB stack) and drives the level
   from it: characters follow the story, the avatar's position feeds trigger volumes, left click on
-  a character asks to talk, story dialogs show in a panel. `--talk <name>` clicks a character on
-  start, `--shot-after <secs>` delays `--shot`.
+  a character asks to talk, left click on an item with use actions uses it (the Brinepool), story
+  dialogs show in a panel. `--talk <name>` clicks a character (or else a usable item) on start,
+  `--shot-after <secs>` delays `--shot`. Fights start when hostiles notice the party (walk to the
+  lower deck for the imp fight) and play turn-based (`viewer/src/combat_ui.rs`): turn-order bar,
+  action bar (click an action or `1`–`9`, then a target), click the floor to move (nav path length
+  paid from Movement), `Space` ends the turn, `Tab` switches party member, combat log.
+  `--combat-test` jumps to the imp fight's set-up, `--combat-autoplay` lets the AI play the party.
 - Scratch output goes in `.cache/` only.
 - Thin arm64 slices for REA/Ghidra (it can't open the universal binary):
   `lipo -thin arm64 -output .cache/bin/bg3-arm64 "<app>/Contents/MacOS/Baldur's Gate 3"`.

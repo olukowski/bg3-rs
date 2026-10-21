@@ -57,8 +57,15 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
   avatar), characters/items follow on-stage state and story teleports, the avatar's position goes
   back to the sim and trigger volumes raise `EnteredTrigger`/`LeftTrigger`, clicking a character
   raises `DialogStartRequested`, story dialogs show in a panel with rolls (`live_game` tests)
-- [ ] Live game gaps: item use (`UseStarted`, e.g. the Brinepool), character creation, combat/HP,
-  perception, path-found scripted moves, the ~60 story functions `bg3x play` lists as missing
+- [x] Integration step 3: playable combat in `--play`: the deck fight starts the way the game
+  starts it (Lae'zel's dialog recruits her, `MakePlayer`/`RegisterAsCompanion`, hostiles notice
+  the party; `live_imp_fight` test), turn-order bar, action bar, movement paid with the nav path
+  length, animated AI turns, combat log (`viewer/src/combat_ui.rs`); clicking an item uses it
+  (`Game::use_item`, the Brinepool)
+- [ ] Live game gaps: character creation (the avatar gets the trace avatar's class), perception
+  (noticing is distance + AI-grid line of sight), the real AI and AI path finding, attack/death
+  animations, spell choices and ground-targeted spells, path-found scripted moves, the story
+  functions `bg3x play` lists as missing
 
 ## M5 — First playable slice
 - [x] Characters: visuals, skinning, idle animation, weapons in hand (docs/research/characters.md)
