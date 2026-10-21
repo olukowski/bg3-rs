@@ -30,6 +30,8 @@ pub const CALLS: &[(&str, usize)] = &[
     ("RemoveStatus", 3),
     ("TeleportPartiesToLevelWithMovie", 3),
     ("SetFaction", 2),
+    ("DialogRequestStop", 1),
+    ("DialogAddActorAtReservedSlot", 5),
 ];
 
 pub const QUERIES: &[(&str, usize)] = &[
@@ -71,7 +73,23 @@ pub const QUERIES: &[(&str, usize)] = &[
     ("ConcatenateInteger", 3),
     ("GUIDToString", 2),
     ("StringToGUID", 2),
+    ("StartDialog_Internal", 11),
+    ("DialogIsAutomated", 2),
+    ("DialogIsAllowingJoinCombat", 2),
+    ("DialogAllowDeadSpeakers", 2),
+    ("DialogSpeakerHasLines", 3),
+    ("IsSpeakerReserved", 2),
+    ("DialogGetInvolvedPlayer", 3),
+    ("DialogGetInvolvedNPC", 3),
+    ("DialogGetNumberOfInvolvedPlayers", 2),
+    ("DialogGetNumberOfInvolvedNPCs", 2),
 ];
+
+/// Dialog functions: answered only when the sim has a dialog bank
+/// ([`Sim::set_dialog_bank`]); without one they are left to the caller.
+fn is_dialog_function(name: &str) -> bool {
+    name.starts_with("Dialog") || name == "StartDialog_Internal" || name == "IsSpeakerReserved"
+}
 
 /// Is `(name, arity)` implemented by the sim (call or query)?
 pub fn implements(name: &str, arity: usize) -> bool {
@@ -127,6 +145,9 @@ impl<'a> SimFunctions<'a> {
     /// Run a call; `None` if the sim does not implement it, else whether it succeeded.
     pub fn call(&mut self, ctx: &mut HostCtx<'_>, name: &str, args: &[Value]) -> Option<bool> {
         let sim = &mut *self.sim;
+        if is_dialog_function(name) && sim.dialog_bank().is_none() {
+            return None;
+        }
         let g = |i: usize| guid(ctx, &args[i]);
         Some(match (name, args.len()) {
             // bg3: esv::OsirisDialogFunctions::SetFlag / ClearFlag (4.1.1.7631656)
@@ -171,6 +192,10 @@ impl<'a> SimFunctions<'a> {
             ("TeleportPartiesToLevelWithMovie", 3) => sim.request_level(&text(ctx, &args[0])),
             // bg3: esv::OsirisGameFunctions::SetFaction (4.1.1.7631656)
             ("SetFaction", 2) => sim.set_faction(g(0), g(1)),
+            // bg3: esv::OsirisDialogFunctions::DialogRequestStop (4.1.1.7631656)
+            ("DialogRequestStop", 1) => sim.dialog_request_stop(g(0)),
+            // bg3: esv::OsirisLSDialogsFunctions::DialogAddActorAtReservedSlot (4.1.1.7631656)
+            ("DialogAddActorAtReservedSlot", 5) => sim.dialog_add_actor(int(&args[0]) as u32, g(1)),
             _ => return None,
         })
     }
@@ -185,6 +210,19 @@ impl<'a> SimFunctions<'a> {
         args: &mut [Value],
         _out: &[bool],
     ) -> Option<bool> {
+        if is_dialog_function(name) && self.sim.dialog_bank().is_none() {
+            return None;
+        }
+        // StartDialog_Internal(dialog, ?, speaker × 6, [out] ok, [out] instance, ?)
+        // bg3: esv::OsirisLSDialogsFunctions::StartDialog_Internal (4.1.1.7631656)
+        if (name, args.len()) == ("StartDialog_Internal", 11) {
+            let dialog = guid(ctx, &args[0]);
+            let speakers: Vec<Guid> = (2..8).map(|i| guid(ctx, &args[i])).collect();
+            let id = self.sim.request_dialog(dialog, &speakers)?;
+            args[8] = Value::int(1);
+            args[9] = Value::int(id as i32);
+            return Some(true);
+        }
         let sim = &*self.sim;
         let n = args.len();
         let g = |ctx: &HostCtx<'_>, i: usize| guid(ctx, &args[i]);
@@ -343,6 +381,36 @@ impl<'a> SimFunctions<'a> {
             ("StringToGUID", 2) => {
                 let s = text(ctx, &args[0]);
                 Guid::from_osiris(&s).map(|_| ctx.guid(&s))
+            }
+            // bg3: esv::OsirisLSDialogsFunctions::DialogIsAutomated / DialogIsAllowingJoinCombat
+            // / DialogAllowDeadSpeakers (4.1.1.7631656): the dialog resource's switches.
+            ("DialogIsAutomated", 2) => Some(bool_out(sim.dialog_resource(g(ctx, 0))?.automated)),
+            ("DialogIsAllowingJoinCombat", 2) => Some(bool_out(
+                sim.dialog_resource(g(ctx, 0))?.is_allowing_join_combat,
+            )),
+            ("DialogAllowDeadSpeakers", 2) => Some(bool_out(
+                sim.dialog_resource(g(ctx, 0))?.allow_dead_speakers,
+            )),
+            // bg3: esv::OsirisLSDialogsFunctions::DialogSpeakerHasLines (4.1.1.7631656)
+            ("DialogSpeakerHasLines", 3) => Some(bool_out(
+                sim.dialog_speaker_has_lines(g(ctx, 0), int(&args[1]))?,
+            )),
+            // bg3: esv::OsirisLSDialogsFunctions::IsSpeakerReserved (4.1.1.7631656)
+            ("IsSpeakerReserved", 2) => Some(bool_out(sim.is_speaker_reserved(g(ctx, 0)))),
+            // bg3: esv::OsirisDialogFunctions::DialogGetInvolvedPlayer / DialogGetInvolvedNPC
+            // (4.1.1.7631656): the n-th (from 1) player / NPC as a bare UUID; out of range fails.
+            ("DialogGetInvolvedPlayer" | "DialogGetInvolvedNPC", 3) => {
+                let list =
+                    sim.dialog_involved(int(&args[0]) as u32, name == "DialogGetInvolvedPlayer")?;
+                let i = usize::try_from(int(&args[1]) - 1).ok();
+                i.and_then(|i| list.get(i))
+                    .map(|a| ctx.guid(&a.to_string()))
+            }
+            // bg3: esv::OsirisDialogFunctions::DialogGetNumberOfInvolvedPlayers / …NPCs
+            ("DialogGetNumberOfInvolvedPlayers" | "DialogGetNumberOfInvolvedNPCs", 2) => {
+                let players = name == "DialogGetNumberOfInvolvedPlayers";
+                let list = sim.dialog_involved(int(&args[0]) as u32, players)?;
+                Some(Value::int(list.len() as i32))
             }
             _ => return None,
         };

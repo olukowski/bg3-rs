@@ -1,7 +1,12 @@
 //! The headless world: entities, flags, tags, statuses, timers and the event queue.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
+use bg3_rules::levelmap::LevelMaps;
+
+use crate::character::{CharacterDef, CharacterSheet};
+use crate::dialog::{DialogSystem, Notification};
 use crate::entity::{Entities, Entity, EntityKind, Origin};
 use crate::events::{SimEvent, SimValue};
 use crate::flags::{FlagDefs, FlagError, FlagUsage, FlagValues};
@@ -30,6 +35,8 @@ pub struct TemplateInfo {
     pub statuses: Vec<String>,
     /// `Faction`.
     pub faction: Option<Guid>,
+    /// `LevelOverride` (characters), if > 0.
+    pub level_override: Option<i32>,
 }
 
 /// A race (`Public/<Module>/Races/Races.lsx`).
@@ -61,6 +68,8 @@ pub struct PlacedObject {
     pub race: Option<Guid>,
     /// `Faction` override.
     pub faction: Option<Guid>,
+    /// `LevelOverride`, if > 0.
+    pub level_override: Option<i32>,
 }
 
 /// A weight category (`Public/<Module>/WeightCategories/WeightCategories.lsx`).
@@ -119,6 +128,12 @@ pub struct GameData {
     pub globals: Vec<PlacedObject>,
     /// Per-level objects (`Levels/<Level>/{Characters,Items,Triggers}`), by level name.
     pub levels: HashMap<String, Vec<PlacedObject>>,
+    /// `Character` stats entries, by name.
+    pub characters: HashMap<String, CharacterDef>,
+    /// Level maps (`ProficiencyBonusScaling`, `LevelMapValue(…)`).
+    pub level_maps: LevelMaps,
+    /// `DifficultyClasses`: the DC of each difficulty class (dialog rolls refer to them).
+    pub difficulty_classes: HashMap<Guid, i32>,
 }
 
 impl GameData {
@@ -177,6 +192,24 @@ impl GameData {
         })
     }
 
+    /// `LevelOverride` of an object: its own, else the nearest template's.
+    pub fn level_override(&self, obj: &PlacedObject) -> Option<i32> {
+        obj.level_override.or_else(|| {
+            self.template_chain(obj.template)
+                .into_iter()
+                .find_map(|t| t.level_override)
+        })
+    }
+
+    /// The rule stats a character starts with, if its stats entry is a `Character` entry.
+    pub fn character_sheet(&self, obj: &PlacedObject) -> Option<CharacterSheet> {
+        if obj.kind != EntityKind::Character {
+            return None;
+        }
+        let def = self.characters.get(self.stats_name(obj)?)?;
+        Some(def.sheet(self.level_override(obj), &self.level_maps))
+    }
+
     /// The faction of an object: its own `Faction`, else the nearest template's.
     pub fn faction(&self, obj: &PlacedObject) -> Option<Guid> {
         obj.faction.or_else(|| {
@@ -225,9 +258,12 @@ impl GameData {
 }
 
 /// The world.
+///
+/// Cloning is cheap enough to explore alternatives (the trace harness clones it to search a
+/// dialog's choices): the static [`GameData`] is shared.
 #[derive(Clone, Debug, Default)]
 pub struct Sim {
-    pub data: GameData,
+    pub data: Arc<GameData>,
     pub entities: Entities,
     pub flags: FlagValues,
     pub timers: Timers,
@@ -242,6 +278,14 @@ pub struct Sim {
     pub party: Vec<Guid>,
     /// Level requested by the story, loaded once the current one unloads.
     pub pending_level: Option<String>,
+    /// Running dialogs (see [`crate::dialog`]).
+    pub dialogs: DialogSystem,
+    /// The dice: rolls made by the rules and dialogs.
+    pub dice: crate::rules::SimDice,
+    /// Quest steps unlocked by dialogs (`Quest` set-flags). The journal is not modelled.
+    pub quest_steps: HashSet<Guid>,
+    /// What happened, for the presentation layer (lines to show, choices to offer, …).
+    pub(crate) notifications: Vec<Notification>,
 }
 
 /// An argument of an observed engine event: the declared Osiris type name of the parameter
@@ -254,15 +298,18 @@ pub struct ObservedArg {
 
 impl Sim {
     pub fn new(data: GameData) -> Self {
+        Self::with_data(Arc::new(data))
+    }
+
+    /// A sim over shared game data (several sims can run on one copy).
+    pub fn with_data(data: Arc<GameData>) -> Self {
         let mut sim = Self {
-            data,
+            data: data.clone(),
             ..Self::default()
         };
-        let globals = std::mem::take(&mut sim.data.globals);
-        for o in &globals {
+        for o in &data.globals {
             sim.spawn(o, Origin::Data);
         }
-        sim.data.globals = globals;
         // The template tags are merged (and announced with `TagSet`) at the first
         // `update_tags`, like the engine does after `GameModeStarted`.
         sim
@@ -283,6 +330,7 @@ impl Sim {
         e.position = o.position;
         e.stats = self.data.stats_name(o).map(str::to_owned);
         e.faction = self.data.faction(o);
+        e.sheet = self.data.character_sheet(o);
         for t in tags {
             e.tags.add(TagSource::Template, t);
         }
@@ -318,8 +366,8 @@ impl Sim {
     /// at the next [`Sim::update_tags`], which raises `TagSet` for them.
     pub fn load_level(&mut self, level: &str) {
         self.level = Some(level.to_owned());
-        let objs = self.data.levels.get(level).cloned().unwrap_or_default();
-        for o in &objs {
+        let data = self.data.clone();
+        for o in data.levels.get(level).into_iter().flatten() {
             if !self.entities.contains(o.id) {
                 self.spawn(o, Origin::Data);
             }
@@ -328,22 +376,9 @@ impl Sim {
 
     /// Drop a level's own objects (not globals, not runtime-created ones).
     pub fn unload_level(&mut self, level: &str) {
-        let ids: Vec<Guid> = self
-            .entities
-            .iter()
-            .filter(|e| !e.global && e.origin == Origin::Data && e.level.as_deref() == Some(level))
-            .map(|e| e.id)
-            .collect();
-        let keep: Vec<Entity> = self
-            .entities
-            .iter()
-            .filter(|e| !ids.contains(&e.id))
-            .cloned()
-            .collect();
-        self.entities = Entities::default();
-        for e in keep {
-            self.entities.insert(e);
-        }
+        self.entities.remove_where(|e| {
+            !e.global && e.origin == Origin::Data && e.level.as_deref() == Some(level)
+        });
         if self.level.as_deref() == Some(level) {
             self.level = None;
         }
@@ -422,6 +457,10 @@ impl Sim {
         }
         let text = |i: usize| args.get(i).map_or("", |a| a.text.as_str());
         let id = |i: usize| Guid::from_osiris(text(i)).unwrap_or(Guid::NULL);
+        if name.contains("Dialog") {
+            let texts: Vec<&str> = args.iter().map(|a| a.text.as_str()).collect();
+            self.observe_dialog_event(name, &texts);
+        }
         match (name, args.len()) {
             ("TagSet", 2) => {
                 if let Some(e) = self.observe_entity(text(0), EntityKind::Unknown)
@@ -545,11 +584,13 @@ impl Sim {
                 statuses: Vec::new(),
                 race: None,
                 faction: None,
+                level_override: None,
             };
+            let sheet = self.data.character_sheet(&probe);
             (e.origin == Origin::Observed).then(|| {
                 let mut t = self.data.initial_tags(&probe);
                 t.extend(self.data.weight_tags(&probe));
-                t
+                (t, sheet)
             })
         };
         let chain = self.data.template_chain(Some(template));
@@ -563,9 +604,15 @@ impl Sim {
             if e.faction.is_none() {
                 e.faction = faction;
             }
-            for t in tags.into_iter().flatten() {
-                e.tags.add(TagSource::Template, t);
+            if let Some((tags, sheet)) = tags {
+                if e.sheet.is_none() {
+                    e.sheet = sheet;
+                }
+                for t in tags {
+                    e.tags.add(TagSource::Template, t);
+                }
             }
+
             self.dirty_tags.push(id);
         }
     }
@@ -603,11 +650,21 @@ impl Sim {
         self.update_tags();
     }
 
+    /// One frame of the live game: requested dialogs start, then [`Sim::advance`].
+    pub fn tick(&mut self, dt: f64) {
+        self.update_dialogs();
+        self.advance(dt);
+    }
+
     // ---- flags ---------------------------------------------------------------------------
 
     /// The flag holders `scr::SetFlag` would write for `(flag, object)`.
     // bg3: scr::SetFlag, scr::GetFlag (4.1.1.7631656)
-    fn flag_holders(&self, flag: Guid, object: Guid) -> Result<(FlagUsage, Vec<Guid>), FlagError> {
+    pub(crate) fn flag_holders(
+        &self,
+        flag: Guid,
+        object: Guid,
+    ) -> Result<(FlagUsage, Vec<Guid>), FlagError> {
         if flag.is_null() {
             return Err(FlagError::UnknownFlag);
         }
@@ -680,22 +737,29 @@ impl Sim {
         notify: bool,
     ) -> Result<(), FlagError> {
         let (_, holders) = self.flag_holders(flag, object)?;
-        let flag_text = self.flag_text(flag);
         for h in holders {
             if self.flags.put(h, flag, value) && notify {
-                let name = if value { "FlagSet" } else { "FlagCleared" };
-                let holder = self.render(h);
-                self.push_event(
-                    name,
-                    vec![
-                        SimValue::Guid(flag_text.clone()),
-                        SimValue::Guid(holder),
-                        SimValue::Int(dialog_instance),
-                    ],
-                );
+                self.push_flag_event(flag, h, value, dialog_instance);
             }
         }
         Ok(())
+    }
+
+    /// Queue `FlagSet` / `FlagCleared(flag, holder, dialog instance)`.
+    pub(crate) fn push_flag_event(
+        &mut self,
+        flag: Guid,
+        holder: Guid,
+        value: bool,
+        dialog_instance: i32,
+    ) {
+        let name = if value { "FlagSet" } else { "FlagCleared" };
+        let args = vec![
+            SimValue::Guid(self.flag_text(flag)),
+            SimValue::Guid(self.render(holder)),
+            SimValue::Int(dialog_instance),
+        ];
+        self.push_event(name, args);
     }
 
     /// `GetFlag`.
@@ -743,6 +807,11 @@ impl Sim {
             self.dirty_tags.push(object);
         }
         true
+    }
+
+    /// Mark an object's tags for the next merge.
+    pub(crate) fn mark_tags_dirty(&mut self, object: Guid) {
+        self.dirty_tags.push(object);
     }
 
     /// `IsTagged`.
@@ -832,6 +901,18 @@ impl Sim {
         duration: f32,
         source: Guid,
     ) -> bool {
+        self.apply_status_with(object, status, duration, source, -1)
+    }
+
+    /// [`Sim::apply_status`] with the story action id the events report.
+    pub fn apply_status_with(
+        &mut self,
+        object: Guid,
+        status: &str,
+        duration: f32,
+        source: Guid,
+        story_action: i32,
+    ) -> bool {
         let Some(e) = self.entities.get_mut(object) else {
             return false;
         };
@@ -848,9 +929,10 @@ impl Sim {
             SimValue::Guid(who),
             SimValue::Str(status.to_owned()),
             SimValue::Guid(source.to_string()),
-            SimValue::Int(-1),
+            SimValue::Int(story_action),
         ];
         self.push_event("StatusAttempt", args.clone());
+
         self.push_event("StatusApplied", args);
         true
     }

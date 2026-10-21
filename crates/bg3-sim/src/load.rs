@@ -8,6 +8,9 @@
 //! | templates | `Public/<Module>/RootTemplates/_merged.lsf`: `MapKey`, `Name`, `Type`, `ParentTemplateId`, `Tags/Tag/Object` |
 //! | globals | `Mods/<Module>/Globals/<Level>/{Characters,Items,Triggers}/_merged.lsf` |
 //! | level objects | `Mods/<Module>/Levels/<Level>/{Characters,Items,Triggers}/_merged.lsf` |
+//! | characters' rule stats | stats `Character` entries ([`crate::character`]); `LevelOverride` of templates and objects |
+//! | level maps | `Public/<Module>/Levelmaps/LevelMapValues.lsx` (`bg3_rules::levelmap`) |
+//! | difficulty classes | `Public/<Module>/DifficultyClasses/DifficultyClasses.lsx`: `UUID`, `Difficulties` |
 //!
 //! Modules are read in `bg3_vfs::modules::BASE_LOAD_ORDER`; a later module replaces a
 //! definition with the same UUID.
@@ -57,6 +60,14 @@ fn s(node: &Node, name: &str) -> Option<String> {
 
 fn guid_attr(node: &Node, name: &str) -> Option<Guid> {
     s(node, name).and_then(|v| Guid::parse(&v))
+}
+
+/// `LevelOverride`, if set to a level (> 0).
+fn level_override(node: &Node) -> Option<i32> {
+    node.attr("LevelOverride")
+        .and_then(|v| v.as_i64())
+        .filter(|l| *l > 0)
+        .map(|l| l as i32)
 }
 
 /// `Tags/Tag/Object` GUIDs of a template or level object.
@@ -180,6 +191,7 @@ pub fn load_templates(vfs: &Vfs) -> Result<HashMap<Guid, TemplateInfo>, LoadErro
                     stats: s(n, "Stats"),
                     statuses: status_list(n),
                     faction: guid_attr(n, "Faction"),
+                    level_override: level_override(n),
                 },
             );
         }
@@ -353,7 +365,39 @@ fn placed(n: &Node, level_dir: &str, global: bool) -> Option<PlacedObject> {
         statuses: status_list(n),
         race: guid_attr(n, "Race"),
         faction: guid_attr(n, "Faction"),
+        level_override: level_override(n),
     })
+}
+
+/// Difficulty classes (`Public/<Module>/DifficultyClasses/DifficultyClasses.lsx`,
+/// `DifficultyClass` nodes with `UUID` and `Difficulties`). `Difficulties` is a list; every
+/// entry in the reference build has a single value, which is the DC. A later module replaces
+/// an entry.
+// bg3: eoc::DifficultyClassManager, eoc::DifficultyClass::Visit (4.1.1.7631656)
+pub fn load_difficulty_classes(vfs: &Vfs) -> Result<HashMap<Guid, i32>, LoadError> {
+    let mut out = HashMap::new();
+    for m in BASE_LOAD_ORDER {
+        let path = format!("Public/{m}/DifficultyClasses/DifficultyClasses.lsx");
+        if !vfs.exists(&path) {
+            continue;
+        }
+        let res = parse(vfs, &path)?;
+        let Some(root) = res.region("DifficultyClasses") else {
+            continue;
+        };
+        let list = root.children_named("DifficultyClass").chain(
+            root.children_named("root")
+                .flat_map(|r| r.children_named("DifficultyClass")),
+        );
+        for n in list {
+            let dc = s(n, "Difficulties")
+                .and_then(|d| d.split(',').next().and_then(|v| v.trim().parse().ok()));
+            if let (Some(id), Some(dc)) = (guid_attr(n, "UUID"), dc) {
+                out.insert(id, dc);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Read the object directories under `base` (`Mods/<M>/Globals/<L>` or
@@ -451,6 +495,9 @@ impl GameData {
                 .collect(),
             globals: load_globals(vfs)?,
             levels: HashMap::new(),
+            characters: crate::character::character_defs(stats),
+            level_maps: bg3_rules::levelmap::LevelMaps::load(vfs, BASE_LOAD_ORDER),
+            difficulty_classes: load_difficulty_classes(vfs)?,
         };
         let mut names: Vec<String> = levels.iter().map(|l| (*l).to_owned()).collect();
         if names.is_empty() {

@@ -36,6 +36,30 @@ named_enum!(
 );
 
 named_enum!(
+    /// Skills, in `ESkill` order (the order of `expr::SKILLS`).
+    Skill {
+        Deception, Intimidation, Performance, Persuasion, Acrobatics, SleightOfHand, Stealth,
+        Arcana, History, Investigation, Nature, Religion, Athletics, AnimalHandling, Insight,
+        Medicine, Perception, Survival,
+    }
+);
+
+impl Skill {
+    /// The ability a skill check uses by default (the D&D 5e table; `ESkill` groups the skills
+    /// by it). Dialog rolls name their ability explicitly and don't need this.
+    pub fn ability(self) -> Ability {
+        use Skill::*;
+        match self {
+            Deception | Intimidation | Performance | Persuasion => Ability::Charisma,
+            Acrobatics | SleightOfHand | Stealth => Ability::Dexterity,
+            Arcana | History | Investigation | Nature | Religion => Ability::Intelligence,
+            Athletics => Ability::Strength,
+            AnimalHandling | Insight | Medicine | Perception | Survival => Ability::Wisdom,
+        }
+    }
+}
+
+named_enum!(
     /// Damage types (`Damage Type` value list, without `None`).
     DamageType {
         Slashing, Piercing, Bludgeoning, Acid, Thunder, Necrotic, Fire, Lightning, Cold,
@@ -182,6 +206,22 @@ pub trait RulesContext {
     fn saving_throw_proficient(&self, e: EntityId, a: Ability) -> bool {
         let _ = (e, a);
         false
+    }
+    /// Proficient in a skill (`ProficiencyBonus(Skill, X)` boosts, class/background
+    /// proficiencies).
+    fn skill_proficient(&self, e: EntityId, s: Skill) -> bool {
+        let _ = (e, s);
+        false
+    }
+    /// Expertise in a skill (`ExpertiseBonus(X)` boosts): the proficiency bonus counts twice.
+    fn skill_expertise(&self, e: EntityId, s: Skill) -> bool {
+        let _ = (e, s);
+        false
+    }
+    /// Flat bonus to checks of a skill (`Skill(X, n)` boosts).
+    fn skill_bonus(&self, e: EntityId, s: Skill) -> i32 {
+        let _ = (e, s);
+        0
     }
     fn spellcasting_ability(&self, e: EntityId) -> Option<Ability> {
         let _ = e;

@@ -5,7 +5,7 @@
 use std::fmt;
 
 use crate::context::{
-    Ability, Advantage, AttackType, DamageType, EntityId, Hand, Resistance, RulesContext,
+    Ability, Advantage, AttackType, DamageType, EntityId, Hand, Resistance, RulesContext, Skill,
 };
 use crate::dice::{D20, DiceRng, RollDefinition, roll_d20};
 
@@ -230,6 +230,119 @@ pub fn roll_saving_throw(
         total,
         dc,
         success: total >= dc,
+    }
+}
+
+/// What an ability check tests (a dialog roll's `RollType` / `Skill`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckKind {
+    /// `SkillCheck`: proficiency (and expertise) in the skill count.
+    Skill(Skill),
+    /// `RawAbility`: the ability modifier alone.
+    RawAbility,
+    /// `SavingThrow`: saving-throw proficiency in the ability counts.
+    SavingThrow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbilityCheckRoll {
+    pub entity: EntityId,
+    pub ability: Ability,
+    pub kind: CheckKind,
+    pub advantage: Advantage,
+    pub d20: D20,
+    pub terms: Vec<Term>,
+    pub total: i32,
+    pub dc: i32,
+    pub critical: Critical,
+    pub success: bool,
+}
+
+impl fmt::Display for AbilityCheckRoll {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            CheckKind::Skill(s) => write!(f, "{s} ({}) check: ", self.ability)?,
+            CheckKind::RawAbility => write!(f, "{} check: ", self.ability)?,
+            CheckKind::SavingThrow => write!(f, "{} saving throw: ", self.ability)?,
+        }
+        fmt_terms(f, &self.d20, &self.terms)?;
+        write!(f, " = {} vs DC {}", self.total, self.dc)?;
+        match self.critical {
+            Critical::Success => write!(f, " natural 20")?,
+            Critical::Fail => write!(f, " natural 1")?,
+            Critical::None => {}
+        }
+        write!(
+            f,
+            " -> {}",
+            if self.success { "success" } else { "failure" }
+        )
+    }
+}
+
+/// Roll an ability check against `dc` (dialog rolls, `RollType` `SkillCheck`, `RawAbility` or
+/// `SavingThrow`): d20 (with advantage/disadvantage) + ability modifier + proficiency bonus
+/// when proficient (twice with expertise) + flat skill bonuses; succeeds when `total >= dc`.
+///
+/// A natural 20 always succeeds and a natural 1 always fails, reported as a critical
+/// success / failure. That is how the game presents dialog checks; the branch itself was not
+/// located in the binary (*inferred*), unlike the modifier sources, which follow
+/// `eoc::active_roll::DetermineStaticModifiers` → `CheckProficiencyBoost` /
+/// `CheckExpertiseBoost` / `CheckSkillBoost` (4.1.1.7631656). Boosts beyond these (roll
+/// bonuses, advantage boosts, Guidance, …) are not modelled.
+pub fn roll_ability_check(
+    ctx: &dyn RulesContext,
+    rng: &mut dyn DiceRng,
+    entity: EntityId,
+    ability: Ability,
+    kind: CheckKind,
+    dc: i32,
+    advantage: Advantage,
+) -> AbilityCheckRoll {
+    let d20 = roll_d20(rng, advantage);
+    let mut terms = vec![term(ability.name(), ctx.ability_modifier(entity, ability))];
+    let pb = ctx.proficiency_bonus(entity);
+    match kind {
+        CheckKind::Skill(s) => {
+            if ctx.skill_expertise(entity, s) {
+                terms.push(term("expertise", 2 * pb));
+            } else if ctx.skill_proficient(entity, s) {
+                terms.push(term("proficiency", pb));
+            }
+            let b = ctx.skill_bonus(entity, s);
+            if b != 0 {
+                terms.push(term(s.name(), b));
+            }
+        }
+        CheckKind::SavingThrow => {
+            if ctx.saving_throw_proficient(entity, ability) {
+                terms.push(term("proficiency", pb));
+            }
+        }
+        CheckKind::RawAbility => {}
+    }
+    let total = d20.natural as i32 + terms.iter().map(|t| t.value).sum::<i32>();
+    let critical = match d20.natural {
+        20 => Critical::Success,
+        1 => Critical::Fail,
+        _ => Critical::None,
+    };
+    let success = match critical {
+        Critical::Success => true,
+        Critical::Fail => false,
+        Critical::None => total >= dc,
+    };
+    AbilityCheckRoll {
+        entity,
+        ability,
+        kind,
+        advantage,
+        d20,
+        terms,
+        total,
+        dc,
+        critical,
+        success,
     }
 }
 

@@ -1,6 +1,7 @@
 //! `bg3x sim-replay`: replay a libOsiris runtime log with `bg3-sim` as the engine.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -18,6 +19,7 @@ pub struct Args {
     pub vm_log: Option<PathBuf>,
     pub dump: Option<PathBuf>,
     pub inventory: bool,
+    pub no_dialogs: bool,
 }
 
 /// Load the sim's game data from the install.
@@ -32,6 +34,14 @@ pub fn load_data(levels: &[String]) -> Result<bg3_sim::GameData> {
     let stats = bg3_stats::install::load(&paks, bg3_stats::install::BASE_LOAD_ORDER)?;
     let levels: Vec<&str> = levels.iter().map(String::as_str).collect();
     Ok(bg3_sim::GameData::load(&vfs, &stats, &levels)?)
+}
+
+/// The install's dialogs for the sim.
+pub fn load_dialogs() -> Result<Arc<bg3_sim::DialogBank>> {
+    let install = Install::locate()?;
+    let vfs = Arc::new(bg3_vfs::Vfs::from_install(&install)?);
+    let lib = Arc::new(bg3_dialog::library::DialogLibrary::new(vfs)?);
+    Ok(Arc::new(bg3_sim::DialogBank::from_library(lib)))
 }
 
 pub fn run(a: Args) -> Result<()> {
@@ -51,6 +61,11 @@ pub fn run(a: Args) -> Result<()> {
     }
     let t = Instant::now();
     let data = load_data(&a.levels)?;
+    let dialogs = if a.no_dialogs {
+        None
+    } else {
+        Some(load_dialogs()?)
+    };
     eprintln!(
         "loaded {} flags, {} tags, {} statuses, {} templates, {} global objects, levels {:?} in {:.1?}",
         data.flags.len(),
@@ -80,6 +95,7 @@ pub fn run(a: Args) -> Result<()> {
                     mode,
                     start_level: start.clone(),
                     keep_vm_log: vm_log.is_some(),
+                    dialogs: dialogs.clone(),
                 };
                 let t = Instant::now();
                 let report = sim_replay(&story, &log, data.clone(), &opts);

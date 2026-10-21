@@ -2080,10 +2080,12 @@ dependencies = [
 name = "bg3-sim"
 version = "0.0.0"
 dependencies = [
+ "bg3-dialog",
  "bg3-install",
  "bg3-lsf",
  "bg3-osiris",
  "bg3-pak",
+ "bg3-rules",
  "bg3-stats",
  "bg3-story",
  "bg3-vfs",

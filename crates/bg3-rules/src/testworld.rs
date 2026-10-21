@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::context::{
     Ability, Advantage, AttackType, DamageType, EntityId, Hand, Resistance, RulesContext, Size,
-    Weapon,
+    Skill, Weapon,
 };
 use crate::dice::RollDefinition;
 use crate::levelmap::LevelMaps;
@@ -17,6 +17,7 @@ pub struct Combatant {
     pub level: i32,
     pub proficiency_bonus: i32,
     pub saving_throws: BTreeSet<Ability>,
+    pub skills: BTreeSet<Skill>,
     pub spellcasting_ability: Option<Ability>,
     pub armor_class: i32,
     pub hp: i32,
@@ -46,6 +47,7 @@ impl Combatant {
             level: 1,
             proficiency_bonus: 2,
             saving_throws: BTreeSet::new(),
+            skills: BTreeSet::new(),
             spellcasting_ability: None,
             armor_class: 10,
             hp: 10,
@@ -157,6 +159,9 @@ impl RulesContext for TestWorld {
     }
     fn saving_throw_proficient(&self, e: EntityId, a: Ability) -> bool {
         self.with(e, |c| c.saving_throws.contains(&a))
+    }
+    fn skill_proficient(&self, e: EntityId, s: Skill) -> bool {
+        self.with(e, |c| c.skills.contains(&s))
     }
     fn spellcasting_ability(&self, e: EntityId) -> Option<Ability> {
         self.entities.get(&e).and_then(|c| c.spellcasting_ability)

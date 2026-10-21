@@ -172,6 +172,9 @@ enum Command {
         /// Print the inventory of engine calls/queries/events in the log (Markdown) instead.
         #[arg(long)]
         inventory: bool,
+        /// Feed dialog events from the log instead of running the dialogs on the sim.
+        #[arg(long)]
+        no_dialogs: bool,
     },
     /// Stats expression languages: evaluate an expression, survey the install, cast a spell.
     Rules {
@@ -284,6 +287,7 @@ fn main() -> Result<()> {
             vm_log,
             dump,
             inventory,
+            no_dialogs,
         } => sim::run(sim::Args {
             trace,
             pak,
@@ -294,6 +298,7 @@ fn main() -> Result<()> {
             vm_log,
             dump,
             inventory,
+            no_dialogs,
         }),
         Command::Materials { level, verbose } => materials::survey(&level, verbose),
         Command::Loca { handle, language } => loca(&handle, &language),

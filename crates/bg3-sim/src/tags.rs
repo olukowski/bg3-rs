@@ -25,6 +25,7 @@ pub struct TagDef {
 #[derive(Clone, Debug, Default)]
 pub struct TagDefs {
     by_id: HashMap<Guid, TagDef>,
+    by_name: HashMap<String, Guid>,
 }
 
 impl TagDefs {
@@ -33,11 +34,17 @@ impl TagDefs {
     }
 
     pub fn insert(&mut self, def: TagDef) {
+        self.by_name.insert(def.name.clone(), def.id);
         self.by_id.insert(def.id, def);
     }
 
     pub fn get(&self, id: Guid) -> Option<&TagDef> {
         self.by_id.get(&id)
+    }
+
+    /// A tag by name (conditions name tags: `Tagged('UNDEAD')`); the last definition wins.
+    pub fn by_name(&self, name: &str) -> Option<Guid> {
+        self.by_name.get(name).copied()
     }
 
     pub fn len(&self) -> usize {
@@ -56,9 +63,11 @@ pub enum TagSource {
     Template,
     /// The story's `SetTag` (`OsirisTagComponent`).
     Osiris,
-    /// Everything else the engine adds (race, boosts, dialog, …). The sim does not model these
+    /// Everything else the engine adds (race, boosts, …). The sim does not model these
     /// rules yet; tags seen in engine `TagSet` events land here.
     Engine,
+    /// Tags added by dialog `Tag` set-flags (`esv::tags::DialogTagComponent`).
+    Dialog,
 }
 
 /// The tags of one entity: each source's list (insertion order) and the merged set as of the
@@ -128,6 +137,13 @@ impl EntityTags {
     // bg3: esv::OsirisGameFunctions::IsTagged → LegacyConversion::IsTagged (4.1.1.7631656)
     pub fn is_tagged(&self, tag: Guid) -> bool {
         self.source(TagSource::Osiris).contains(&tag) || self.merged.contains(&tag)
+    }
+
+    /// Whether a dialog sees the tag on a speaker: the merged set, the Osiris source and the
+    /// dialog source.
+    // bg3: esv::EoCDialogGameInterface::IsSpeakerTagged → esv::StoryUtils::IsTagged (4.1.1.7631656)
+    pub fn is_tagged_for_dialog(&self, tag: Guid) -> bool {
+        self.is_tagged(tag) || self.source(TagSource::Dialog).contains(&tag)
     }
 
     /// Recompute the merged set (sources in [`TagSource`] order, first occurrence wins) and

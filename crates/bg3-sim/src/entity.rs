@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use crate::character::CharacterSheet;
 use crate::guid::{Guid, osiris_name};
 use crate::status::ActiveStatus;
 use crate::tags::EntityTags;
@@ -80,6 +81,9 @@ pub struct Entity {
     pub stats: Option<String>,
     /// Current faction.
     pub faction: Option<Guid>,
+    /// What the rules need of a character (abilities, HP, level, proficiencies), from its
+    /// stats entry; `None` for objects without a `Character` stats entry.
+    pub sheet: Option<CharacterSheet>,
 }
 
 impl Entity {
@@ -99,6 +103,7 @@ impl Entity {
             holder: None,
             stats: None,
             faction: None,
+            sheet: None,
         }
     }
 
@@ -109,15 +114,23 @@ impl Entity {
 }
 
 /// All entities, in creation order.
+///
+/// Every UUID the sim has seen also gets a small numeric **handle** (`u32`) that never changes
+/// or gets reused, even when the entity is dropped with its level and comes back later. The
+/// rules engine (`bg3_rules::EntityId`) and presentation layers refer to entities by handle.
 #[derive(Clone, Debug, Default)]
 pub struct Entities {
     list: Vec<Entity>,
     index: HashMap<Guid, usize>,
+    /// Handle → UUID, append-only.
+    handles: Vec<Guid>,
+    handle_of: HashMap<Guid, u32>,
 }
 
 impl Entities {
     /// Insert or replace (by id, keeping the original position in the order).
     pub fn insert(&mut self, e: Entity) -> &mut Entity {
+        self.handle_or_assign(e.id);
         match self.index.get(&e.id) {
             Some(&i) => {
                 self.list[i] = e;
@@ -129,6 +142,47 @@ impl Entities {
                 self.list.last_mut().expect("just pushed")
             }
         }
+    }
+
+    fn handle_or_assign(&mut self, id: Guid) -> u32 {
+        if let Some(&h) = self.handle_of.get(&id) {
+            return h;
+        }
+        let h = self.handles.len() as u32;
+        self.handles.push(id);
+        self.handle_of.insert(id, h);
+        h
+    }
+
+    /// The handle of an entity the sim knows (or knew).
+    pub fn handle(&self, id: Guid) -> Option<u32> {
+        self.handle_of.get(&id).copied()
+    }
+
+    /// The UUID behind a handle (the entity may no longer exist).
+    pub fn id_of(&self, handle: u32) -> Option<Guid> {
+        self.handles.get(handle as usize).copied()
+    }
+
+    /// The live entity behind a handle.
+    pub fn by_handle(&self, handle: u32) -> Option<&Entity> {
+        self.get(self.id_of(handle)?)
+    }
+
+    pub fn by_handle_mut(&mut self, handle: u32) -> Option<&mut Entity> {
+        let id = self.id_of(handle)?;
+        self.get_mut(id)
+    }
+
+    /// Drop every entity matching `f`, keeping the order of the rest (handles stay valid).
+    pub fn remove_where(&mut self, f: impl Fn(&Entity) -> bool) {
+        self.list.retain(|e| !f(e));
+        self.index = self
+            .list
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.id, i))
+            .collect();
     }
 
     pub fn get(&self, id: Guid) -> Option<&Entity> {
