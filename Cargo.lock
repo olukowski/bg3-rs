@@ -2026,6 +2026,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bg3-material"
+version = "0.0.0"
+dependencies = [
+ "bg3-lsf",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bg3-pak"
 version = "0.0.0"
 dependencies = [
@@ -2073,6 +2081,8 @@ dependencies = [
  "bevy",
  "bg3-gr2",
  "bg3-install",
+ "bg3-lsf",
+ "bg3-material",
  "bg3-vfs",
  "bg3-world",
  "clap",
@@ -2085,6 +2095,7 @@ version = "0.0.0"
 dependencies = [
  "bg3-install",
  "bg3-lsf",
+ "bg3-material",
  "bg3-vfs",
  "rayon",
  "thiserror 2.0.21",
@@ -2099,10 +2110,12 @@ dependencies = [
  "bg3-install",
  "bg3-loca",
  "bg3-lsf",
+ "bg3-material",
  "bg3-pak",
  "bg3-stats",
  "bg3-story",
  "bg3-vfs",
+ "bg3-world",
  "clap",
 ]
 

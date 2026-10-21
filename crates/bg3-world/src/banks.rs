@@ -48,6 +48,8 @@ pub struct MaterialResource {
     pub textures: Vec<(String, String)>,
     /// `(parameter name, value)` for scalar parameters.
     pub scalars: Vec<(String, f64)>,
+    /// Every parameter with its `Enabled` (overrides-the-graph) flag.
+    pub params: Vec<bg3_material::Param>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +57,20 @@ pub struct TextureResource {
     pub id: String,
     pub name: String,
     pub source_file: Option<String>,
+    /// The `SRGB` flag: colour data to be decoded from sRGB.
+    pub srgb: bool,
+    /// `Type`: 1 = 2D, 2 = cube map (observed), 3 = 3D.
+    pub kind: i32,
+}
+
+/// A Granite virtual texture (`VirtualTextureBank`).
+#[derive(Debug, Clone)]
+pub struct VirtualTextureResource {
+    pub id: String,
+    pub name: String,
+    /// Tile-set file stem (`GTexFileName`).
+    pub gtex_file: Option<String>,
+    pub layer_config: u32,
 }
 
 #[derive(Debug, Default)]
@@ -62,6 +78,7 @@ pub struct ResourceBanks {
     pub visuals: HashMap<String, VisualResource>,
     pub materials: HashMap<String, MaterialResource>,
     pub textures: HashMap<String, TextureResource>,
+    pub virtual_textures: HashMap<String, VirtualTextureResource>,
     /// Bank region (`EffectBank`, `SkeletonBank`, …) of every resource ID, including the typed ones.
     pub kinds: HashMap<String, String>,
     /// Bank files that failed to parse (path, error).
@@ -73,6 +90,7 @@ struct BankFile {
     visuals: Vec<VisualResource>,
     materials: Vec<MaterialResource>,
     textures: Vec<TextureResource>,
+    virtual_textures: Vec<VirtualTextureResource>,
 }
 
 impl ResourceBanks {
@@ -126,6 +144,9 @@ impl ResourceBanks {
         }
         for t in file.textures {
             self.textures.insert(t.id.clone(), t);
+        }
+        for t in file.virtual_textures {
+            self.virtual_textures.insert(t.id.clone(), t);
         }
     }
 }
@@ -186,6 +207,7 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
                 source_file: str_attr(n, "SourceFile"),
                 textures,
                 scalars,
+                params: bg3_material::read_params(n),
             }
         })
         .collect();
@@ -196,6 +218,22 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
                 id,
                 name,
                 source_file: str_attr(n, "SourceFile"),
+                srgb: n.attr("SRGB").and_then(|v| v.as_bool()).unwrap_or(false),
+                kind: n.attr("Type").and_then(|v| v.as_i64()).unwrap_or(1) as i32,
+            }
+        })
+        .collect();
+    let virtual_textures = resources(res, "VirtualTextureBank")
+        .map(|n| {
+            let (id, name) = id_name(n);
+            VirtualTextureResource {
+                id,
+                name,
+                gtex_file: str_attr(n, "GTexFileName"),
+                layer_config: n
+                    .attr("VirtualTextureLayerConfig")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as u32,
             }
         })
         .collect();
@@ -212,5 +250,6 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
         visuals,
         materials,
         textures,
+        virtual_textures,
     }
 }

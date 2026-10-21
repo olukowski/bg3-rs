@@ -5,6 +5,7 @@
 
 mod fly_camera;
 mod level;
+mod materials;
 mod meshes;
 mod space;
 
@@ -82,6 +83,12 @@ fn main() -> Result<()> {
     for (id, err) in meshes.failed.iter().take(5) {
         eprintln!("  {id}: {err}");
     }
+    let material_ids = meshes.by_visual.values().flatten();
+    let materials = materials::PreparedMaterials::load(
+        &vfs,
+        &level.banks,
+        material_ids.filter_map(|(_, m)| m.as_deref()),
+    );
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -95,6 +102,7 @@ fn main() -> Result<()> {
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)
     .insert_resource(meshes)
+    .insert_resource(materials)
     .insert_resource(CameraStart {
         position: args
             .camera
@@ -103,7 +111,14 @@ fn main() -> Result<()> {
             .look_at
             .map(|v| Vec3::from_array(space::vec3(v.to_array()))),
     })
-    .add_systems(Startup, (setup, level::spawn_level));
+    .add_systems(
+        Startup,
+        (
+            setup,
+            materials::upload,
+            level::spawn_level.after(materials::upload),
+        ),
+    );
     if let Some(path) = args.shot {
         app.insert_resource(ShotRequest(path))
             .add_systems(Update, take_screenshot);

@@ -7,7 +7,10 @@ pub mod banks;
 pub mod level;
 pub mod templates;
 
-pub use banks::{MaterialResource, MeshObject, ResourceBanks, TextureResource, VisualResource};
+pub use banks::{
+    MaterialResource, MeshObject, ResourceBanks, TextureResource, VirtualTextureResource,
+    VisualResource,
+};
 pub use level::{Level, LevelObject, Transform};
 pub use templates::{RootTemplate, RootTemplates};
 

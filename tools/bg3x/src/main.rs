@@ -1,5 +1,7 @@
 //! `bg3x` — inspect a Baldur's Gate 3 install. Output stays local; see ADR 0001.
 
+mod materials;
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -86,6 +88,14 @@ enum Command {
         #[arg(long)]
         bones: bool,
     },
+    /// Survey the materials a level's meshes use: shader graphs, texture slots, DDS formats.
+    Materials {
+        #[arg(default_value = "TUT_Avernus_C")]
+        level: String,
+        /// Print every material with its resolved parameters.
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -145,6 +155,7 @@ fn main() -> Result<()> {
             summary,
         } => story(&pak, &path, goal.as_deref(), summary),
         Command::Find { value, prefix } => find(&value, &prefix),
+        Command::Materials { level, verbose } => materials::survey(&level, verbose),
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),
         Command::Lsx { pak, path } => {
