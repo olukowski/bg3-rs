@@ -32,7 +32,9 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 
 ## M4 — Story
 - [x] `bg3-story`: compiled story loader (formats 1.13–1.15, byte-exact round-trip of all 6 stories) + `bg3x story`
-- [ ] `bg3-osiris` VM, run Nautiloid goals headlessly
+- [x] `bg3-osiris` VM (libOsiris semantics, host trait, boots GustavDev with a mock host)
+- [ ] Osiris runtime reference trace + replay test (`docs/research/osiris-vm.md`)
+- [ ] Run Nautiloid goals headlessly (needs engine call/query/event bindings)
 - [ ] Dialog trees (`.lsf` dialogs) with flags/checks
 
 ## M5 — First playable slice
