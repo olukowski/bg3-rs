@@ -72,8 +72,9 @@ story teleports the party into the imp room (`IsInTrigger`), and the imps notice
 - **The avatar** (*approximate*): character creation is skipped, so the placeholder avatar gets the
   reference combat trace's class (Cleric) and its template's race (`start::TRACE_AVATAR_CLASS`,
   `CombatState::created_origins`): class hit points and the race's movement.
-- **Spell slots** (*approximate*): `SpellSlotsGroup:n:…:level` costs are paid from `SpellSlot`,
-  slot levels not told apart.
+- **Spell slots** (*data*): resource pools are keyed by name and level. `SpellSlotsGroup`
+  resolves through the installed group definition; a cast defaults to the lowest sufficient
+  level, or accepts an explicit level through `combat_cast_with_slot`. See below.
 - Characters the story took off stage (`SetOnStage(x, 0)`, live) don't join fights; test
   `live_imp_fight` checks the trace's line-up (avatar and Lae'zel sharing the first turn, three
   imps).
@@ -131,6 +132,61 @@ story teleports the party into the imp room (`IsInTrigger`), and the imps notice
   length, including partial final segments. No difficult terrain, no jumping.
 - **Spell costs** (*data*): `UseCosts` are checked and paid before the cast
   (`ActionPoint:1` for weapon attacks).
+
+### Resource levels and spell costs
+
+`combat::resources` retains `(resource name, resource level, current, maximum)` separately.
+`Resources::get`/`max` address level **0**; `get_at_level`/`max_at_level` address a specific
+level. `ActionResourceDefinitions/ActionResourceDefinitions.lsx` supplies `MaxLevel` and
+`ReplenishType`: `SpellSlot` supports levels **1–9**, replenishing on `Rest`;
+`WarlockSpellSlot` replenishes on `ShortRest`. Neither refills on a turn change.
+`ActionResourceGroupDefinitions/ActionResourceGroupDefinitions.lsx` resolves a group to its
+ordered resource UUIDs; these are resolved back to definition names at load time. The installed
+`SpellSlotsGroup` includes ordinary, warlock and shadow slots. Pools stay separate when paying.
+
+Race/class/subclass progression tables come from `Races.lsx`, `Origins.lsx` and
+`ClassDescriptions.lsx`. Every unconditional `ActionResource(Name, amount, level)` boost up to
+the character's level adds to that **specific** pool. Cleric's level-1 progression grants
+`ActionResource(SpellSlot,2,1)`: **Shadowheart has two level-1 slots and no higher slots**.
+No class slot table is hardcoded. `IsMulticlass=true` progression rows are alternatives,
+not additional grants for a single-class character; including them doubled Shadowheart's
+slots in the initial implementation, caught by the install test. They are excluded from the
+current single-class setup. Multiclass caster progression and conditional resource boosts
+remain outside this implementation.
+
+The observed costs are semicolon-separated. `ActionPoint:1` consumes one level-0 action.
+`SpellSlotsGroup:1:1:3` selects the installed spell-slot group, costs **one** slot and selects
+resource level **3**; `Target_CureWounds_2` changes the final field to **2** while its inherited
+`Level` stays **1** and `PowerLevel` becomes **2**. Thus the final field is the casting resource
+level, not the spell's base `Level`. Larian's [spell tutorial](https://docs.baldursgate3.game/Making_a_Basic_Spell#UseCosts)
+also identifies `SpellSlotsGroup:1:1:3` as one level-3 slot.
+
+**Unresolved field:** the intermediate `1` in the four-field form is always `1` in the
+inspected installed Target spell costs. Data alone does not establish its independent meaning
+(the amount and this field do not vary independently in those examples). It is retained as
+`ResourceSelector::qualifier`; only the observed value `1` is accepted for payment, rather
+than guessing how other values behave. Three-field resource grants/costs retain their final
+level too. Symbols located in the local index: `eoc::action_resource::ParseActionResourceCost`,
+`eoc::ActionResourceGroup::Visit`, `esv::OsirisCharacterFunctions::GetActionResourceValuePersonal`.
+No disassembly, decompiler or RE tool was used for this change.
+
+For group spell costs the payment policy selects the lowest available level at least as high
+as the cost level, with group definition order breaking ties between resource types. An explicit
+`Sim::combat_cast_with_slot(who, spell, target, Some(level))` (also on `Game`) requires that
+level and refuses a lower, missing or exhausted selection. `None` is the default used by
+`combat_cast` and the viewer. Payment checks all costs together, including duplicates, before
+changing any pool. Ordinary resource selectors address their exact level. `SpellDef::use_costs`
+now holds `(ResourceSelector, amount)` pairs; `ResourceSelector::as_str()` exposes the resource
+name for existing spell filters.
+
+When an installed numeric upcast variant exists (`RootSpellID`/`<spell>_<level>`), casting
+uses its expression fields. Without such a variant the base expressions remain; arbitrary
+upcast scaling is not invented. Slot spending, lowest-level default and variant execution are
+covered by synthetic tests in `combat::resources::tests` and
+`combat::tests::cast_api_spends_selected_slot_and_uses_installed_variant_expressions`.
+`tests/names_resources.rs::imp_names_and_shadowheart_level_one_slots` checks the installed
+Cleric grant. The live fight's `GetActionResourceValuePersonal(character, name, level, out real)`
+queries read the current level-specific amount (including zero for a known but absent pool).
 
 ### Presentation names
 

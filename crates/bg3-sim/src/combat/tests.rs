@@ -193,6 +193,269 @@ fn names(s: &mut Sim) -> Vec<String> {
 }
 
 #[test]
+fn single_class_progression_does_not_add_multiclass_alternatives() {
+    let mut s = sim(1);
+    let class = Guid(101);
+    let table = Guid(102);
+    let d = Arc::make_mut(&mut s.data);
+    d.combat.classes.insert(
+        class,
+        data::ClassDef {
+            progression_table: Some(table),
+            ..Default::default()
+        },
+    );
+    d.combat.origins.insert(
+        g(HERO1),
+        data::OriginDef {
+            class: Some(class),
+            ..Default::default()
+        },
+    );
+    d.combat.progressions.insert(
+        table,
+        vec![
+            data::ProgressionDef {
+                id: Guid(103),
+                level: 1,
+                boosts: "ActionResource(SpellSlot,2,1)".into(),
+                ..Default::default()
+            },
+            data::ProgressionDef {
+                id: Guid(104),
+                level: 1,
+                is_multiclass: true,
+                boosts: "ActionResource(SpellSlot,2,1)".into(),
+                ..Default::default()
+            },
+            data::ProgressionDef {
+                id: Guid(105),
+                level: 2,
+                boosts: "ActionResource(SpellSlot,1,1);ActionResource(SpellSlot,2,2)".into(),
+                ..Default::default()
+            },
+        ],
+    );
+    let c = s.build_combatant(g(HERO1)).unwrap();
+    assert_eq!(c.resources.max_at_level("SpellSlot", 1), 2.0);
+    assert_eq!(c.resources.max_at_level("SpellSlot", 2), 0.0);
+}
+
+#[test]
+fn cast_api_spends_selected_slot_and_uses_installed_variant_expressions() {
+    let mut s = sim(3);
+    let d = Arc::make_mut(&mut s.data);
+    d.combat
+        .resource_groups
+        .insert("SpellSlotsGroup".into(), vec!["SpellSlot".into()]);
+    for (name, level, healing) in [("Target_TestHeal", 1, 1), ("Target_TestHeal_3", 3, 3)] {
+        d.combat.spells.insert(
+            name.into(),
+            data::SpellDef {
+                name: name.into(),
+                spell_type: "Target".into(),
+                target_radius: "20".into(),
+                use_costs: data::parse_costs(&format!("ActionPoint:1;SpellSlotsGroup:1:1:{level}")),
+                fields: vec![
+                    ("Level".into(), level.to_string()),
+                    (
+                        "SpellProperties".into(),
+                        format!("RegainHitPoints({healing})"),
+                    ),
+                ],
+                ..Default::default()
+            },
+        );
+    }
+    s.ensure_combatant(g(HERO1));
+    s.ensure_combatant(g(HERO2));
+    s.entities
+        .get_mut(g(HERO2))
+        .unwrap()
+        .sheet
+        .as_mut()
+        .unwrap()
+        .hp = 1;
+    let c = s.combatant_mut(g(HERO1)).unwrap();
+    c.spells.push("Target_TestHeal".into());
+    c.resources
+        .entries
+        .extend([1, 3].map(|level| ResourceAmount {
+            name: "SpellSlot".into(),
+            level,
+            amount: 1.0,
+            max: 1.0,
+        }));
+    s.combat_cast_with_slot(g(HERO1), "Target_TestHeal", g(HERO2), Some(3))
+        .unwrap();
+    let resources = &s.combatant(g(HERO1)).unwrap().resources;
+    assert_eq!(resources.get_at_level("SpellSlot", 1), 1.0);
+    assert_eq!(resources.get_at_level("SpellSlot", 3), 0.0);
+    assert_eq!(s.entity(g(HERO2)).unwrap().sheet.as_ref().unwrap().hp, 4);
+    let resources = resources.clone();
+    assert!(
+        s.combat_cast_with_slot(g(HERO1), "Target_TestHeal", g(HERO2), Some(3))
+            .is_err()
+    );
+    assert_eq!(s.combatant(g(HERO1)).unwrap().resources, resources);
+}
+
+#[test]
+fn story_resource_queries_spell_removal_and_tutorial_notifications() {
+    use crate::{Entity, Origin, SimHost};
+    use bg3_osiris::{Vm, builder::*};
+
+    let mut sim = sim(1);
+    sim.stage.live = true;
+    let data = Arc::make_mut(&mut sim.data);
+    data.combat.resources.push(data::ActionResourceDef {
+        name: "SpellSlot".into(),
+        id: Guid(100),
+        replenish: data::Replenish::Rest,
+        max_level: 9,
+    });
+    data.story.objects.entry(g(HERO1)).or_default().can_fight = Some(false);
+    data.story
+        .item_slots
+        .insert("TestInstrument".into(), "MusicalInstrument".into());
+    let item = Guid(200);
+    let mut entity = Entity::new(item, "TestItem", EntityKind::Item, Origin::Data);
+    entity.stats = Some("TestInstrument".into());
+    sim.entities.insert(entity);
+    let observed = |id: Guid| crate::ObservedArg {
+        text: id.to_string(),
+        ty: "GUIDSTRING".into(),
+    };
+    sim.observe("Equipped", &[observed(item), observed(g(HERO1))]);
+    sim.ensure_combatant(g(HERO1));
+    let c = sim.combatant_mut(g(HERO1)).unwrap();
+    c.resources
+        .entries
+        .extend([1, 2].map(|level| ResourceAmount {
+            name: "SpellSlot".into(),
+            level,
+            amount: level as f32,
+            max: level as f32,
+        }));
+    assert!(c.resources.pay(&data::parse_costs("SpellSlot:1:2")));
+
+    let hero = g(HERO1).to_string();
+    let imp = g(IMP1).to_string();
+    let mut b = StoryBuilder::new();
+    b.event("Start", &[]);
+    b.query(
+        "GetActionResourceValuePersonal",
+        &[GUIDSTRING, STRING, INT, REAL],
+        &[false, false, false, true],
+    );
+    b.query("IsDead", &[GUIDSTRING, INT], &[false, true]);
+    b.query(
+        "IsEnemy",
+        &[GUIDSTRING, GUIDSTRING, INT],
+        &[false, false, true],
+    );
+    b.query("CanFight", &[GUIDSTRING, INT], &[false, true]);
+    b.query(
+        "GetEquippedItem",
+        &[GUIDSTRING, STRING, GUIDSTRING],
+        &[false, false, true],
+    );
+    b.call("RemoveSpell", &[GUIDSTRING, STRING, INT]);
+    b.call("HideTutorial", &[GUIDSTRING, GUIDSTRING]);
+    b.call("ShowTutorial", &[GUIDSTRING, GUIDSTRING]);
+    b.db("DB_Resource", &[REAL]);
+    b.db("DB_Equipped", &[GUIDSTRING]);
+    for name in ["Dead", "Enemy", "CanFight"] {
+        b.db(&format!("DB_{name}"), &[INT]);
+    }
+    let goal = b.goal("Main", &[]);
+    b.rule(
+        goal,
+        Rule::when("Start", [])
+            .and(
+                "GetActionResourceValuePersonal",
+                [guid(&hero), s("SpellSlot"), int(2), v("N")],
+            )
+            .then("DB_Resource", [v("N")]),
+    );
+    b.rule(
+        goal,
+        Rule::when("Start", [])
+            .and(
+                "GetEquippedItem",
+                [guid(&hero), s("MusicalInstrument"), v("Item")],
+            )
+            .then("DB_Equipped", [v("Item")]),
+    );
+    b.rule(
+        goal,
+        Rule::when("Start", [])
+            .and("IsDead", [guid(&hero), v("N")])
+            .then("DB_Dead", [v("N")]),
+    );
+    b.rule(
+        goal,
+        Rule::when("Start", [])
+            .and("IsEnemy", [guid(&hero), guid(&imp), v("N")])
+            .then("DB_Enemy", [v("N")]),
+    );
+    b.rule(
+        goal,
+        Rule::when("Start", [])
+            .and("CanFight", [guid(&hero), v("N")])
+            .then("DB_CanFight", [v("N")]),
+    );
+    b.rule(
+        goal,
+        Rule::when("Start", [])
+            .then(
+                "RemoveSpell",
+                [guid(&hero), s("Target_MainHandAttack"), int(1)],
+            )
+            .then("HideTutorial", [guid(&hero), guid(&imp)])
+            .then("ShowTutorial", [guid(&hero), guid(&imp)]),
+    );
+    let story = b.build();
+    let mut vm = Vm::new(&story);
+    vm.init_game(&mut SimHost::new(&mut sim));
+    vm.event(&mut SimHost::new(&mut sim), "Start", &[]);
+    assert!(
+        matches!(vm.db("DB_Resource", 1).unwrap()[0][0].data, bg3_osiris::Data::Real(n) if n == 1.0)
+    );
+    for (db, expected) in [("DB_Dead", 0), ("DB_Enemy", 1), ("DB_CanFight", 0)] {
+        assert!(
+            matches!(vm.db(db, 1).unwrap()[0][0].data, bg3_osiris::Data::Int(n) if n == expected)
+        );
+    }
+    assert_eq!(
+        Guid::from_osiris(vm.text(&vm.db("DB_Equipped", 1).unwrap()[0][0]).unwrap()),
+        Some(item)
+    );
+    assert!(
+        !sim.combatant(g(HERO1))
+            .unwrap()
+            .spells
+            .iter()
+            .any(|s| s == "Target_MainHandAttack")
+    );
+    assert!(
+        !sim.build_combatant(g(HERO1))
+            .unwrap()
+            .spells
+            .iter()
+            .any(|s| s == "Target_MainHandAttack")
+    );
+    assert_eq!(
+        sim.story
+            .effects
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>(),
+        ["HideTutorial", "ShowTutorial"]
+    );
+}
+
+#[test]
 fn combatant_setup_and_armor_class() {
     let mut s = sim(1);
     assert!(s.ensure_combatant(g(HERO1)));

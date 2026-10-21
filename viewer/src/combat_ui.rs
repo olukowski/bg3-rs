@@ -359,7 +359,17 @@ fn snapshot(game: &mut Game, cid: Guid) -> Option<CombatView> {
                     .resources
                     .entries
                     .iter()
-                    .map(|r| (r.name.clone(), r.amount, r.max))
+                    .map(|r| {
+                        (
+                            if r.level == 0 {
+                                r.name.clone()
+                            } else {
+                                format!("{} L{}", r.name, r.level)
+                            },
+                            r.amount,
+                            r.max,
+                        )
+                    })
                     .collect();
                 let can_act = active && !f.downed && !f.dead;
                 for s in &cb.spells {
@@ -376,7 +386,18 @@ fn snapshot(game: &mut Game, cid: Guid) -> Option<CombatView> {
                         display: d
                             .field("DisplayName")
                             .map(|h| h.split(';').next().unwrap_or(h).to_owned()),
-                        costs: d.use_costs.clone(),
+                        costs: d
+                            .use_costs
+                            .iter()
+                            .map(|(r, a)| {
+                                let label = if r.name == "SpellSlotsGroup" {
+                                    format!("Spell Slot L{}", r.level)
+                                } else {
+                                    r.to_string()
+                                };
+                                (label, *a)
+                            })
+                            .collect(),
                         range: sim.spell_range(m, s),
                         on_self: d.spell_type == "Shout",
                         affordable: can_act && cb.resources.can_pay(&d.use_costs),
@@ -1562,9 +1583,11 @@ fn refresh_panels(
                 b,
                 bm
             );
-            let slots = res("SpellSlot");
-            if slots.1 > 0.0 {
-                header.push_str(&format!("   Spell Slots {}/{}", slots.0, slots.1));
+            for level in 1..=9 {
+                let slots = res(&format!("SpellSlot L{level}"));
+                if slots.1 > 0.0 {
+                    header.push_str(&format!("   Spell Slots L{level} {}/{}", slots.0, slots.1));
+                }
             }
             p.spawn((Text::new(header), font(15.0), TextColor(gold)));
             if let Some(s) = &ui.spell {

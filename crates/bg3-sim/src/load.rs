@@ -514,6 +514,10 @@ impl GameData {
                 .collect();
         }
         data.story = crate::story_data::StoryData::load(vfs, &names)?;
+        data.story.item_slots = stats
+            .entries()
+            .filter_map(|o| Some((o.name.clone(), o.get("Slot")?.to_owned())))
+            .collect();
         data.combat = crate::combat::CombatData::load(vfs, stats, &names)?;
         for l in names {
             let objs = load_level_objects(vfs, &l)?;

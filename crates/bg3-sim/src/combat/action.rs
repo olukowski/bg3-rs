@@ -97,7 +97,7 @@ impl Sim {
         let left = {
             let c = self.combatant_mut(who).ok_or(CombatError::NoCombatant)?;
             if in_combat {
-                let cost = vec![("Movement".to_owned(), distance.max(0.0))];
+                let cost = vec![(super::ResourceSelector::from("Movement"), distance.max(0.0))];
                 if !c.resources.pay(&cost) {
                     return Err(CombatError::NotEnoughResources("Movement".into()));
                 }
@@ -147,6 +147,17 @@ impl Sim {
         spell: &str,
         target: Guid,
     ) -> Result<CastReport, CombatError> {
+        self.combat_cast_with_slot(who, spell, target, None)
+    }
+
+    /// Cast using the lowest sufficient spell slot, or an explicitly selected level.
+    pub fn combat_cast_with_slot(
+        &mut self,
+        who: Guid,
+        spell: &str,
+        target: Guid,
+        slot_level: Option<u32>,
+    ) -> Result<CastReport, CombatError> {
         if !self.ensure_combatant(who) {
             return Err(CombatError::NoCombatant);
         }
@@ -177,16 +188,60 @@ impl Sim {
             }
         }
         let costs = def.use_costs.clone();
-        {
-            let c = self.combatant_mut(who).ok_or(CombatError::NoCombatant)?;
-            if let Some((n, _)) = costs.iter().find(|(n, a)| c.resources.get(n) + 1e-4 < *a) {
-                return Err(CombatError::NotEnoughResources(n.clone()));
+        let chosen_slot = costs
+            .iter()
+            .filter(|(r, _)| r.name == "SpellSlotsGroup")
+            .map(|(r, _)| r.level)
+            .max()
+            .and_then(|minimum| {
+                slot_level.or_else(|| {
+                    let c = self.combatant(who)?;
+                    c.resources
+                        .entries
+                        .iter()
+                        .filter(|r| r.level >= minimum)
+                        .map(|r| r.level)
+                        .filter(|&level| {
+                            let mut resources = c.resources.clone();
+                            resources.pay_with_slot(&costs, Some(level))
+                        })
+                        .min()
+                })
+            });
+        // Upcast spell variants carry the changed expressions and costs in the install.
+        // Use those expressions rather than inventing a generic scaling rule.
+        let exec_def = if let Some(level) = chosen_slot {
+            let power = def
+                .field("PowerLevel")
+                .or_else(|| def.field("Level"))
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(0);
+            if level > power {
+                let root = def.field("RootSpellID").unwrap_or(spell);
+                self.data
+                    .combat
+                    .spells
+                    .get(&format!("{root}_{level}"))
+                    .unwrap_or(&def)
+            } else {
+                &def
             }
-            c.resources.pay(&costs);
-        }
-        let exec_spell = def
+        } else {
+            &def
+        };
+        let exec_spell = exec_def
             .to_exec()
             .map_err(|e| CombatError::BadSpell(spell.to_owned(), e.to_string()))?;
+        let c = self.combatant_mut(who).ok_or(CombatError::NoCombatant)?;
+        if !c.resources.pay_with_slot(&costs, slot_level) {
+            return Err(CombatError::NotEnoughResources(
+                costs
+                    .iter()
+                    .map(|(r, _)| r.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
         let school = def.field("SpellSchool").unwrap_or("").trim().to_owned();
         let school = if school == "None" {
             String::new()

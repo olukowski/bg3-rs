@@ -21,6 +21,7 @@ pub mod data;
 pub mod game;
 pub mod notice;
 pub mod path;
+pub mod resources;
 
 #[cfg(test)]
 mod tests;
@@ -41,65 +42,7 @@ use crate::events::SimValue;
 use crate::guid::Guid;
 use crate::sim::Sim;
 
-/// A combatant's action resources: current and maximum amount by name (`ActionPoint`,
-/// `BonusActionPoint`, `ReactionActionPoint`, `Movement` in metres, …).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Resources {
-    pub entries: Vec<ResourceAmount>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ResourceAmount {
-    pub name: String,
-    pub amount: f32,
-    pub max: f32,
-}
-
-impl Resources {
-    pub fn get(&self, name: &str) -> f32 {
-        self.entries
-            .iter()
-            .find(|r| r.name == name)
-            .map_or(0.0, |r| r.amount)
-    }
-
-    pub fn max(&self, name: &str) -> f32 {
-        self.entries
-            .iter()
-            .find(|r| r.name == name)
-            .map_or(0.0, |r| r.max)
-    }
-
-    /// Whether every cost can be paid.
-    pub fn can_pay(&self, costs: &[(String, f32)]) -> bool {
-        costs.iter().all(|(n, a)| self.get(n) + 1e-4 >= *a)
-    }
-
-    /// Pay the costs; false (and nothing paid) if one can't be.
-    pub fn pay(&mut self, costs: &[(String, f32)]) -> bool {
-        if !self.can_pay(costs) {
-            return false;
-        }
-        for (n, a) in costs {
-            if let Some(r) = self.entries.iter_mut().find(|r| &r.name == n) {
-                r.amount = (r.amount - a).max(0.0);
-            }
-        }
-        true
-    }
-
-    /// Refill the resources that replenish every turn (`ReplenishType` `Turn`).
-    pub fn replenish_turn(&mut self, data: &CombatData) {
-        for r in &mut self.entries {
-            let turn = data
-                .resource(&r.name)
-                .is_none_or(|d| d.replenish == data::Replenish::Turn);
-            if turn {
-                r.amount = r.max;
-            }
-        }
-    }
-}
+pub use resources::{ResourceAmount, ResourceSelector, Resources};
 
 /// What a character fights with.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -300,7 +243,7 @@ pub struct CombatState {
 
 /// `ActionResource(Name, amount, level)` boosts of a progression (unconditional, fixed
 /// amounts only).
-fn progression_resources(boosts: &str) -> Vec<(String, f32)> {
+fn progression_resources(boosts: &str) -> Vec<(ResourceSelector, f32)> {
     let Ok(entries) = bg3_rules::fields::parse_boosts(boosts) else {
         return Vec::new();
     };
@@ -312,7 +255,18 @@ fn progression_resources(boosts: &str) -> Vec<(String, f32)> {
             {
                 let name = b.args.first()?.trim().to_owned();
                 let amount: f32 = b.args.get(1)?.trim().parse().ok()?;
-                Some((name, amount))
+                Some((
+                    ResourceSelector {
+                        name,
+                        level: b
+                            .args
+                            .get(2)
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0),
+                        qualifier: None,
+                    },
+                    amount,
+                ))
             }
             _ => None,
         })
@@ -467,11 +421,13 @@ impl Sim {
                 .action_resources
                 .iter()
                 .map(|(n, a)| ResourceAmount {
-                    name: n.clone(),
+                    name: n.name.clone(),
+                    level: n.level,
                     amount: *a,
                     max: *a,
                 })
                 .collect(),
+            groups: d.resource_groups.clone(),
         };
         // Origin characters: what their race and class progressions grant up to their level.
         // `ActionResource(Name, amount, level)` boosts (e.g. the race's Movement) and fixed
@@ -481,17 +437,22 @@ impl Sim {
         if let Some(origin) = self.origin_def(id) {
             for t in d.origin_tables(origin) {
                 for p in d.progressions.get(&t).into_iter().flatten() {
-                    if p.level > sheet.level {
+                    if p.level > sheet.level || p.is_multiclass {
                         continue;
                     }
                     for (name, amount) in progression_resources(&p.boosts) {
-                        match resources.entries.iter_mut().find(|r| r.name == name) {
+                        match resources
+                            .entries
+                            .iter_mut()
+                            .find(|r| r.name == name.name && r.level == name.level)
+                        {
                             Some(r) => {
                                 r.max += amount;
                                 r.amount = r.max;
                             }
                             None => resources.entries.push(ResourceAmount {
-                                name,
+                                name: name.name,
+                                level: name.level,
                                 amount,
                                 max: amount,
                             }),
@@ -507,6 +468,7 @@ impl Sim {
                 }
             }
         }
+        spells.retain(|s| !e.story.removed_spells.contains(s));
         let mut c = Combatant {
             id,
             combat: None,

@@ -40,6 +40,20 @@ impl Game {
         r
     }
 
+    pub fn combat_cast_with_slot(
+        &mut self,
+        who: Guid,
+        spell: &str,
+        target: Guid,
+        slot_level: Option<u32>,
+    ) -> Result<CastReport, CombatError> {
+        let r = self
+            .sim
+            .combat_cast_with_slot(who, spell, target, slot_level);
+        self.deliver();
+        r
+    }
+
     pub fn combat_end_turn(&mut self, who: Guid) -> Result<(), CombatError> {
         let r = self.sim.combat_end_turn(who);
         self.deliver();

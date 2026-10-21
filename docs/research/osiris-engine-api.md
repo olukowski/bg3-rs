@@ -586,7 +586,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
 | call | `ClearRelation/2` | 104 |  |  | `ClearRelation((FACTION)ACT0_TUT_LabDevourer_…, (FACTION)Hero_Player1_…)` |
-| call | `RemoveSpell/3` | 36 |  |  | `RemoveSpell(Gnomes_Male_Deep_Player_…, "Shout_Bard_Perform_DOS2_1_Drum", 1)` |
+| call | `RemoveSpell/3` | 36 |  | yes | `RemoveSpell(Gnomes_Male_Deep_Player_…, "Shout_Bard_Perform_DOS2_1_Drum", 1)` |
 | call | `SetFaction/2` | 9 |  | yes | `SetFaction((CHARACTER)S_Player_Karlach_…, (FACTION)Origin_Karlach_…)` |
 | call | `SetCanFight/2` | 5 |  | yes | `SetCanFight(S_TUT_Helm_MindFlayer_…, 0)` |
 | call | `SetRelation/3` | 4 |  |  | `SetRelation((FACTION)ACT0_TUT_LabDevourer_…, (FACTION)Hero_…, 0)` |
@@ -601,7 +601,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | query | `GetHitpointsPercentage/2` | 370 |  |  | `GetHitpointsPercentage(S_GLO_CharacterCreationDummy_003_…, [out] (REAL))` |
 | query | `HasPassive/3` | 182 |  |  | `HasPassive(S_GLO_GithKnight_…, "MagicArrow", [out] 1)` |
 | query | `GetFaction/2` | 86 |  | yes | `GetFaction(S_OriginIntro_DarkUrgeDummy_…, [out] (GUIDSTRING))` |
-| query | `CanFight/2` | 5 |  |  | `CanFight(Gnomes_Male_Deep_Player_…, [out] 1)` |
+| query | `CanFight/2` | 5 |  | yes | `CanFight(Gnomes_Male_Deep_Player_…, [out] 1)` |
 | query | `GetRelation/3` | 4 |  |  | `GetRelation((FACTION)ACT0_TUT_LabDevourer_…, (FACTION)Hero_…, [out] (INTEGER))` |
 | query | `CanLearnSpell/4` | 2 | 2 |  | `CanLearnSpell(Gnomes_Male_Deep_Player_…, LOOT_SCROLL_Revivify_…, 0, [out] 1)` |
 | query | `IsInCombat/2` | 2 |  | yes | `IsInCombat(S_TUT_Lab_TrappedDevourer_…, [out] 0)` |
@@ -703,7 +703,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | query | `CreateAtObject/7` | 5 |  |  | `CreateAtObject((ROOT)DLC_LOOT_Dye_Larian_…, Gnomes_Male_Deep_Player_…, 0, 0, "", 0, [out] (GUIDSTRING))` |
 | query | `GetDisplayName/2` | 5 |  | yes | `GetDisplayName(Gnomes_Male_Deep_Player_…, [out] (STRING))` |
 | query | `IsActive/2` | 2 |  | yes | `IsActive(Gnomes_Male_Deep_Player_…, [out] 1)` |
-| query | `IsDead/2` | 2 |  |  | `IsDead(S_TUT_Lab_DevourerVictim_…, [out] 0)` |
+| query | `IsDead/2` | 2 |  | yes | `IsDead(S_TUT_Lab_DevourerVictim_…, [out] 0)` |
 | query | `GetIdentity/3` | 1 |  | yes | `GetIdentity(Humans_Female_Daisy_…, 0, [out] (STRING))` |
 | query | `GetPosition/4` | 1 |  |  | `GetPosition((TRIGGER)S_TUT_Misc_Elevator002_Up_…, [out] (REAL), [out] (REAL), [out] (REAL))` |
 | event | `EnteredTrigger/2` | 57 |  | external | `EnteredTrigger(S_Player_ShadowHeart_…, RoomTrigger_ShadowHeart_F1_…)` |
@@ -745,7 +745,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | query | `GetInventoryOwner/2` | 97 | 89 | yes | `GetInventoryOwner((ITEM)S_SCL_SpidersLyre_…, [out] (GUIDSTRING))` |
 | query | `TemplateIsInInventory/3` | 63 |  | yes | `TemplateIsInInventory((ITEMROOT)LOOT_SoulCoin_…, Gnomes_Male_Deep_Player_…, [out] (INTEGER))` |
 | query | `ItemGetSupplyValue/2` | 15 |  |  | `ItemGetSupplyValue(Underwear_Gnomes_A_…, [out] (INTEGER))` |
-| query | `GetEquippedItem/3` | 11 | 11 |  | `GetEquippedItem(Gnomes_Male_Deep_Player_…, "MusicalInstrument", [out] (GUIDSTRING))` |
+| query | `GetEquippedItem/3` | 11 | 11 | yes | `GetEquippedItem(Gnomes_Male_Deep_Player_…, "MusicalInstrument", [out] (GUIDSTRING))` |
 | query | `CanSitOn/2` | 9 |  |  | `CanSitOn(S_TUT_TransformChamber_HackChair_…, [out] 0)` |
 | query | `GetCanPickUp/2` | 9 |  |  | `GetCanPickUp(S_TUT_TransformChamber_HackChair_…, [out] 1)` |
 | query | `IsLadder/2` | 7 |  |  | `IsLadder(S_TUT_Start_Brinepool_…, [out] 0)` |
@@ -941,13 +941,69 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
 | call | `EnableTutorialEvent/2` | 34 |  | yes | `EnableTutorialEvent(Gnomes_Male_Deep_Player_…, (TUTORIALEVENT)AttackHit_Immunity_…)` |
-| call | `HideTutorial/2` | 16 |  |  | `HideTutorial(Gnomes_Male_Deep_Player_…, (UNIFIEDTUTORIAL)Camera_Movement_…)` |
+| call | `HideTutorial/2` | 16 |  | yes | `HideTutorial(Gnomes_Male_Deep_Player_…, (UNIFIEDTUTORIAL)Camera_Movement_…)` |
 | call | `SetTutorialShown/2` | 7 |  |  | `SetTutorialShown(Gnomes_Male_Deep_Player_…, (UNIFIEDTUTORIAL)Camera_Movement_…)` |
 | call | `DisableTutorialEvent/2` | 5 |  |  | `DisableTutorialEvent(Gnomes_Male_Deep_Player_…, (TUTORIALEVENT)UserAction_CameraTrackPlayer_…)` |
-| call | `ShowTutorial/2` | 5 |  |  | `ShowTutorial(Gnomes_Male_Deep_Player_…, (UNIFIEDTUTORIAL)Inventory_Containers_…)` |
+| call | `ShowTutorial/2` | 5 |  | yes | `ShowTutorial(Gnomes_Male_Deep_Player_…, (UNIFIEDTUTORIAL)Inventory_Containers_…)` |
 | call | `ResetTutorialsRequest/2` | 4 |  |  | `ResetTutorialsRequest(65537, 1)` |
 | query | `WasTutorialCompletedForUser/2` | 4 |  |  | `WasTutorialCompletedForUser(65537, [out] (INTEGER))` |
 | query | `IsAnyTutorialShowingFor/2` | 2 |  |  | `IsAnyTutorialShowingFor(Gnomes_Male_Deep_Player_…, [out] 0)` |
 | event | `TutorialEvent/2` | 7 |  | external | `TutorialEvent(Gnomes_Male_Deep_Player_…, …)` |
 | event | `TutorialClosed/2` | 1 |  | external | `TutorialClosed(65537, …)` |
 
+
+
+## Live combat resource and capability APIs (2026-10-21)
+
+Signatures below were read from the installed compiled story with `bg3x story`; usage was
+checked in `combat-20261021-183321.log` and `full-nautiloid.log` (local only). Symbols were
+located in `.cache/symbols/bg3.tsv`; no RE tools were used.
+
+| Function | Implementation and limits |
+|---|---|
+| `GetActionResourceValuePersonal(CHARACTER, STRING, INTEGER, out REAL)` | Reads the current personal pool at the requested resource level, lazily constructing combat state from stats and race/class progressions. A defined resource without a pool returns **0.0**. An unknown resource fails; a character without enough data remains unanswered. The live fight makes 87 calls. See [combat.md](combat.md#resource-levels-and-spell-costs). |
+| `RemoveSpell(CHARACTER, STRING, INTEGER)` | Removes the exact spell from current combat state and records its removal so rebuilding combat state cannot restore it. The live trace passes **1** for the final argument; effects of other values on preparation/hotbar presentation are unverified. |
+| `IsDead(CHARACTER, out INTEGER)` | Uses live combat death state (downed is not dead), or the live sheet when combat state has not been built. During replay an initial sheet does not prove current death state: damage occurs before `HitpointsChanged`/`Died` arrive, so this stays unanswered without current combat state. |
+| `IsEnemy(CHARACTER, CHARACTER, out INTEGER)` | Uses the sim's existing faction/party relation resolver (`is_hostile`); individual attitudes and temporary hostility outside that resolver remain approximate. |
+| `GetEquippedItem(CHARACTER, STRING, out ITEM)` | Returns a known runtime item GUID in the requested slot, recorded from `Equipped`/`Unequipped` and installed item stats `Slot`. No item means query failure (not a null-GUID success), as the trace's MusicalInstrument queries show. Combat equipment represented only by stats names cannot supply an invented inventory GUID. |
+| `CanFight(GUIDSTRING, out INTEGER)` | Runtime `SetCanFight` overrides the placed object's `CanFight`, then root-template inheritance, then the default for character entities. This preserves the devourer victim's installed `false` value. |
+| `HideTutorial(CHARACTER, UNIFIEDTUTORIAL)` / `ShowTutorial(CHARACTER, UNIFIEDTUTORIAL)` | Retained as typed `StoryEffect` notifications for the front end, with no gameplay effect. No tutorial UI is claimed to have been shown. |
+
+Original symbols: `esv::OsirisCharacterFunctions::{GetActionResourceValuePersonal,RemoveSpell,
+IsDead,GetEquippedItem}` and `esv::OsirisGameFunctions::{IsEnemy,CanFight,HideTutorial,ShowTutorial}`
+(build 4.1.1.7631656). Synthetic VM coverage:
+`combat::tests::story_resource_queries_spell_removal_and_tutorial_notifications`.
+
+`GetDisplayName/2` and presentation now share `Sim::display_name_handle` for story override,
+placed-object `DisplayName` and root-template inheritance. `Sim::display_name` translates
+through install-loaded English LOCA; it leaves the object-name fallback to its caller.
+
+
+Validation after these changes: all required formatting, workspace Clippy/unit tests and
+release install tests pass. `bg3x sim-replay --check` on `full-nautiloid.log` answers
+**12,199 / 13,543 (90.08%)**, versus **12,183 / 13,543 (89.96%)** before; **0 disagreements**,
+12,197 graded agreements and 2 ungraded answers. `IsDead` remains unanswered for the two
+replay queries that lack current engine death state. The viewer's 20-second combat-autoplay
+smoke test exits successfully and displays localized character names.
+
+The smoke test still reports **40** unimplemented story functions. These are outside the
+requested APIs, and are not replaced with successful no-ops:
+
+- Combat/world query or capability dispatch still missing: `BlockFlee/1`, `CombatGetGuidFor/2`,
+  `GetCombatGroupID/2`, `GetDistanceTo/3`, `GetEnterCombatRange/1`, `GetHitpointsPercentage/2`,
+  `IsAlly/3`, `IsControlled/2`, `IsOnStage/2`, `SetImmortal/2`. Some underlying sim state exists,
+  but these Osiris signatures have not been wired and verified.
+- Inventory/trade and user iteration are incomplete: `CanTrade/2`, `IsInInventoryOf/3`,
+  `IterateInventoryByTemplate/4`, `IterateUsers/2`, `SetCanTrade/2`, `TemplateAddTo/4`,
+  `ToInventory/5`. The new equipment query only uses known item identities.
+- Presentation, tutorials, quests and activities lack these specific host requests:
+  `DialogSetVariableTranslatedString/3`, `GetDefaultState/2`, `HideAllActivities/1`,
+  `PlayHUDSound/2`, `PlayLoopEffect/5`, `QuestUpdate/3`, `SetDoNotFaceFlag/2`,
+  `SetLevelStartingDialog/2`, `SetTutorialShown/2`, `ShowActivity/1`, `StartActivity/1`,
+  `StartVoiceBark/2`, `TriggerSetSoundState/4`.
+- Crime, status groups and tag expressions need further dispatch/semantics:
+  `GetHandlingCrimeID/2`, `RemoveStatusesWithGroup/3`, `SatisfiesTagExpression/3`.
+- Creation/lifecycle and general utilities still missing: `DebugBreak/1`, `GetModuleVersion/5`,
+  `IntegerToString/2`, `IsGameStateRunning/1`, `NotifyCharacterCreationFinished/0`, `Random/2`,
+  `StartCharacterCreation/0`. Character creation work is owned separately; random-story
+  semantics and lifecycle side effects were not inferred here.

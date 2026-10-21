@@ -108,9 +108,8 @@ pub struct ActionResourceDef {
 pub struct CharacterCombatDef {
     /// `Initiative`.
     pub initiative: i32,
-    /// `ActionResources`: `Name:amount` (`Name:amount:level` for leveled resources, level
-    /// ignored).
-    pub action_resources: Vec<(String, f32)>,
+    /// `ActionResources`: `Name:amount` (`Name:amount:level` for leveled resources).
+    pub action_resources: Vec<(super::ResourceSelector, f32)>,
     /// `Proficiency Group`.
     pub proficiency: Vec<String>,
     pub unarmed_ability: Option<Ability>,
@@ -189,8 +188,8 @@ pub struct SpellDef {
     pub spell_type: String,
     /// `TargetRadius`: a number (metres) or a weapon-range keyword.
     pub target_radius: String,
-    /// `UseCosts`: `Name:amount` (`Name:amount:level`, level ignored).
-    pub use_costs: Vec<(String, f32)>,
+    /// `UseCosts`: resource/group selectors and amounts, retaining slot levels.
+    pub use_costs: Vec<(super::ResourceSelector, f32)>,
     pub flags: Vec<String>,
     /// Raw expression fields for `bg3_rules::exec::Spell::from_fields`.
     pub fields: Vec<(String, String)>,
@@ -229,6 +228,8 @@ pub struct ObjectCombat {
 pub struct CombatData {
     pub factions: Factions,
     pub resources: Vec<ActionResourceDef>,
+    /// Group name → ordered resource names, resolved from definition UUIDs.
+    pub resource_groups: HashMap<String, Vec<String>>,
     pub characters: HashMap<String, CharacterCombatDef>,
     pub weapons: HashMap<String, WeaponDef>,
     pub armors: HashMap<String, ArmorDef>,
@@ -283,6 +284,8 @@ pub struct OriginDef {
 pub struct ProgressionDef {
     pub id: Guid,
     pub level: i32,
+    /// Alternative grants when taking this class through multiclassing.
+    pub is_multiclass: bool,
     pub boosts: String,
     pub selectors: String,
 }
@@ -302,21 +305,37 @@ fn split_list(v: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// `Name:amount[:level]` lists (`ActionResources`, `UseCosts`).
-pub fn parse_costs(v: &str) -> Vec<(String, f32)> {
+/// Numeric resource costs. The final field selects the resource level; the intermediate
+/// field of four-part costs is retained (only value 1 is verified in spell costs).
+// bg3: eoc::action_resource::ParseActionResourceCost (4.1.1.7631656)
+pub fn parse_costs(v: &str) -> Vec<(super::ResourceSelector, f32)> {
     v.split(';')
-        .filter_map(|e| {
-            let mut it = e.trim().split(':');
-            let name = it.next()?.trim();
-            // `SpellSlotsGroup:count:?:level` is paid from the spell slots (*approximate*:
-            // slot levels and the warlock's pact slots are not told apart).
-            let name = if name == "SpellSlotsGroup" {
-                "SpellSlot"
-            } else {
-                name
+        .filter_map(|entry| {
+            let fields: Vec<_> = entry.trim().split(':').map(str::trim).collect();
+            let name = *fields.first()?;
+            let amount: f32 = fields.get(1)?.parse().ok()?;
+            if name.is_empty() || !amount.is_finite() || amount < 0.0 {
+                return None;
+            }
+            let level = match fields.len() {
+                2 => 0,
+                3 => fields[2].parse().ok()?,
+                4 => fields[3].parse().ok()?,
+                _ => return None,
             };
-            let amount: f32 = it.next()?.trim().parse().ok()?;
-            (!name.is_empty()).then(|| (name.to_owned(), amount))
+            let qualifier = if fields.len() == 4 {
+                Some(fields[2].parse().ok()?)
+            } else {
+                None
+            };
+            Some((
+                super::ResourceSelector {
+                    name: name.to_owned(),
+                    level,
+                    qualifier,
+                },
+                amount,
+            ))
         })
         .collect()
 }
@@ -335,6 +354,7 @@ impl CombatData {
         Self {
             factions: Factions::default(),
             resources: Vec::new(),
+            resource_groups: HashMap::new(),
             characters: HashMap::new(),
             weapons: HashMap::new(),
             armors: HashMap::new(),
@@ -535,6 +555,7 @@ impl CombatData {
         d.add_stats(stats);
         load_factions(vfs, &mut d.factions)?;
         d.resources = load_resources(vfs)?;
+        d.resource_groups = load_resource_groups(vfs, &d.resources)?;
         d.helper_scripts = bg3_rules::install::helper_scripts(vfs, BASE_LOAD_ORDER);
         load_classes(vfs, &mut d)?;
         for m in BASE_LOAD_ORDER {
@@ -720,6 +741,10 @@ fn load_classes(vfs: &Vfs, d: &mut CombatData) -> Result<(), LoadError> {
                     let p = ProgressionDef {
                         id: guid_attr(n, "UUID").unwrap_or(Guid::NULL),
                         level: n.attr("Level").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        is_multiclass: matches!(
+                            n.attr("IsMulticlass"),
+                            Some(bg3_lsf::Value::Bool(true))
+                        ),
                         boosts: s(n, "Boosts").unwrap_or_default(),
                         selectors: s(n, "Selectors").unwrap_or_default(),
                     };
@@ -744,6 +769,43 @@ fn load_classes(vfs: &Vfs, d: &mut CombatData) -> Result<(), LoadError> {
         }
     }
     Ok(())
+}
+
+// bg3: eoc::ActionResourceGroup::Visit (4.1.1.7631656)
+fn load_resource_groups(
+    vfs: &Vfs,
+    resources: &[ActionResourceDef],
+) -> Result<HashMap<String, Vec<String>>, LoadError> {
+    let mut out = HashMap::new();
+    for module in BASE_LOAD_ORDER {
+        let path = format!(
+            "Public/{module}/ActionResourceGroupDefinitions/ActionResourceGroupDefinitions.lsx"
+        );
+        if !vfs.exists(&path) {
+            continue;
+        }
+        let res = parse(vfs, &path)?;
+        let Some(root) = res.region("ActionResourceGroupDefinitions") else {
+            continue;
+        };
+        for node in root.children_named("ActionResourceGroupDefinition").chain(
+            root.children_named("root")
+                .flat_map(|r| r.children_named("ActionResourceGroupDefinition")),
+        ) {
+            if let (Some(name), Some(ids)) = (s(node, "Name"), s(node, "ActionResourceDefinitions"))
+            {
+                let members = ids
+                    .split(';')
+                    .filter_map(|id| {
+                        let id = Guid::parse(id.trim())?;
+                        Some(resources.iter().find(|r| r.id == id)?.name.clone())
+                    })
+                    .collect();
+                out.insert(name, members);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn load_resources(vfs: &Vfs) -> Result<Vec<ActionResourceDef>, LoadError> {
@@ -842,9 +904,16 @@ mod tests {
         assert_eq!(
             parse_costs("ActionPoint:1;Movement:9; SpellSlot:1:1"),
             [
-                ("ActionPoint".to_owned(), 1.0),
-                ("Movement".to_owned(), 9.0),
-                ("SpellSlot".to_owned(), 1.0)
+                (super::super::ResourceSelector::from("ActionPoint"), 1.0),
+                (super::super::ResourceSelector::from("Movement"), 9.0),
+                (
+                    super::super::ResourceSelector {
+                        name: "SpellSlot".into(),
+                        level: 1,
+                        qualifier: None
+                    },
+                    1.0
+                )
             ]
         );
         assert_eq!(boost_sum(Some("Initiative(-20);AC(2)"), "Initiative"), -20);

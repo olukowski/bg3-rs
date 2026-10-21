@@ -10,6 +10,9 @@ use crate::{EntityKind, Guid, ObservedArg, Sim, SimValue, TagSource};
 pub struct EntityStory {
     /// Explicit runtime name handle supplied by a character-creation/platform host.
     pub display_name: Option<String>,
+    /// Runtime inventory slot assignments, observed from Equipped/Unequipped events.
+    pub equipped: HashMap<String, Guid>,
+    pub removed_spells: HashSet<String>,
     pub has_dialog: Option<bool>,
     pub can_interact: Option<bool>,
     pub can_fight: Option<bool>,
@@ -72,6 +75,9 @@ pub const CALLS: &[(&str, usize)] = &[
     ("AddPassive", 2),
     ("AutoSave", 0),
     ("Use", 5),
+    ("RemoveSpell", 3),
+    ("HideTutorial", 2),
+    ("ShowTutorial", 2),
 ];
 pub const QUERIES: &[(&str, usize)] = &[
     ("GetHostCharacter", 1),
@@ -93,6 +99,11 @@ pub const QUERIES: &[(&str, usize)] = &[
     ("CharacterHasDLC", 3),
     ("IsActive", 2),
     ("IsPartyFollower", 2),
+    ("GetActionResourceValuePersonal", 4),
+    ("IsDead", 2),
+    ("IsEnemy", 3),
+    ("GetEquippedItem", 3),
+    ("CanFight", 2),
 ];
 
 fn text(ctx: &HostCtx<'_>, v: &Value) -> String {
@@ -155,6 +166,25 @@ pub(crate) fn call(
     let id = args.first().map_or(Guid::NULL, |v| guid(ctx, v));
     let enabled = args.get(1).is_some_and(|v| int(v) != 0);
     match name {
+        // bg3: esv::OsirisCharacterFunctions::RemoveSpell (4.1.1.7631656)
+        "RemoveSpell" => {
+            let spell = text(ctx, &args[1]);
+            let Some(e) = sim.entities.get_mut(id) else {
+                return Some(false);
+            };
+            e.story.removed_spells.insert(spell.clone());
+            if let Some(c) = sim.combatant_mut(id) {
+                c.spells.retain(|s| s != &spell);
+            }
+        }
+        // bg3: esv::OsirisGameFunctions::HideTutorial (4.1.1.7631656)
+        // bg3: esv::OsirisGameFunctions::ShowTutorial (4.1.1.7631656)
+        "HideTutorial" | "ShowTutorial" => {
+            sim.story.effects.push(StoryEffect {
+                name: name.into(),
+                args: values(ctx, args),
+            });
+        }
         // bg3: esv::OsirisCharacterFunctions::Use (4.1.1.7631656)
         "Use" => {
             return Some(sim.use_item_scripted(
@@ -363,6 +393,69 @@ pub(crate) fn query(
     let id = guid(ctx, &args[0]);
 
     let result = match name {
+        // bg3: esv::OsirisCharacterFunctions::GetActionResourceValuePersonal (4.1.1.7631656)
+        "GetActionResourceValuePersonal" => {
+            if !sim.ensure_combatant(id) {
+                return None;
+            }
+            let resource = text(ctx, &args[1]);
+            if sim.data.combat.resource(&resource).is_none() {
+                return Some(false);
+            }
+            let level = u32::try_from(int(&args[2])).ok()?;
+            Some(Value::real(
+                sim.combatant(id)?.resources.get_at_level(&resource, level),
+            ))
+        }
+        // bg3: esv::OsirisCharacterFunctions::IsDead (4.1.1.7631656)
+        "IsDead" => {
+            let e = sim.entity(id)?;
+            // During replay engine damage precedes its events; initial sheets cannot
+            // establish live death state (same boundary as GetHitpointsPercentage).
+            if !sim.stage.live && sim.combatant(id).is_none() {
+                return None;
+            }
+            let dead = sim
+                .combatant(id)
+                .map_or_else(|| e.sheet.as_ref().is_some_and(|s| s.hp <= 0), |c| c.dead);
+            Some(Value::int(i32::from(dead)))
+        }
+        // bg3: esv::OsirisGameFunctions::IsEnemy (4.1.1.7631656)
+        "IsEnemy" => {
+            let target = guid(ctx, &args[1]);
+            sim.entity(id)?;
+            sim.entity(target)?;
+            Some(Value::int(i32::from(sim.is_hostile(id, target))))
+        }
+        // bg3: esv::OsirisGameFunctions::CanFight (4.1.1.7631656)
+        "CanFight" => {
+            let e = sim.entity(id)?;
+            let from_data = sim
+                .data
+                .story
+                .objects
+                .get(&id)
+                .and_then(|o| o.can_fight)
+                .or_else(|| {
+                    sim.data
+                        .template_chain(e.template)
+                        .into_iter()
+                        .find_map(|t| sim.data.story.objects.get(&t.id)?.can_fight)
+                });
+            Some(Value::int(i32::from(
+                e.story
+                    .can_fight
+                    .or(from_data)
+                    .unwrap_or(e.kind == EntityKind::Character),
+            )))
+        }
+        // bg3: esv::OsirisCharacterFunctions::GetEquippedItem (4.1.1.7631656)
+        "GetEquippedItem" => sim
+            .entity(id)?
+            .story
+            .equipped
+            .get(&text(ctx, &args[1]))
+            .map(|&item| ctx.guid(&sim.render(item))),
         // bg3: esv::OsirisCharacterFunctions::GetHostCharacter (4.1.1.7631656)
         "GetHostCharacter" => sim.story.host.map(|id| ctx.guid(&id.to_string())),
         // bg3: esv::OsirisGameFunctions::GetMaxPartySize (4.1.1.7631656)
@@ -485,6 +578,31 @@ pub(crate) fn query(
 
 pub(crate) fn observe(sim: &mut Sim, name: &str, args: &[ObservedArg]) {
     let id = args.first().and_then(|a| Guid::from_osiris(&a.text));
+    // bg3: esv::OsirisCharacterFunctions::GetEquippedItem (4.1.1.7631656)
+    if matches!(name, "Equipped" | "Unequipped") && args.len() == 2 {
+        let owner = Guid::from_osiris(&args[1].text);
+        if let (Some(item), Some(owner)) = (id, owner) {
+            let slot = sim
+                .entity(item)
+                .and_then(|e| {
+                    e.stats.as_ref().or_else(|| {
+                        sim.data
+                            .template_chain(e.template)
+                            .into_iter()
+                            .find_map(|t| t.stats.as_ref())
+                    })
+                })
+                .and_then(|stats| sim.data.story.item_slots.get(stats))
+                .cloned();
+            if let Some(e) = sim.entities.get_mut(owner) {
+                if name == "Unequipped" {
+                    e.story.equipped.retain(|_, id| *id != item);
+                } else if let Some(slot) = slot {
+                    e.story.equipped.insert(slot, item);
+                }
+            }
+        }
+    }
     if let Some(id) = id {
         if name == "CharacterSelectedForUser" && sim.story.host.is_none() {
             sim.story.host = Some(id);

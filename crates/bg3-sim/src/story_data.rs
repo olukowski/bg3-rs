@@ -13,6 +13,7 @@ use crate::{
 pub struct ObjectData {
     pub display_name: Option<String>,
     pub can_interact: Option<bool>,
+    pub can_fight: Option<bool>,
     pub use_peace: Option<Vec<UseAction>>,
     pub use_combat: Option<Vec<UseAction>>,
 }
@@ -34,6 +35,8 @@ pub struct OriginData {
 
 #[derive(Clone, Debug, Default)]
 pub struct StoryData {
+    /// Stats entry → inventory slot, used with observed equipment GUIDs.
+    pub item_slots: HashMap<String, String>,
     /// Modifier defaults with the Balanced preset's ruleset overrides applied.
     pub ruleset: HashMap<Guid, String>,
     /// Root template and placed-object metadata, by MapKey.
@@ -85,6 +88,10 @@ pub(crate) fn object_data(n: &Node) -> ObjectData {
     ObjectData {
         display_name: match n.attr("DisplayName") {
             Some(Value::TranslatedString(t)) if !t.handle.is_empty() => Some(t.handle.clone()),
+            _ => None,
+        },
+        can_fight: match n.attr("CanFight") {
+            Some(Value::Bool(v)) => Some(*v),
             _ => None,
         },
         can_interact: match n.attr("CanUse") {
