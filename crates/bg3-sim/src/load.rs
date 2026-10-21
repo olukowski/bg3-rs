@@ -10,6 +10,7 @@
 //! | level objects | `Mods/<Module>/Levels/<Level>/{Characters,Items,Triggers}/_merged.lsf` |
 //! | characters' rule stats | stats `Character` entries ([`crate::character`]); `LevelOverride` of templates and objects |
 //! | level maps | `Public/<Module>/Levelmaps/LevelMapValues.lsx` (`bg3_rules::levelmap`) |
+//! | character creation | [`crate::cc::data`] |
 //! | difficulty classes | `Public/<Module>/DifficultyClasses/DifficultyClasses.lsx`: `UUID`, `Difficulties` |
 //!
 //! Modules are read in `bg3_vfs::modules::BASE_LOAD_ORDER`; a later module replaces a
@@ -500,6 +501,7 @@ impl GameData {
             difficulty_classes: load_difficulty_classes(vfs)?,
             combat: crate::combat::CombatData::new(),
             story: crate::story_data::StoryData::default(),
+            cc: crate::cc::CcData::load(vfs, stats)?,
         };
         let mut names: Vec<String> = levels.iter().map(|l| (*l).to_owned()).collect();
         if names.is_empty() {

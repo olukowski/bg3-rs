@@ -66,6 +66,7 @@ fn sim_replay_trace() {
             [Mode::Check, Mode::Sim].map(|mode| {
                 let opts = Options {
                     mode,
+                    character: Some(bg3_sim::start::trace_choice()),
                     ..Options::default()
                 };
                 sim_replay(&story, &log, data.clone(), &opts)

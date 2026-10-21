@@ -70,6 +70,11 @@ pub struct Options {
     /// searched for, roll outcomes taken from the log); without, dialog events are fed from
     /// the log.
     pub dialogs: Option<Arc<DialogBank>>,
+    /// The player's character-creation choices: applied to the created avatar when the log
+    /// delivers `CharacterCreationFinished` ([`crate::Sim::apply_created_character`]), so the
+    /// sim raises the class/background/deity tags itself. `None`: those events are fed.
+    /// The trace's are [`crate::start::trace_choice`].
+    pub character: Option<crate::cc::CharacterChoice>,
 }
 
 impl Default for Options {
@@ -79,6 +84,7 @@ impl Default for Options {
             start_level: String::new(),
             keep_vm_log: false,
             dialogs: None,
+            character: None,
         }
     }
 }
@@ -1057,6 +1063,11 @@ pub fn sim_replay(story: &Story, log: &str, data: GameData, opts: &Options) -> S
                     st.external += 1;
                 }
                 observe(&mut sim, &vm, name, args);
+                if name == "CharacterCreationFinished"
+                    && let Some(choice) = &opts.character
+                {
+                    apply_character(&mut sim, choice);
+                }
                 deliver = Some((name.clone(), args.clone()));
             }
         }
@@ -1180,6 +1191,25 @@ fn force_timer(sim: &mut Sim, name: &str, args: &[LogValue]) {
             }
         }
         _ => {}
+    }
+}
+
+/// Character creation's result on the avatar the log created (the party's character the sim
+/// only knows from events).
+fn apply_character(sim: &mut Sim, choice: &crate::cc::CharacterChoice) {
+    use crate::entity::{EntityKind, Origin};
+    let avatar = sim.party.iter().rev().copied().find(|p| {
+        sim.entity(*p)
+            .is_some_and(|e| e.origin == Origin::Observed && e.kind == EntityKind::Character)
+    });
+    let Some(avatar) = avatar else {
+        return;
+    };
+    let mut choice = choice.clone();
+    sim.data.cc.complete(&mut choice);
+    match sim.data.cc.build(&choice) {
+        Ok(c) => sim.apply_created_character(avatar, &c),
+        Err(errs) => eprintln!("sim-replay: character choice not valid: {errs:?}"),
     }
 }
 

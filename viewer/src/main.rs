@@ -3,6 +3,7 @@
 //! Current state: level objects rendered with their LOD0 GR2 meshes and textured materials
 //! (`materials.rs`); objects without a mesh (effects, …) are shown as small boxes.
 
+mod cc_ui;
 mod characters;
 mod combat_ui;
 mod dialog;
@@ -80,6 +81,14 @@ struct Args {
     /// With `--play`: the AI plays the party's turns too (for demos and screenshots).
     #[arg(long)]
     combat_autoplay: bool,
+    /// With `--play`: create the player character on a character creation screen first, then
+    /// start (the viewer restarts itself with `--character`).
+    #[arg(long)]
+    cc: bool,
+    /// With `--play`: the player character, as `bg3x cc --spec` prints it (default: the
+    /// trace's, a deep gnome cleric).
+    #[arg(long)]
+    character: Option<String>,
 }
 
 fn parse_vec3(s: &str) -> Result<Vec3, String> {
@@ -100,7 +109,7 @@ pub struct CameraStart {
 }
 
 #[derive(Resource)]
-struct ShotRequest(std::path::PathBuf, Option<f32>);
+pub(crate) struct ShotRequest(pub std::path::PathBuf, pub Option<f32>);
 
 /// The game's files, mounted read-only.
 #[derive(Resource)]
@@ -121,6 +130,15 @@ fn main() -> Result<()> {
     }
     let vfs = Vfs::from_install(&install)?;
     eprintln!("mounted {} files from BG3 {}", vfs.len(), install.version);
+    if args.cc && args.play {
+        return cc_ui::run(&vfs, args.shot.clone());
+    }
+    let character = args
+        .character
+        .as_deref()
+        .map(bg3_sim::cc::CharacterChoice::from_spec)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
     let level = level::LoadedLevel::load(&vfs, &args.level)?;
     let terrain_levels: Vec<String> = std::iter::once(args.level.clone())
         .chain(args.terrain_levels.iter().cloned())
@@ -152,6 +170,7 @@ fn main() -> Result<()> {
             std::sync::Arc::new(Vfs::from_install(&install)?),
             args.combat_test,
             navigation.as_ref().map(|n| n.grid.clone()),
+            character,
         )?;
         if started.level != args.level {
             eprintln!(
@@ -328,7 +347,7 @@ fn play_characters(
 }
 
 /// Wait for assets to settle, save one screenshot, then exit once it's written.
-fn take_screenshot(
+pub(crate) fn take_screenshot(
     mut commands: Commands,
     request: Res<ShotRequest>,
     time: Res<Time>,

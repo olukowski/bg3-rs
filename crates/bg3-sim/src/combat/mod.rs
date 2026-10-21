@@ -296,6 +296,9 @@ pub struct CombatState {
     /// Race and class of characters made at runtime (the created avatar), which `Origins.lsx`
     /// does not have; see [`Sim::origin_def`].
     pub created_origins: HashMap<Guid, data::OriginDef>,
+    /// Characters made by character creation (`crate::cc`): their starting equipment,
+    /// proficiencies and spells ([`crate::cc::apply::combat_setup`]).
+    pub created_characters: HashMap<Guid, crate::cc::CreatedCharacter>,
 }
 
 /// `ActionResource(Name, amount, level)` boosts of a progression (unconditional, fixed
@@ -525,6 +528,9 @@ impl Sim {
             death_saves: (0, 0),
             dead: sheet.hp <= 0,
         };
+        if let Some(cc) = self.combat.created_characters.get(&id) {
+            crate::cc::apply::combat_setup(d, cc, &mut c);
+        }
         c.resources.replenish_turn(d);
         Some(c)
     }
