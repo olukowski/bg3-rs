@@ -477,6 +477,19 @@ pub(crate) fn sync_characters(
             Visibility::Hidden
         };
         if *vis != want {
+            if *vis != Visibility::Inherited || want == Visibility::Hidden {
+                eprintln!(
+                    "stage: {} {} (on stage {}, visible {})",
+                    p.name,
+                    if want == Visibility::Hidden {
+                        "hidden"
+                    } else {
+                        "shown"
+                    },
+                    p.on_stage,
+                    p.visible
+                );
+            }
             *vis = want;
         }
         let target = to_bevy(p.position);

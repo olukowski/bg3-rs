@@ -438,8 +438,19 @@ pub fn setup_test_fight(game: &mut Game, avatar: Guid) {
         game.sim
             .set_position(laezel, [p[0] + 1.2, p[1], p[2] + 0.6]);
     }
+    // Entering the guide's trigger made the story hide her and teleport her in
+    // (`SetVisible(guide, 0)`); her dialog, skipped here, shows her again by setting this
+    // global flag (nodes of `TUT_LowerDeck_AfterImpFight`). Set it so the story's own rule
+    // (`QRY_OnlyOnce("TUT_LowerDeck_GuideAppears")` → `SetVisible(guide, 1)`) runs.
+    if let Some(flag) = Guid::parse("5b044d7c-ba8d-47f5-b056-dbe941c9cf72") {
+        // TUT_LowerDeck_Event_SetGuideVisible
+        game.sim.set_flag(flag, Guid::NULL, true, 0, true).ok();
+    }
     game.tick_live(0.0);
     game.take_notifications();
+    if !game.sim.visible(laezel) {
+        eprintln!("combat-test: S_Player_Laezel is still invisible");
+    }
     eprintln!("combat-test: party placed at {spot:?}");
 }
 
