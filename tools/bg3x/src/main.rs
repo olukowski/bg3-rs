@@ -3,6 +3,7 @@
 mod dialog;
 mod materials;
 mod nav;
+mod play;
 mod rules;
 mod sim;
 
@@ -188,6 +189,29 @@ enum Command {
         #[arg(long)]
         no_dialogs: bool,
     },
+    /// Start a new game on the sim headlessly (skipping character creation) and print the
+    /// dialogs, rolls and stage changes the player would see; output is game text, keep it
+    /// local. Lines advance at once, choices take the first enabled option.
+    Play {
+        /// Seconds of game time to run.
+        #[arg(long, default_value_t = 30.0)]
+        seconds: f64,
+        /// Choices to take, in order (1-based); then the first enabled one.
+        #[arg(long, value_delimiter = ',')]
+        choices: Vec<usize>,
+        /// Once no dialog runs, click this character (name substring) to talk.
+        #[arg(long)]
+        talk: Option<String>,
+        /// Once no dialog runs, move the avatar here (BG3 world `x,y,z`; repeatable).
+        #[arg(long, value_parser = play::vec3_arg, allow_hyphen_values = true)]
+        move_to: Vec<[f32; 3]>,
+        /// Don't print stage/position changes.
+        #[arg(long)]
+        quiet: bool,
+        /// List the startup level's triggers whose name contains this.
+        #[arg(long)]
+        triggers: Option<String>,
+    },
     /// Stats expression languages: evaluate an expression, survey the install, cast a spell.
     Rules {
         #[command(subcommand)]
@@ -343,6 +367,21 @@ fn main() -> Result<()> {
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),
         Command::Rules { cmd } => rules::run(cmd),
+        Command::Play {
+            seconds,
+            choices,
+            talk,
+            move_to,
+            quiet,
+            triggers,
+        } => play::run(play::Args {
+            seconds,
+            choices,
+            talk,
+            move_to,
+            quiet,
+            triggers,
+        }),
         Command::Nav {
             level,
             path,

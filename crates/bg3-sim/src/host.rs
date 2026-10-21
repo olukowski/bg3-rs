@@ -145,6 +145,9 @@ impl<'a> SimFunctions<'a> {
     /// Run a call; `None` if the sim does not implement it, else whether it succeeded.
     pub fn call(&mut self, ctx: &mut HostCtx<'_>, name: &str, args: &[Value]) -> Option<bool> {
         let sim = &mut *self.sim;
+        if let Some(ok) = crate::presentation::call(sim, ctx, name, args) {
+            return Some(ok);
+        }
         if is_dialog_function(name) && sim.dialog_bank().is_none() {
             return None;
         }
@@ -210,6 +213,9 @@ impl<'a> SimFunctions<'a> {
         args: &mut [Value],
         _out: &[bool],
     ) -> Option<bool> {
+        if let Some(ok) = crate::presentation::query(self.sim, ctx, name, args) {
+            return Some(ok);
+        }
         if is_dialog_function(name) && self.sim.dialog_bank().is_none() {
             return None;
         }

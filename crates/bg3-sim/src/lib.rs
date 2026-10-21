@@ -37,9 +37,11 @@ pub mod guid;
 pub mod host;
 pub mod inventory;
 pub mod load;
+pub mod presentation;
 pub mod replay;
 pub mod rules;
 pub mod sim;
+pub mod start;
 pub mod status;
 pub mod tags;
 pub mod timers;
@@ -57,6 +59,7 @@ pub use events::{SimEvent, SimValue};
 pub use flags::{FlagDef, FlagDefs, FlagError, FlagUsage};
 pub use guid::Guid;
 pub use host::{SimFunctions, SimHost};
+pub use presentation::{Presence, TriggerDef, TriggerShape};
 pub use sim::{
     GameData, ModuleLevels, ObservedArg, PlacedObject, RaceInfo, Sim, TemplateInfo, WeightCategory,
 };

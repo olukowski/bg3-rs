@@ -286,6 +286,8 @@ pub struct Sim {
     pub quest_steps: HashSet<Guid>,
     /// What happened, for the presentation layer (lines to show, choices to offer, …).
     pub(crate) notifications: Vec<Notification>,
+    /// Presentation state for a live front end (see [`crate::presentation`]).
+    pub stage: crate::presentation::Stage,
 }
 
 /// An argument of an observed engine event: the declared Osiris type name of the parameter
