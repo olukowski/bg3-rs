@@ -17,6 +17,8 @@ pub struct RootTemplate {
     pub physics_template: Option<String>,
     /// Light fields set on this template (`light` / `CombinedLight` templates only).
     pub light: Option<crate::lights::LightProps>,
+    /// Character fields set on this template (`character` templates only).
+    pub character: Option<crate::characters::CharacterProps>,
 }
 
 #[derive(Debug, Default)]
@@ -71,6 +73,8 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
             let kind = str_attr(n, "Type").unwrap_or_default();
             let light = matches!(kind.as_str(), "light" | "CombinedLight")
                 .then(|| crate::lights::LightProps::read(n));
+            let character =
+                (kind == "character").then(|| crate::characters::CharacterProps::read(n));
             Some(RootTemplate {
                 id: str_attr(n, "MapKey")?,
                 name: str_attr(n, "Name").unwrap_or_default(),
@@ -79,6 +83,7 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
                 visual_template: str_attr(n, "VisualTemplate"),
                 physics_template: str_attr(n, "PhysicsTemplate"),
                 light,
+                character,
             })
         })
 }

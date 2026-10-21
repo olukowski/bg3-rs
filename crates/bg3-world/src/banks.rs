@@ -10,6 +10,9 @@ use bg3_vfs::Vfs;
 use bg3_vfs::modules::BASE_LOAD_ORDER;
 use rayon::prelude::*;
 
+use crate::characters::{
+    AnimationResource, AnimationSetResource, CharacterVisualResource, SkeletonResource,
+};
 use crate::{Result, parse, str_attr};
 
 /// One mesh of a visual: `ObjectID` is `<model>.<mesh>.<n>`.
@@ -36,6 +39,14 @@ pub struct VisualResource {
     /// GR2 path in the VFS.
     pub source_file: Option<String>,
     pub objects: Vec<MeshObject>,
+    /// `SkeletonResource` → `SkeletonBank` (set on character base visuals).
+    pub skeleton_resource: Option<String>,
+    /// `AnimationWaterfall` → `AnimationSetBank` IDs, in file order.
+    pub animation_waterfall: Vec<String>,
+    /// `Slot` (`NakedBody`, `Head`, `Unassigned`, …).
+    pub slot: Option<String>,
+    /// `AttachBone`: bone a rigid visual attaches to.
+    pub attach_bone: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +83,8 @@ pub struct ResourceBanks {
     pub materials: HashMap<String, MaterialResource>,
     pub textures: HashMap<String, TextureResource>,
     pub virtual_textures: HashMap<String, VirtualTextureResource>,
+    /// Character visuals, skeletons, animations and animation sets.
+    pub characters: crate::characters::CharacterBanks,
     /// Bank region (`EffectBank`, `SkeletonBank`, …) of every resource ID, including the typed ones.
     pub kinds: HashMap<String, String>,
     /// Bank files that failed to parse (path, error).
@@ -84,6 +97,10 @@ struct BankFile {
     materials: Vec<MaterialResource>,
     textures: Vec<TextureResource>,
     virtual_textures: Vec<VirtualTextureResource>,
+    character_visuals: Vec<CharacterVisualResource>,
+    skeletons: Vec<SkeletonResource>,
+    animations: Vec<AnimationResource>,
+    animation_sets: Vec<AnimationSetResource>,
 }
 
 impl ResourceBanks {
@@ -147,6 +164,19 @@ impl ResourceBanks {
         for t in file.virtual_textures {
             self.virtual_textures.insert(t.id.clone(), t);
         }
+        let c = &mut self.characters;
+        for r in file.character_visuals {
+            c.character_visuals.insert(r.id.clone(), r);
+        }
+        for r in file.skeletons {
+            c.skeletons.insert(r.id.clone(), r);
+        }
+        for r in file.animations {
+            c.animations.insert(r.id.clone(), r);
+        }
+        for r in file.animation_sets {
+            c.animation_sets.insert(r.id.clone(), r);
+        }
     }
 }
 
@@ -181,6 +211,13 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
                 name,
                 source_file: str_attr(n, "SourceFile"),
                 objects,
+                skeleton_resource: str_attr(n, "SkeletonResource"),
+                animation_waterfall: n
+                    .children_named("AnimationWaterfall")
+                    .filter_map(|w| str_attr(w, "Object"))
+                    .collect(),
+                slot: str_attr(n, "Slot"),
+                attach_bone: str_attr(n, "AttachBone"),
             }
         })
         .collect();
@@ -223,6 +260,18 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
         })
         .collect();
     let virtual_textures = VirtualTextureResource::read_bank(res);
+    let character_visuals = resources(res, "CharacterVisualBank")
+        .map(CharacterVisualResource::read)
+        .collect();
+    let skeletons = resources(res, "SkeletonBank")
+        .map(SkeletonResource::read)
+        .collect();
+    let animations = resources(res, "AnimationBank")
+        .map(AnimationResource::read)
+        .collect();
+    let animation_sets = resources(res, "AnimationSetBank")
+        .map(AnimationSetResource::read)
+        .collect();
     let kinds = res
         .regions
         .iter()
@@ -237,5 +286,9 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
         materials,
         textures,
         virtual_textures,
+        character_visuals,
+        skeletons,
+        animations,
+        animation_sets,
     }
 }
