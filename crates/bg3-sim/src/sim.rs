@@ -139,6 +139,8 @@ pub struct GameData {
     /// What combat needs (factions, resources, weapons, spells, …).
     pub combat: crate::combat::CombatData,
     pub story: crate::story_data::StoryData,
+    /// Character creation: races, classes, backgrounds, progressions, … ([`crate::cc`]).
+    pub cc: crate::cc::CcData,
 }
 
 impl GameData {

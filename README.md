@@ -25,7 +25,7 @@ straight from **your own installed copy** of Baldur's Gate 3, without modifying 
 | **Quest scripting (Osiris)** | The compiled story loads, and our VM **replays a recorded session of the real game's opening with 100% matching behaviour**: 8,434 rule firings, 15,722 database changes, 16,511 queries, in the same order |
 | **Characters** | All 54 Nautiloid characters assembled from their visuals, skinned, holding their weapons and playing their idle animation; all 228,541 animations decode |
 | **Dialogue** | All 9,386 compiled dialogs parse; a headless runner replays the six Nautiloid dialogs in our trace with exactly the logged events; try `bg3x dialog <name> --walk` or the viewer's `--dialog` panel |
-| **Play mode** | `bg3-viewer --play` starts a new game on our engine: the story runs live, characters appear, vanish and teleport as it says, walking into trigger volumes fires story events, clicking a character starts its dialog, clicking an item uses it, and dialogs (with dice rolls) show on screen. Walk to the lower deck, recruit Lae'zel and the imps attack: a turn-based fight with a turn-order bar, actions, movement on the AI grid and a combat log with the game's roll breakdowns. Character creation is skipped (a placeholder avatar) |
+| **Play mode** | `bg3-viewer --play` starts a new game on our engine: the story runs live, characters appear, vanish and teleport as it says, walking into trigger volumes fires story events, clicking a character starts its dialog, clicking an item uses it, and dialogs (with dice rolls) show on screen. Walk to the lower deck, recruit Lae'zel and the imps attack: a turn-based fight with a turn-order bar, actions, movement on the AI grid and a combat log with the game's roll breakdowns. `--cc` creates the character first (races, classes, backgrounds, point buy and level-1 choices by the game's data) |
 | **Simulation** | Our own engine state (flags, tags, statuses, timers, entities) answers 87% of the scripts' engine queries in the recorded opening, with **zero disagreements** with the real game; the replay still matches 100% |
 | **Rules** | Every expression in the stats files parses (functors, conditions, dice formulas, boosts, …), plus the game's 75 Lua-based helper scripts; attacks, saving throws and damage evaluate between test combatants with the game's own dice generator |
 | Combat flow, movement, UI | Not started yet; see the roadmap |
@@ -50,8 +50,12 @@ cd bg3-rs
 # Check that your install is found (set BG3_INSTALL=/path/to/game if it isn't)
 cargo run --release -p bg3x -- info
 
-# Wake up on the Nautiloid: the story runs live (character creation is skipped)
+# Wake up on the Nautiloid: the story runs live (as the trace's deep gnome cleric)
 cargo run --release -p bg3-viewer -- --play
+
+# Create your own character first (race, class, background, point buy, skills, spells)
+cargo run --release -p bg3-viewer -- --play --cc
+cargo run --release -p bg3x -- cc --race Human --class Fighter --abilities 15,14,13,12,10,8
 
 # Jump straight to the first fight (the imps on the lower deck)
 cargo run --release -p bg3-viewer -- --play --combat-test

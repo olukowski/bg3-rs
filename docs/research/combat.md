@@ -69,9 +69,10 @@ story teleports the party into the imp room (`IsInTrigger`), and the imps notice
   stealth, hearing, `Saw` events) is not modelled; `start_combat_on_sight_with` takes a
   line-of-sight test, and the viewer passes one on the AI grid (walkable tiles near the straight
   line between the two), so other decks and walls don't count.
-- **The avatar** (*approximate*): character creation is skipped, so the placeholder avatar gets the
-  reference combat trace's class (Cleric) and its template's race (`start::TRACE_AVATAR_CLASS`,
-  `CombatState::created_origins`): class hit points and the race's movement.
+- **The avatar**: made by character creation (`docs/research/character-creation.md`; default the
+  trace's deep gnome cleric): its race and class origin (`CombatState::created_origins`: class hit
+  points, progression resources, `AddSpells`) and `CombatState::created_characters` (starting
+  weapons and armour, proficiencies, picked cantrips; `cc::apply::combat_setup`).
 - **Spell slots** (*data*): resource pools are keyed by name and level. `SpellSlotsGroup`
   resolves through the installed group definition; a cast defaults to the lowest sufficient
   level, or accepts an explicit level through `combat_cast_with_slot`. See below.

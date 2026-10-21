@@ -1,5 +1,6 @@
 //! `bg3x` — inspect a Baldur's Gate 3 install. Output stays local; see ADR 0001.
 
+mod cc;
 mod combat;
 mod dialog;
 mod materials;
@@ -189,6 +190,11 @@ enum Command {
         /// Feed dialog events from the log instead of running the dialogs on the sim.
         #[arg(long)]
         no_dialogs: bool,
+        /// Don't apply the trace's character-creation choices to the avatar at
+        /// `CharacterCreationFinished` (`bg3_sim::start::trace_choice`; feed its tags from
+        /// the log instead).
+        #[arg(long)]
+        no_cc: bool,
     },
     /// Start a new game on the sim headlessly (skipping character creation) and print the
     /// dialogs, rolls and stage changes the player would see; output is game text, keep it
@@ -264,6 +270,12 @@ enum Command {
         #[arg(long)]
         nav: bool,
     },
+    /// Character creation headless: list the options (`--list`), or build a character from
+    /// the given choices (the rest from the data's defaults; default: the trace's player),
+    /// check it against the rules and print its level-1 sheet, e.g. `bg3x cc --race Human
+    /// --class Fighter --abilities 15,14,13,12,10,8`. `--spec` prints the choice for
+    /// `bg3-viewer --play --character`.
+    Cc(Box<cc::Args>),
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -377,6 +389,7 @@ fn main() -> Result<()> {
             dump,
             inventory,
             no_dialogs,
+            no_cc,
         } => sim::run(sim::Args {
             trace,
             pak,
@@ -388,11 +401,13 @@ fn main() -> Result<()> {
             dump,
             inventory,
             no_dialogs,
+            no_cc,
         }),
         Command::Materials { level, verbose } => materials::survey(&level, verbose),
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),
         Command::Rules { cmd } => rules::run(cmd),
+        Command::Cc(a) => cc::run(*a),
         Command::Play {
             seconds,
             choices,

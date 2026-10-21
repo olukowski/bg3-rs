@@ -87,6 +87,7 @@ impl SimLink {
         vfs: Arc<bg3_vfs::Vfs>,
         combat_test: bool,
         grid: Option<Arc<bg3_nav::NavGrid>>,
+        character: Option<bg3_sim::cc::CharacterChoice>,
     ) -> Result<(Self, Started)> {
         let (cmd_tx, cmd_rx) = channel::<Cmd>();
         let (frame_tx, frame_rx) = channel::<Frame>();
@@ -94,7 +95,17 @@ impl SimLink {
         std::thread::Builder::new()
             .name("bg3-game".into())
             .stack_size(1 << 30)
-            .spawn(move || game_thread(vfs, combat_test, grid, start_tx, cmd_rx, frame_tx))?;
+            .spawn(move || {
+                game_thread(
+                    vfs,
+                    combat_test,
+                    grid,
+                    character,
+                    start_tx,
+                    cmd_rx,
+                    frame_tx,
+                )
+            })?;
         let started = start_rx
             .recv()
             .map_err(|_| anyhow!("game thread died"))?
@@ -147,12 +158,13 @@ fn game_thread(
     vfs: Arc<bg3_vfs::Vfs>,
     combat_test: bool,
     grid: Option<Arc<bg3_nav::NavGrid>>,
+    character: Option<bg3_sim::cc::CharacterChoice>,
     start_tx: Sender<Result<Started, String>>,
     rx: Receiver<Cmd>,
     tx: Sender<Frame>,
 ) {
     let t = std::time::Instant::now();
-    let (mut game, opts) = match bg3_sim::start::load_game(vfs) {
+    let (mut game, mut opts) = match bg3_sim::start::load_game(vfs) {
         Ok(g) => g,
         Err(e) => {
             let _ = start_tx.send(Err(e.to_string()));
@@ -165,6 +177,7 @@ fn game_thread(
                 grid.clone(),
             ))));
     }
+    opts.character = character;
     let started = bg3_sim::start::new_game(&mut game, &opts);
     eprintln!(
         "play: new game in {:.1?}: {} in {} ({} triggers)",
@@ -190,7 +203,7 @@ fn game_thread(
     let _ = start_tx.send(Ok(Started {
         names: display_names(&game.sim),
         avatar: started.avatar,
-        avatar_template: opts.avatar_template,
+        avatar_template: started.avatar_template,
         level: started.level,
         presences: last.clone(),
         usable_items,

@@ -30,6 +30,7 @@
 //! No Bevy, no I/O besides [`load`]; the same inputs give the same results.
 
 pub mod api;
+pub mod cc;
 pub mod character;
 pub mod combat;
 pub mod dialog;

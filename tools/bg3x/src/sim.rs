@@ -20,6 +20,7 @@ pub struct Args {
     pub dump: Option<PathBuf>,
     pub inventory: bool,
     pub no_dialogs: bool,
+    pub no_cc: bool,
 }
 
 /// Load the sim's game data from the install.
@@ -84,6 +85,7 @@ pub fn run(a: Args) -> Result<()> {
         vec![Mode::Sim]
     };
     let vm_log = a.vm_log;
+    let no_cc = a.no_cc;
     let dump = a.dump;
     let start = a.levels.first().cloned().unwrap_or_default();
     std::thread::Builder::new()
@@ -96,6 +98,7 @@ pub fn run(a: Args) -> Result<()> {
                     start_level: start.clone(),
                     keep_vm_log: vm_log.is_some(),
                     dialogs: dialogs.clone(),
+                    character: (!no_cc).then(bg3_sim::start::trace_choice),
                 };
                 let t = Instant::now();
                 let report = sim_replay(&story, &log, data.clone(), &opts);
