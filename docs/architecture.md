@@ -42,7 +42,7 @@
 | `bg3-story` | Compiled Osiris story loader and pseudo-source dump | done |
 | `bg3-osiris` | Osiris VM, plus trace parser and replay | matches the real game on the recorded opening |
 | `bg3-dialog` | Dialog model, resources, headless runner; game state via the `DialogWorld` trait | reproduces the recorded Nautiloid dialogs |
-| `bg3-gr2` | Granny GR2 reader with BitKnit2 decompression | meshes and skeletons done; animations not yet |
+| `bg3-gr2` | Granny GR2 reader with BitKnit2 decompression | meshes, skeletons and animations (all 228,541 decode) |
 | `bg3-vt` | Granite virtual textures | done |
 | `bg3-material` | Shader-graph parameters, material instances, texture slot/channel mapping | first approximation |
 | `bg3-world` | Resource banks, root templates, levels, terrain, lights | done for rendering |

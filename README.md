@@ -24,7 +24,8 @@ straight from **your own installed copy** of Baldur's Gate 3, without modifying 
 | **Stats & localization** | All stats files with inheritance resolved; 237k English strings |
 | **Quest scripting (Osiris)** | The compiled story loads, and our VM **replays a recorded session of the real game's opening with 100% matching behaviour**: 8,434 rule firings, 15,722 database changes, 16,511 queries, in the same order |
 | **Characters** | All 54 Nautiloid characters assembled from their visuals, skinned, holding their weapons and playing their idle animation; all 228,541 animations decode |
-| Dialogue, combat, UI | Not started yet; see the roadmap |
+| **Dialogue** | All 9,386 compiled dialogs parse; a headless runner replays the six Nautiloid dialogs in our trace with exactly the logged events; try `bg3x dialog <name> --walk` or the viewer's `--dialog` panel |
+| Combat, movement, UI | Not started yet; see the roadmap |
 
 More screenshots: [the Nautiloid doorway](docs/media/nautiloid-doorway.jpg) ·
 [Act 1 terrain from above](docs/media/act1-terrain.jpg).
