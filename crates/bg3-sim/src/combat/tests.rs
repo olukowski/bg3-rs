@@ -464,3 +464,105 @@ fn hostiles_in_sight_start_a_fight() {
     assert_eq!(parts, [g(HERO1), g(HERO2), g(IMP1), g(IMP2)]);
     assert_eq!(s.start_combat_on_sight(), None, "everyone is in the fight");
 }
+
+struct WallPath;
+
+impl Pathfinder for WallPath {
+    fn find_path(&self, from: [f32; 3], to: [f32; 3], radius: f32) -> Option<Vec<[f32; 3]>> {
+        assert_eq!(radius, 0.5);
+        Some(vec![from, [from[0], 0.0, 4.0], [to[0], 0.0, 4.0], to])
+    }
+}
+
+struct NoPath;
+
+impl Pathfinder for NoPath {
+    fn find_path(&self, _: [f32; 3], _: [f32; 3], _: f32) -> Option<Vec<[f32; 3]>> {
+        None
+    }
+}
+
+fn path_fight(pathfinder: Arc<dyn Pathfinder>) -> Sim {
+    let mut s = sim(0);
+    s.set_pathfinder(Some(pathfinder));
+    s.enter_combat(g(HERO1), g(IMP1)).unwrap();
+    s
+}
+
+#[test]
+fn ai_walks_around_wall_and_pays_polyline_length() {
+    let mut s = path_fight(Arc::new(WallPath));
+    s.combatant_mut(g(HERO1))
+        .unwrap()
+        .resources
+        .entries
+        .iter_mut()
+        .find(|r| r.name == "Movement")
+        .unwrap()
+        .amount = 6.0;
+    let action = s.ai_turn(g(HERO1)).unwrap();
+    let AiAction::MovedOnly { moved, path, .. } = action else {
+        panic!("cannot attack through wall")
+    };
+    assert_eq!(
+        path,
+        vec![[0.0, 0.0, 0.0], [0.0, 0.0, 4.0], [2.0, 0.0, 4.0]]
+    );
+    assert_eq!(s.entity(g(HERO1)).unwrap().position, [2.0, 0.0, 4.0]);
+    assert_eq!(moved, 6.0);
+    assert!(distance(path[0], *path.last().unwrap()) < moved);
+    assert_eq!(
+        s.combatant(g(HERO1)).unwrap().resources.get("Movement"),
+        0.0
+    );
+    assert_eq!(
+        s.combatant(g(HERO1)).unwrap().resources.get("ActionPoint"),
+        1.0
+    );
+}
+
+#[test]
+fn ai_stops_on_path_in_attack_range() {
+    let mut s = path_fight(Arc::new(WallPath));
+    s.combatant_mut(g(HERO1))
+        .unwrap()
+        .resources
+        .entries
+        .iter_mut()
+        .find(|r| r.name == "Movement")
+        .unwrap()
+        .amount = 20.0;
+    let action = s.ai_turn(g(HERO1)).unwrap();
+    let AiAction::Cast { moved, path, .. } = action else {
+        panic!("attack after detour")
+    };
+    let end = *path.last().unwrap();
+    assert_eq!(end[0], 5.0);
+    assert!((end[2] - 1.45).abs() < 1e-4);
+    assert!((moved - 11.55).abs() < 1e-4);
+    assert!(
+        (s.combatant(g(HERO1)).unwrap().resources.get("Movement") - (20.0 - moved)).abs() < 1e-4
+    );
+}
+
+#[test]
+fn ai_without_a_path_stays_put_and_ends_turn_but_can_attack_in_range() {
+    let mut s = path_fight(Arc::new(NoPath));
+    let from = s.entity(g(HERO1)).unwrap().position;
+    let action = s.ai_turn(g(HERO1)).unwrap();
+    assert!(matches!(action, AiAction::MovedOnly { moved: 0.0, .. }));
+    assert!(action.path().is_empty());
+    assert_eq!(s.entity(g(HERO1)).unwrap().position, from);
+    assert_eq!(
+        s.combatant(g(HERO1)).unwrap().resources.get("Movement"),
+        9.0
+    );
+    assert!(!s.combat_of(g(HERO1)).unwrap().is_active(g(HERO1)));
+
+    let mut s = path_fight(Arc::new(NoPath));
+    s.entities.get_mut(g(HERO1)).unwrap().position = [4.0, 0.0, 0.0];
+    assert!(matches!(
+        s.ai_turn(g(HERO1)).unwrap(),
+        AiAction::Cast { moved: 0.0, .. }
+    ));
+}

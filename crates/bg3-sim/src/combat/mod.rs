@@ -20,6 +20,7 @@ pub mod ai;
 pub mod data;
 pub mod game;
 pub mod notice;
+pub mod path;
 
 #[cfg(test)]
 mod tests;
@@ -33,6 +34,7 @@ use bg3_rules::natives::RollEvent;
 pub use action::{CastReport, CombatError};
 pub use ai::AiAction;
 pub use data::{CombatData, Factions};
+pub use path::Pathfinder;
 
 use crate::entity::EntityKind;
 use crate::events::SimValue;
@@ -282,6 +284,7 @@ pub enum CombatEvent {
 /// All combats and combatants.
 #[derive(Clone, Debug, Default)]
 pub struct CombatState {
+    pub(crate) pathfinder: Option<std::sync::Arc<dyn Pathfinder>>,
     pub combats: Vec<Combat>,
     pub combatants: HashMap<Guid, Combatant>,
     next_id: u32,

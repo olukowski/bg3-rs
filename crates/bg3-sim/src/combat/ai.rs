@@ -16,12 +16,25 @@ pub enum AiAction {
         spell: String,
         target: Guid,
         moved: f32,
+        /// Walked BG3-space polyline, including both endpoints; empty without movement.
+        path: Vec<[f32; 3]>,
     },
     MovedOnly {
         target: Guid,
         moved: f32,
+        /// Walked BG3-space polyline, including both endpoints; empty without movement.
+        path: Vec<[f32; 3]>,
     },
     Nothing,
+}
+
+impl AiAction {
+    pub fn path(&self) -> &[[f32; 3]] {
+        match self {
+            Self::Cast { path, .. } | Self::MovedOnly { path, .. } => path,
+            Self::Nothing => &[],
+        }
+    }
 }
 
 impl Sim {
@@ -98,6 +111,9 @@ impl Sim {
         let movement = self
             .combatant(who)
             .map_or(0.0, |c| c.resources.get("Movement"));
+        if self.combat.pathfinder.is_some() {
+            return self.ai_act_on_path(who, target, dist, movement, &attacks);
+        }
         // Without moving: the first attack in range. Else: walk just far enough for the
         // first attack that can then reach.
         let pick = attacks
@@ -113,32 +129,43 @@ impl Sim {
         let Some((spell, step)) = pick else {
             // Nothing reaches: close in as far as possible.
             let step = movement.min((dist - 1.0).max(0.0));
-            if step > 0.0 {
-                self.ai_step_towards(who, target, step)?;
-            }
+            let path = if step > 0.0 {
+                self.ai_step_towards(who, target, step)?
+            } else {
+                Vec::new()
+            };
             return Ok(AiAction::MovedOnly {
                 target,
                 moved: step,
+                path,
             });
         };
-        if step > 0.0 {
-            self.ai_step_towards(who, target, step)?;
-        }
+        let path = if step > 0.0 {
+            self.ai_step_towards(who, target, step)?
+        } else {
+            Vec::new()
+        };
         self.combat_cast(who, &spell, target)?;
         Ok(AiAction::Cast {
             spell,
             target,
             moved: step,
+            path,
         })
     }
 
-    /// Move `step` metres in a straight line towards `target`.
-    fn ai_step_towards(&mut self, who: Guid, target: Guid, step: f32) -> Result<(), CombatError> {
+    /// Move `step` metres towards `target` (legacy straight-line fallback).
+    fn ai_step_towards(
+        &mut self,
+        who: Guid,
+        target: Guid,
+        step: f32,
+    ) -> Result<Vec<[f32; 3]>, CombatError> {
         let (Some(a), Some(b)) = (
             self.entity(who).map(|e| e.position),
             self.entity(target).map(|e| e.position),
         ) else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let d = distance(a, b);
         let k = if d > 0.0 { (step / d).min(1.0) } else { 0.0 };
@@ -147,7 +174,78 @@ impl Sim {
             a[1] + (b[1] - a[1]) * k,
             a[2] + (b[2] - a[2]) * k,
         ];
-        self.combat_move(who, step, Some(to))
+        self.combat_move(who, step, Some(to))?;
+        Ok(vec![a, to])
+    }
+
+    fn ai_act_on_path(
+        &mut self,
+        who: Guid,
+        target: Guid,
+        dist: f32,
+        movement: f32,
+        attacks: &[(String, f32)],
+    ) -> Result<AiAction, CombatError> {
+        // Already in range: an unreachable target does not prevent an attack.
+        if let Some((spell, _)) = attacks.iter().find(|(_, r)| dist <= *r) {
+            self.combat_cast(who, spell, target)?;
+            return Ok(AiAction::Cast {
+                spell: spell.clone(),
+                target,
+                moved: 0.0,
+                path: Vec::new(),
+            });
+        }
+        let from = self.entity(who).expect("combatant").position;
+        let to = self.entity(target).expect("hostile").position;
+        // No bound radius is loaded into the sim yet. 0.5 m is an approximation, not
+        // the template's actual AI footprint (in particular for creatures such as imps).
+        let route = self
+            .combat
+            .pathfinder
+            .as_ref()
+            .and_then(|p| p.find_path(from, to, super::path::APPROXIMATE_RADIUS));
+        let Some(route) = route.filter(|p| p.len() >= 2 && p.first() == Some(&from)) else {
+            return Ok(AiAction::MovedOnly {
+                target,
+                moved: 0.0,
+                path: Vec::new(),
+            });
+        };
+        // Retain the melee-first preference and the 5 cm margin inside attack range.
+        // Feasibility is measured along the route, including detours around obstacles.
+        let pick = attacks.iter().find_map(|(spell, range)| {
+            let (path, moved, reached) =
+                super::path::walk_path(&route, movement, to, (range - 0.05).max(0.0));
+            // At the budget limit the old policy accepts reaching the actual range
+            // even if the full 5 cm safety margin cannot be walked.
+            let in_range = path.last().is_some_and(|&p| distance(p, to) <= *range);
+            (reached || in_range).then_some((spell, path, moved))
+        });
+        let (spell, path, moved) = if let Some((spell, path, moved)) = pick {
+            (Some(spell), path, moved)
+        } else {
+            let (path, moved, _) = super::path::walk_path(&route, movement, to, 1.0);
+            (None, path, moved)
+        };
+        if let Some(&end) = path.last() {
+            self.combat_move(who, moved, Some(end))?;
+        }
+        if let Some(spell) = spell {
+            self.combat_cast(who, spell, target)?;
+            Ok(AiAction::Cast {
+                spell: spell.clone(),
+                target,
+                moved,
+                path,
+            })
+        } else {
+            Ok(AiAction::MovedOnly {
+                target,
+                moved,
+                path,
+            })
+        }
     }
 
     /// Let the AI play every non-player turn until a player-controlled character is up or
