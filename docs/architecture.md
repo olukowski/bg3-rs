@@ -42,7 +42,7 @@
 | `bg3-story` | Compiled Osiris story loader and pseudo-source dump | done |
 | `bg3-osiris` | Osiris VM, plus trace parser and replay | matches the real game on the recorded opening |
 | `bg3-dialog` | Dialog model, resources, headless runner; game state via the `DialogWorld` trait | reproduces the recorded Nautiloid dialogs (on a memory world and on `bg3-sim`) |
-| `bg3-sim` | Headless world state and the engine side of Osiris: entities, flags, tags, statuses, timers, character sheets, the dialog manager; `Host` impl; `DialogWorld` and `RulesContext` impls; `Game` (VM + sim, ticked, player input, notifications); trace validation (`sim-replay`) | answers 88% of the opening's engine queries, all graded answers equal the game's; runs the opening's six dialogs itself, event for event |
+| `bg3-sim` | Headless world state and the engine side of Osiris: entities, flags, tags, statuses, timers, character sheets, the dialog manager, turn-based combat; `Host` impl; `DialogWorld` and `RulesContext` impls; `Game` (VM + sim, ticked, player input, notifications); trace validation (`sim-replay`) | answers 88% of the opening's engine queries, all graded answers equal the game's; runs the opening's six dialogs itself, event for event; runs the Nautiloid imp fight with the story (combat events in the order of a recorded fight) |
 | `bg3-gr2` | Granny GR2 reader with BitKnit2 decompression | meshes, skeletons and animations (all 228,541 decode) |
 | `bg3-vt` | Granite virtual textures | done |
 | `bg3-material` | Shader-graph parameters, material instances, texture slot/channel mapping | first approximation |
@@ -52,7 +52,7 @@
 | `bg3x` | Command-line inspector over all of the above | |
 | `bg3-viewer` | Bevy level viewer; AI grid overlay and click-to-move | |
 
-Planned: combat flow and UI. See the [roadmap](roadmap.md).
+Planned: combat UI and the real AI. See the [roadmap](roadmap.md).
 
 ## The simulation core: who depends on whom
 

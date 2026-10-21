@@ -18,6 +18,9 @@
 //!   story events (`DialogStarted`, `FlagSet`, `RollResult`, …) and [`Notification`]s.
 //! * [`rules`]: [`bg3_rules::RulesContext`] for the sim, over the characters' [`CharacterSheet`]s
 //!   ([`character`]).
+//! * [`combat`]: turn-based combat: entering combat, initiative, the turn order, action
+//!   resources, attacks and spells through the rules engine, death, the story's combat
+//!   events, an approximate AI (`docs/research/combat.md`).
 //! * [`replay`]: runs a captured trace with the sim answering what it can, and reports how
 //!   much of the story's behaviour the sim reproduces.
 //! * [`driver`]: deliver the sim's events to the story without a trace; [`Game`] owns the

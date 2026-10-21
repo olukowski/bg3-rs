@@ -76,7 +76,9 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `rules eval "<expr>" --kind condition|functor|roll|expr`, `rules cast <spell>`, `rules survey`
   (stats expression languages, see `docs/formats/stats-expressions.md`),
   `nav [LEVEL] [--regions] [--subgrids] [--at x,y,z] [--path=x,y,z --path=x,y,z]` (AI grid summary,
-  tile probe and path finding, see `docs/formats/navcloud.md`).
+  tile probe and path finding, see `docs/formats/navcloud.md`),
+  `combat [LEVEL] --party A,B [--target X] [--seed N] [--events]` (a fight on bg3-sim with the
+  story, every side on the approximate AI; prints the combat log, see `docs/research/combat.md`).
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
   level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),

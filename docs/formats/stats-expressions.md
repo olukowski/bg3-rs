@@ -357,7 +357,10 @@ from the `ProficiencyBonusScaling` level map, so it's a query, not a formula.
 - **`context::RulesContext`:** the game-state interface the simulation implements:
   - Required: identity, ability scores, level, proficiency, AC, HP, and `set_hp`.
   - Defaulted: save and skill proficiencies, expertise, skill bonuses, spellcasting ability,
-    weapons, resistances, attack and save advantage, critical threshold, level maps, relations,
+    weapons (`weapon` by hand, `attack_weapon` by attack type for separate melee and ranged
+    slots), the unarmed attack ability (`UnarmedAttackAbility`, used by unarmed attacks and
+    `UnarmedMeleeAbilityModifier`), resistances, attack and save advantage, critical
+    threshold, level maps, relations,
     tags, statuses, passives, generic `property` lookup for scripts, and the status mutations.
   - `testworld::TestWorld` is a small in-memory implementation; `bg3_sim::Sim` implements it
     over the game's entities (`crates/bg3-sim/src/rules.rs`, characters' stats from their
@@ -372,7 +375,10 @@ from the `ProficiencyBonusScaling` level map, so it's a query, not a formula.
 - **`exec::Executor`:** runs functors and single-target spell casts. The cast does
   `TargetConditions`, then the default `SpellRoll` group, then `SpellSuccess`/`SpellFail`, then
   `SpellProperties`, in the `TARGET`/`AOE` pass. It writes a readable log, and reports what it
-  skips (ground pass, other text-key groups, unimplemented functors).
+  skips (ground pass, other text-key groups, unimplemented functors). `events` has the same as
+  data (`ExecEvent`: rolls with their breakdown, damage before and after resistances, statuses,
+  healing); `bg3-sim`'s combat turns them into notifications and story events
+  (`docs/research/combat.md`).
 - **`bg3x rules eval "<text>" --kind condition|functor|roll|expr`** (alias `e`) evaluates against
   two sample combatants. `bg3x rules cast <Spell>` runs a spell between them; `bg3x rules survey`
   prints the coverage table.
