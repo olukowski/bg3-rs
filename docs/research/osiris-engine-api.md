@@ -195,7 +195,9 @@ without a stats entry.
 `SetFaction`.
 
 **For other systems:** `bg3_sim::StoryState` (flags, tags, existence, kind, rendering, names);
-`Sim` implements it. Writes queue the same events as the Osiris calls.
+`Sim` implements it. Writes queue the same events as the Osiris calls. `bg3_sim::driver` runs the
+story on the sim without a trace: `Sim::advance` moves the clock, `driver::run_events` delivers
+the queued events one at a time.
 
 ## Validation: `sim-replay`
 

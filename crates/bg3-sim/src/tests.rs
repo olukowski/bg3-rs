@@ -1,10 +1,9 @@
 //! Install-free tests on synthetic data.
 
+use bg3_osiris::Vm;
 use bg3_osiris::builder::*;
-use bg3_osiris::{Value, Vm};
 
 use crate::entity::EntityKind;
-use crate::events::SimValue;
 use crate::flags::{FlagDef, FlagError, FlagUsage};
 use crate::guid::Guid;
 use crate::host::{CALLS, QUERIES, SimHost, implements};
@@ -283,20 +282,48 @@ fn story_runs_on_the_sim() {
     let seen = vm.db("DB_SeenAtOnce", 1).unwrap();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0][0].as_int(), Some(1), "IsTagged sees SetTag at once");
-    for e in s.take_events() {
-        let args: Vec<Value> = e
-            .args
-            .iter()
-            .map(|a| match a {
-                SimValue::Guid(t) => vm.guid(t),
-                SimValue::Str(t) => vm.string(t),
-                SimValue::Int(i) => Value::int(*i),
-                SimValue::Real(r) => Value::real(*r),
-            })
-            .collect();
-        vm.event(&mut SimHost::new(&mut s), &e.name, &args);
-    }
+    assert_eq!(crate::driver::run_events(&mut vm, &mut s, 10), 1);
     let rows = vm.db("DB_Tagged", 2).unwrap();
     assert_eq!(rows.len(), 1, "TAG_A was a template tag: no event");
     assert_eq!(vm.text(&rows[0][1]), Some(TAG_B));
+}
+
+/// A story timer runs on the sim clock and comes back as `ObjectTimerFinished`.
+#[test]
+fn story_timer_runs_on_the_clock() {
+    let mut b = StoryBuilder::new();
+    b.event("Start", &[]);
+    b.event("ObjectTimerFinished", &[GUIDSTRING, STRING]);
+    b.call("ObjectTimerLaunch", &[GUIDSTRING, STRING, INT, INT]);
+    b.db("DB_Done", &[GUIDSTRING, STRING]);
+    let goal = b.goal("Main", &[]);
+    let hero = format!("S_Hero_{HERO}");
+    b.rule(
+        goal,
+        Rule::when("Start", []).then(
+            "ObjectTimerLaunch",
+            [guid(HERO), s("Wake"), int(1000), int(1)],
+        ),
+    );
+    b.rule(
+        goal,
+        Rule::when("ObjectTimerFinished", [v("X"), v("N")]).then("DB_Done", [v("X"), v("N")]),
+    );
+    let story = b.build();
+    let mut vm = Vm::new(&story);
+    let mut s = sim();
+    vm.init_game(&mut SimHost::new(&mut s));
+    vm.event(&mut SimHost::new(&mut s), "Start", &[]);
+    s.advance(0.5);
+    assert_eq!(crate::driver::run_events(&mut vm, &mut s, 10), 0);
+    s.advance(0.6);
+    assert_eq!(crate::driver::run_events(&mut vm, &mut s, 10), 1);
+    let rows = vm.db("DB_Done", 2).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        vm.text(&rows[0][0]),
+        Some(hero.as_str()),
+        "rendered with its name"
+    );
+    assert_eq!(vm.text(&rows[0][1]), Some("Wake"));
 }

@@ -16,11 +16,13 @@
 //!   dialogue runner).
 //! * [`replay`]: runs a captured trace with the sim answering what it can, and reports how
 //!   much of the story's behaviour the sim reproduces.
+//! * [`driver`]: deliver the sim's events to the story without a trace.
 //! * [`load`]: [`GameData`] from the install.
 //!
 //! No Bevy, no I/O besides [`load`]; the same inputs give the same results.
 
 pub mod api;
+pub mod driver;
 pub mod entity;
 pub mod events;
 pub mod flags;
