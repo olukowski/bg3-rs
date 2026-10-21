@@ -217,7 +217,7 @@ fn to_image(t: Texture, srgb: bool) -> anyhow::Result<Image> {
 
 /// Emissive scale: glow colours are ~1, Bevy's default exposure needs a few hundred nits to
 /// read as glowing. Tuned by eye; the real value depends on BG3's exposure/tonemapping.
-const GLOW_NITS: f32 = 400.0;
+const GLOW_NITS: f32 = 150.0;
 
 /// Neutral stand-in for surfaces whose maps live in virtual textures.
 const VT_GREY: Color = Color::srgb(0.45, 0.45, 0.45);
@@ -268,7 +268,10 @@ pub fn upload(
             },
             occlusion_texture: metallic_roughness_texture.clone(),
             metallic_roughness_texture,
+            // Green points along +v, as does the mirrored GR2 bitangent: no Y flip. Verified by
+            // `cargo run -p bg3x --example normal_convention`.
             normal_map_texture: get(plan.normal),
+            flip_normal_map_y: false,
             emissive,
             emissive_texture,
             unlit: m.unlit,

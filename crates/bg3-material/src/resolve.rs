@@ -73,8 +73,11 @@ impl ResolvedMaterial {
             .and_then(rgb)
     }
 
-    /// Glow colour × strength for the glow map, linear RGB. First approximation: the pulse
-    /// and gradient animations of the `*_GM_*` graphs are ignored and the peak value is used.
+    /// Glow colour × strength for the glow map, linear RGB.
+    ///
+    /// First approximation: the graphs' pulse/gradient animations (`MinGlow`/`MaxGlow`,
+    /// `PulseSpeed`, …) are ignored, and the multiplier is clamped to 10 because a few
+    /// materials use values in the hundreds that only make sense with BG3's exposure.
     pub fn glow(&self) -> Option<[f32; 3]> {
         self.texture(Slot::Emissive)?;
         let color = ["GlowColour", "GlowColor", "GlowMap_ColorMult"]
@@ -86,10 +89,7 @@ impl ResolvedMaterial {
             .iter()
             .find_map(|n| self.scalar(n))
             .unwrap_or(1.0)
-            * ["MaxGlow", "GlowMax", "GlowMapPulse_MaxGlow"]
-                .iter()
-                .find_map(|n| self.scalar(n))
-                .unwrap_or(1.0);
+            .clamp(0.0, 10.0);
         Some(color.map(|c| c * strength))
     }
 }
