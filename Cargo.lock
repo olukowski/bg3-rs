@@ -2138,6 +2138,7 @@ dependencies = [
  "bg3-loca",
  "bg3-lsf",
  "bg3-material",
+ "bg3-osiris",
  "bg3-pak",
  "bg3-stats",
  "bg3-story",

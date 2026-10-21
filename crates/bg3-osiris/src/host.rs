@@ -12,6 +12,7 @@ use crate::value::{Data, Root, StringTable, TypeId, TypeTable, Value, types};
 pub struct HostCtx<'a> {
     pub(crate) strings: &'a mut StringTable,
     pub(crate) types: &'a TypeTable,
+    pub(crate) prog: &'a crate::program::Program,
 }
 
 impl HostCtx<'_> {

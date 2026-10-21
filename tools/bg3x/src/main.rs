@@ -96,6 +96,23 @@ enum Command {
         #[arg(short, long)]
         verbose: bool,
     },
+    /// Replay a libOsiris runtime log (see docs/research/osiris-runtime-log.md) through the VM
+    /// and compare: prints match rates and the first divergence.
+    OsirisReplay {
+        /// The log (default: .cache/traces/full-nautiloid.log, else snapshot-early.log).
+        trace: Option<PathBuf>,
+        /// Pak with the story the game ran.
+        #[arg(long, default_value = "GustavX")]
+        pak: String,
+        #[arg(long, default_value = "Mods/GustavX/Story/story.div.osi")]
+        path: String,
+        /// Also write the VM's own log, in libOsiris' format, to this file.
+        #[arg(long)]
+        vm_log: Option<PathBuf>,
+        /// Print how many records of each kind the log contains.
+        #[arg(long)]
+        kinds: bool,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -155,6 +172,13 @@ fn main() -> Result<()> {
             summary,
         } => story(&pak, &path, goal.as_deref(), summary),
         Command::Find { value, prefix } => find(&value, &prefix),
+        Command::OsirisReplay {
+            trace,
+            pak,
+            path,
+            vm_log,
+            kinds,
+        } => osiris_replay(trace, &pak, &path, vm_log, kinds),
         Command::Materials { level, verbose } => materials::survey(&level, verbose),
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),
@@ -385,6 +409,56 @@ fn story(pak: &str, path: &str, goal: Option<&str>, summary: bool) -> Result<()>
     } else {
         write!(out, "{story}")?;
     }
+    Ok(())
+}
+
+fn osiris_replay(
+    trace: Option<PathBuf>,
+    pak: &str,
+    path: &str,
+    vm_log: Option<PathBuf>,
+    kinds: bool,
+) -> Result<()> {
+    let trace = trace.unwrap_or_else(|| {
+        let full = PathBuf::from(".cache/traces/full-nautiloid.log");
+        if full.exists() {
+            full
+        } else {
+            PathBuf::from(".cache/traces/snapshot-early.log")
+        }
+    });
+    let log = std::fs::read(&trace).with_context(|| trace.display().to_string())?;
+    let log = String::from_utf8_lossy(&log).into_owned();
+    if kinds {
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for l in bg3_osiris::trace::parse_log(&log) {
+            if let bg3_osiris::trace::Record::Other(text) = &l.record {
+                println!("unparsed line {}: {text}", l.line);
+            }
+            let k = format!("{:?}", l.record);
+            let k = k.split([' ', '(', '{']).next().unwrap_or("").to_owned();
+            *counts.entry(k).or_default() += 1;
+        }
+        for (k, n) in counts {
+            println!("{n:>9}  {k}");
+        }
+    }
+    let data = read_file(pak, path)?;
+    eprintln!("replaying {} against {pak}:{path}", trace.display());
+    // Rule chains recurse deeply; run on a big stack.
+    let keep = vm_log.is_some();
+    let report = std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(move || -> Result<bg3_osiris::replay::Report> {
+            let story = bg3_story::Story::parse(&data)?;
+            Ok(bg3_osiris::replay::replay_with(&story, &log, keep))
+        })?
+        .join()
+        .map_err(|_| anyhow::anyhow!("replay thread panicked"))??;
+    if let (Some(p), Some(t)) = (&vm_log, &report.vm_log) {
+        std::fs::write(p, t).with_context(|| p.display().to_string())?;
+    }
+    print!("{}", report.summary());
     Ok(())
 }
 

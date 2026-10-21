@@ -6,8 +6,11 @@ point can be checked again. Data model: `crates/bg3-story`; file format:
 `docs/formats/osiris-story.md`.
 
 Status: everything below is confirmed **statically** (read in the binary) unless marked
-*inferred*. Nothing has been checked against a runtime trace of the game yet; see
-[Open questions](#open-questions) and [Runtime trace plan](#runtime-trace-plan).
+*inferred*, and has been checked against two runtime logs of the game (a new campaign game
+from `InitGame` through character creation into the Nautiloid; 12 381 events): `bg3-osiris`
+replays them with every fact change, rule firing, engine call, query and goal section
+identical, in order (test `replay_trace`, `bg3x osiris-replay`). Log format and findings:
+`docs/research/osiris-runtime-log.md`.
 
 ## Values and strings
 
@@ -175,18 +178,23 @@ and depth-first.
 
 `CReteQuery::Valid(token, adaptor)`:
 1. `CReteAdaptor::pParameterList`: per declared parameter — a mapped variable gives its token
-   value if VALID, else an unset value of the declared type; a constant column gives the
-   constant; an unmapped, constant-less column gives an unset value. Declared out-parameters
-   are flagged and passed to the callee as typed empty arguments.
+   value if VALID, else an unset value typed with the declared type's **root** (runtime log:
+   `[out] (GUIDSTRING)` for a `TAG` parameter); a constant column gives the constant; an
+   unmapped, constant-less column gives an unset value of type 0 (`[out] (unknown)`). Declared
+   out-parameters are flagged and passed to the callee as typed empty arguments.
 2. `_ExecuteQuery`:
    - engine query (`CReteDIVQuery`): callback with the handle; on failure the out arguments are
      cleared;
    - internal (`CReteInternalQuery` → `InternalQuery(id)`, id = `CFourKey` word 0);
    - user query (`CReteOsiQuery`): look up `<name>__DEF__` (an Event-type start node), `Add`
-     the arguments, succeed iff `g_OsiUserQueriesExecuted` grew; the counter is restored
+     the arguments (as an engine argument list: alias types are reduced to their root, so the
+     QRY rules see a GUIDSTRING where the caller had a `TAG`; runtime log), succeed iff `g_OsiUserQueriesExecuted` grew; the counter is restored
      afterwards. The QRY rules' actions run **during** the query. (No user query in BG3 has
      out-parameters.)
 3. An out-parameter that was already bound must come back equal (`operator==`).
+   The engine's returned values keep their own type id (a GUIDSTRING answer for a `TAG`
+   out-parameter stays GUIDSTRING; runtime log). An engine query may also succeed and leave
+   an out-parameter unset (`GetHostCharacter` before a host exists).
 4. `CReteAdaptor::UpdateToken`: per returned column — constant columns must equal the
    constant; a variable whose token value has type 0 (from `undefToken`) takes the result,
    others must be equal.
@@ -231,8 +239,15 @@ started, bits 5–7 merge status. Compiled stories: root goals 0x00 (OR), the re
 
 Maps the handle to its function; if any argument has type 0 or 0x7f the event is ignored
 ("type of parameter unknown"); a function without a start node is ignored ("no rules defined
-using it"); otherwise `CReteStartNode::Add(params)`. `bg3-osiris` identifies events by name and
-arity instead of handle and converts arguments to the declared parameter types (same root).
+using it"); otherwise `CReteStartNode::Add(params)`. Arguments keep the engine's type id: a
+GUIDSTRING passed for a `CHARACTER` parameter stays GUIDSTRING, and so do the rule variables
+and facts made from it (runtime log). `bg3-osiris` identifies events by name and arity instead
+of handle; it converts an argument only if its root differs from the declared one.
+
+Events are **never delivered re-entrantly**: in the captured logs every `COsiris::Event`
+starts at nesting 0, after the previous event has been evaluated completely, even though the
+engine raises many events from inside calls (`SetFlag` → `FlagSet`, `SetTag` → `TagSet`). The
+engine queues them.
 
 ## bg3-osiris specifics
 
@@ -246,6 +261,20 @@ arity instead of handle and converts arguments to the declared parameter types (
 - A rule-nesting limit (default 2000) turns runaway recursion into an error instead of a stack
   overflow; libOsiris has no limit.
 - `builder` compiles small rules into the same network shapes for tests.
+- Runtime log: `Vm::set_logging(true)` records what libOsiris would write to its log
+  (`trace::Record`; `trace::render_log` prints the original format, `Vm::take_log` fetches
+  it). `replay::replay` runs a captured log through the VM and compares.
+
+### Replay of the game's runtime log (test `replay_trace`, `bg3x osiris-replay`)
+
+GustavX story, `full-nautiloid.log` (new game into the Nautiloid): 12 382 segments (InitGame +
+12 381 events), all identical: 15 722 fact records, 8 434 rule firings, 1 115 engine calls,
+16 511 queries, 3 198 PROC/`Sys*` calls, 343 goal records; 1 133 databases with identical fact
+histories; printed type annotations identical; 0 VM errors; ~0.4 s. Before the fixes below,
+the semantic records already matched; the differences were in runtime type ids and log
+ordering: event arguments and engine query results were retagged to the declared alias type,
+unbound out-parameters carried the declared instead of the root type, user-query arguments
+kept alias types, and the EXIT `END` line was written before the subgoals woke.
 
 ### Boot of `Mods/GustavDev/Story/story.div.osi` (test `boot_gustav_dev`, mock host)
 
@@ -258,27 +287,39 @@ fired, 130 calls (20 distinct), 53 user queries, max nesting 8, still 0 errors.
 
 ## Open questions
 
-Need a runtime trace of the real game:
+Answered by the runtime logs (details in `docs/research/osiris-runtime-log.md`):
 
-1. **Engine event scheduling.** Are events raised by the engine while Osiris is running (e.g.
-   from inside a call) delivered synchronously (re-entering the VM) or queued until the current
-   evaluation returns? Which events are queued per frame, and in what order?
-2. **Startup sequence.** Which events follow `InitGame` for a new game (`GameModeStarted`,
-   `LevelLoaded`, `LevelGameplayStarted`, `LevelGameplayReady`, `RegionStarted`, …), with which
-   arguments, in which order, and how they interleave with the engine's own setup. What runs
-   on loading a save (`SavegameLoaded`; is `InitGame` skipped?).
-3. **Engine query answers** for the queries hit during boot (`IsCharacter`, `GetFlag`, …):
-   needed to replay a trace faithfully.
-4. **Unresolved engine functions.** What a call/query does when the engine has no handler
+- ~~Engine event scheduling~~: queued. No event is ever delivered inside a rule firing, query
+  or goal section; each starts at nesting 0 after the previous one finished. *Which* events
+  the engine batches per frame, and their order, is engine behaviour, outside the VM.
+- ~~Startup sequence (new game)~~: `InitGame` before any event; then `FlagSet(…)`,
+  `GameModeStarted("Campaign", 0, 0)`, entity events, `LevelLoaded("SYS_CC_I")`,
+  `CharacterCreationStarted()`, `LevelGameplayStarted("SYS_CC_I", 0)`,
+  `LevelGameplayReady("SYS_CC_I", 0)`, …, `CharacterCreationFinished()`,
+  `LevelUnloading("SYS_CC_I")`, `LevelLoaded("TUT_Avernus_C")`,
+  `LevelGameplayStarted("TUT_Avernus_C", 0)`, `LevelGameplayReady("TUT_Avernus_C", 0)`. The
+  game runs the **GustavX** story (`Mods/GustavX/Story/story.div.osi`), not GustavDev.
+- ~~Engine query answers during boot~~: in the log (`Query returns`), 13 543 of them.
+- ~~Function key includes the arity~~: yes; `SetFlag/3` (PROC) and `SetFlag/4` (call) coexist.
+- ~~Runtime nesting depth~~: up to 100 (`g_RuleNesting`) in the captures, from a counting
+  recursion; the default limit of 2000 is far above it.
+
+Still open:
+
+1. **Save loading.** What runs on loading a save (`SavegameLoaded`; is `InitGame` skipped?).
+   Needs a trace that loads a save.
+2. **Unresolved engine functions.** What a call/query does when the engine has no handler
    (`COsiris::_GetDIVHandles` failure paths).
-5. Whether `COsiFunctionMan::Key` includes the arity (we key by name *and* arity).
-6. `CReteRelCondition::Del` resolving to `CReteChildNode::Del` (inferred; a vtable read would
+3. `CReteRelCondition::Del` resolving to `CReteChildNode::Del` (inferred; a vtable read would
    settle it statically).
-7. Saved-game stories: live facts, goal flags and whether rule variables / waiting tokens are
+4. Saved-game stories: live facts, goal flags and whether rule variables / waiting tokens are
    persisted; the `< 1.15` `DB_InRegion` load quirk.
-8. How deep real stories nest at runtime (to size the nesting limit / stack).
 
 ## Runtime trace plan
+
+Status: step 1 (Osiris' own log) is done and step 3 is `replay_trace`; the log carries enough
+(depth, rule line, values, query results) that the Frida tracer (step 2) is not needed for
+the VM. The original plan follows.
 
 Goal: a JSONL reference trace of Osiris activity in the original game, kept in
 `.cache/traces/` (never committed), replayed by a `bg3-osiris` test with a replay host that

@@ -875,3 +875,222 @@ fn zero_arity_databases_store_nothing() {
     assert!(db.insert(&[]));
     assert_eq!(db.len(), 0);
 }
+
+// ---- Findings from replaying a runtime log of the game (docs/research/osiris-runtime-log.md) ----
+
+#[test]
+fn engine_values_keep_their_type_id() {
+    // A GUIDSTRING event argument for a CHARACTER parameter is not retagged; neither is a
+    // GUIDSTRING answer for a TAG out-parameter. The log prints both without the alias prefix.
+    let mut b = StoryBuilder::new();
+    let character = b.alias("CHARACTER", GUIDSTRING);
+    let tag = b.alias("TAG", GUIDSTRING);
+    b.event("Hello", &[character]);
+    b.query("GetTag", &[character, tag], &[false, true]);
+    b.db("DB_Seen", &[character, tag]);
+    let g = b.goal("Main", &[]);
+    b.rule(
+        g,
+        Rule::when("Hello", [v("C")])
+            .and("GetTag", [v("C"), v("T")])
+            .then("DB_Seen", [v("C"), v("T")]),
+    );
+    let host = RecordingHost::with_queries(|ctx, _, args, _| {
+        args[1] = ctx.guid("TAG_00000000-0000-0000-0000-000000000002");
+        Some(true)
+    });
+    let (mut vm, mut h) = boot_with(b, host);
+    let c = vm.guid("S_A_00000000-0000-0000-0000-000000000001");
+    vm.event(&mut h, "Hello", &[c]);
+    let rows = vm.db("DB_Seen", 2).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0].ty, GUIDSTRING);
+    assert_eq!(rows[0][1].ty, GUIDSTRING);
+    no_errors(&vm);
+}
+
+#[test]
+fn unset_out_parameters_carry_the_root_type() {
+    // `exec [DIV query] DataGetReallyTagAt( …, [out] (GUIDSTRING) )` for a TAG out-parameter.
+    let mut b = StoryBuilder::new();
+    let amount = b.alias("AMOUNT", INT);
+    b.event("Test", &[]);
+    b.query("GetAmount", &[amount], &[true]);
+    b.call("Log", &[amount]);
+    let g = b.goal("Main", &[]);
+    b.rule(
+        g,
+        Rule::when("Test", [])
+            .and("GetAmount", [v("A")])
+            .then("Log", [v("A")]),
+    );
+    let host = RecordingHost::with_queries(|_, _, args, _| {
+        assert_eq!(args[0].ty, INT, "out-parameter typed with the root type");
+        assert!(!args[0].is_valid());
+        args[0] = Value::int(3);
+        Some(true)
+    });
+    let (mut vm, mut h) = boot_with(b, host);
+    vm.set_logging(true);
+    vm.event(&mut h, "Test", &[]);
+    assert_eq!(calls(&h), ["Log(3)"]);
+    let log = vm.take_log();
+    assert!(
+        log.iter()
+            .any(|r| r.to_string() == "exec [DIV query] GetAmount( [out] (INTEGER) )"),
+        "{log:#?}"
+    );
+    no_errors(&vm);
+}
+
+#[test]
+fn user_query_arguments_arrive_with_root_types() {
+    // The QRY rules receive the arguments as an engine argument list: a CHARACTER value
+    // becomes a GUIDSTRING inside the query (seen as `Rule variables: S_…` without prefix).
+    let mut b = StoryBuilder::new();
+    let character = b.alias("CHARACTER", GUIDSTRING);
+    b.event("Test", &[]);
+    b.user_query("QRY_Check", &[character]);
+    b.db("DB_Who", &[character]);
+    b.db("DB_Inside", &[character]);
+    let g = b.goal("Main", &[]);
+    b.init(
+        g,
+        [Act::call(
+            "DB_Who",
+            [typed(
+                character,
+                Lit::Guid("S_A_00000000-0000-0000-0000-000000000001".into()),
+            )],
+        )],
+    );
+    b.query_rule(
+        g,
+        Rule::when("QRY_Check", [v("C")]).then("DB_Inside", [v("C")]),
+    );
+    b.rule(
+        g,
+        Rule::when("Test", [])
+            .and("DB_Who", [v("C")])
+            .and("QRY_Check", [v("C")])
+            .then("DB_Inside", [v("C")]),
+    );
+    let (mut vm, mut h) = boot(b);
+    vm.event(&mut h, "Test", &[]);
+    let rows = vm.db("DB_Inside", 1).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0].ty, GUIDSTRING);
+    assert_eq!(vm.db("DB_Who", 1).unwrap()[0][0].ty, character);
+    no_errors(&vm);
+}
+
+#[test]
+fn runtime_log_matches_libosiris_order() {
+    let mut b = StoryBuilder::new();
+    b.event("Go", &[]);
+    b.db("DB_A", &[INT]);
+    b.query("Fails", &[INT], &[true]);
+    b.call("Log", &[INT]);
+    let main = b.goal("Main", &[]);
+    let sub = b.goal("Sub", &[main]);
+    b.exit(main, [Act::call("DB_A", [int(1)])]);
+    b.init(sub, [Act::call("DB_A", [int(2)])]);
+    b.rule(main, Rule::when("Go", []).then_complete());
+    b.rule(
+        sub,
+        Rule::when("Go", [])
+            .and("Fails", [v("X")])
+            .then("Log", [v("X")]),
+    );
+    let (mut vm, mut h) = boot(b);
+    vm.set_logging(true);
+    vm.event(&mut h, "Go", &[]);
+    vm.event(&mut h, "Go", &[]);
+    let text: Vec<String> = vm.take_log().iter().map(|r| r.to_string()).collect();
+    assert_eq!(
+        text,
+        [
+            ">>> call COsiris::Event",
+            ">>> event Go()",
+            "0> RuleActionPart of THEN at line 0 fires. Rule variables: ",
+            "1--> GoalCompleted; (\"Main\") (GoalID == 1)",
+            "exec EXIT section of goal \"Main\" (#1):",
+            "1--> DB_A( 1 ) [add fact]",
+            "exec INIT section of goal \"Sub\" (#2):",
+            "1--> DB_A( 2 ) [add fact]",
+            "exec INIT section of goal \"Sub\" (#2) END",
+            // END of the EXIT section only after the subgoals have started.
+            "exec EXIT section of goal \"Main\" (#1) END",
+            "0> [end of rule action part]",
+            // Sub woke during this event; its rule is reached later in the same event.
+            "exec [DIV query] Fails( [out] (INTEGER) )",
+            "*** Query failed! ***",
+            "     Query returns: Fails( (undef value) )",
+            ">>> call COsiris::Event",
+            ">>> event Go()",
+            "exec [DIV query] Fails( [out] (INTEGER) )",
+            "*** Query failed! ***",
+            "     Query returns: Fails( (undef value) )",
+        ],
+    );
+    no_errors(&vm);
+}
+
+#[test]
+fn replay_of_own_log_has_no_divergences() {
+    let build = || {
+        let mut b = StoryBuilder::new();
+        b.event("Ping", &[INT]);
+        b.query("Double", &[INT, INT], &[false, true]);
+        b.db("DB_Seen", &[INT, INT]);
+        b.call("Log", &[INT]);
+        let g = b.goal("Main", &[]);
+        b.init(g, [Act::call("DB_Seen", [int(0), int(0)])]);
+        b.rule(
+            g,
+            Rule::when("Ping", [v("X")])
+                .and("Double", [v("X"), v("Y")])
+                .then("DB_Seen", [v("X"), v("Y")])
+                .then("Log", [v("Y")]),
+        );
+        b.build()
+    };
+    let story = build();
+    let mut vm = Vm::new(&story);
+    vm.set_logging(true);
+    let mut host = RecordingHost::with_queries(|_, _, args, _| {
+        args[1] = Value::int(args[0].as_int()? * 2);
+        Some(true)
+    });
+    vm.init_game(&mut host);
+    for x in [1, 2, 1] {
+        vm.event(&mut host, "Ping", &[Value::int(x)]);
+    }
+    let log = crate::trace::render_log(&vm.take_log());
+    let report = crate::replay::replay(&story, &log);
+    assert_eq!(report.divergences(), 0, "{}", report.summary());
+    assert_eq!(report.segments, 4);
+    assert_eq!(report.host.exact, 3);
+    assert_eq!(report.type_mismatches, 0);
+
+    // A different logged answer changes what the VM does: detected.
+    let bad = log.replacen(
+        "Query returns: Double( 2, 4 )",
+        "Query returns: Double( 2, 5 )",
+        1,
+    );
+    let report = crate::replay::replay(&story, &bad);
+    let d = report.first.as_ref().expect("divergence");
+    assert_eq!(d.segment, 2);
+    assert!(
+        d.trace
+            .as_deref()
+            .unwrap()
+            .ends_with("Rule variables: 2, 4"),
+        "{d:?}"
+    );
+    assert!(
+        d.vm.as_deref().unwrap().ends_with("Rule variables: 2, 5"),
+        "{d:?}"
+    );
+}

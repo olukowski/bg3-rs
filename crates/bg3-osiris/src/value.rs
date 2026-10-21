@@ -47,6 +47,18 @@ impl Root {
         }
     }
 
+    /// Built-in type id of this root (0 for none/object).
+    pub fn type_id(self) -> TypeId {
+        match self {
+            Self::Integer => types::INTEGER,
+            Self::Integer64 => types::INTEGER64,
+            Self::Real => types::REAL,
+            Self::String => types::STRING,
+            Self::GuidString => types::GUIDSTRING,
+            Self::None | Self::Object => types::NONE,
+        }
+    }
+
     fn is_numeric(self) -> bool {
         matches!(self, Self::Integer | Self::Integer64 | Self::Real)
     }

@@ -197,6 +197,10 @@ pub(crate) struct Program {
     pub global_actions: Vec<PAction>,
     pub story_version: String,
     pub types: TypeTable,
+    /// Type names by id (for the runtime log).
+    pub type_names: Vec<String>,
+    /// Enumeration labels by type id (for the runtime log).
+    pub enums: HashMap<TypeId, Vec<(String, u64)>>,
 }
 
 pub(crate) fn fold(name: &str) -> String {
@@ -373,6 +377,12 @@ impl Program {
                 global_actions,
                 story_version: story.header.story_version_str().to_owned(),
                 types,
+                type_names: (0..256u16).map(|id| story.type_name(id)).collect(),
+                enums: story
+                    .enums
+                    .iter()
+                    .map(|e| (e.type_id, e.elements.clone()))
+                    .collect(),
             },
             problems,
         )

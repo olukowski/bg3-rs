@@ -54,7 +54,9 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
 - `cargo run --release -p bg3x -- <cmd>` inspects the install. Commands: `info`, `list <pak> [-f substr]`,
   `cat|lsx|gr2 <pak|-> <path>` (`-` = search all paks via the VFS), `extract`, `verify`, `dups`,
   `find <value> [-p prefix]` (searches all resources for an attribute value), `loca <handle>`,
-  `stat <name>`, `story [--goal NAME | -s]`, `materials [LEVEL] [-v]` (material/texture survey of a level).
+  `stat <name>`, `story [--goal NAME | -s]`, `materials [LEVEL] [-v]` (material/texture survey of a level),
+  `osiris-replay [TRACE] [--vm-log OUT] [--kinds]` (replay a libOsiris runtime log through the VM,
+  see `docs/research/osiris-runtime-log.md`).
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
   level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),

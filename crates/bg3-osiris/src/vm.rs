@@ -13,6 +13,7 @@ use crate::host::{Host, HostCtx, display, make_string};
 use crate::program::{
     ActionKind, Conn, PAction, PAdapter, PKind, PNode, Param, Program, other_entry,
 };
+use crate::trace::{ActionKind as LogKind, LogData, LogValue, QueryArg, Record};
 use crate::value::{Data, Root, StringTable, TypeId, Value, osi_compare, osi_eq, types};
 
 /// A token: rule-variable bindings (`COsiVarIDValuePairList`), in insertion order.
@@ -99,13 +100,15 @@ struct State {
     stats: Stats,
     errors: Vec<VmError>,
     error_count: usize,
+    /// Runtime log records (`COsiris::m_LogEnabled` with `_ParserFlags` bit 19), if enabled.
+    log: Option<Vec<Record>>,
 }
 
 /// A loaded story, ready to run.
 pub struct Vm {
-    prog: Program,
+    pub(crate) prog: Program,
     st: State,
-    strings: StringTable,
+    pub(crate) strings: StringTable,
 }
 
 impl Vm {
@@ -158,6 +161,7 @@ impl Vm {
                 stats: Stats::default(),
                 errors,
                 error_count,
+                log: None,
             },
             strings,
         }
@@ -167,6 +171,28 @@ impl Vm {
     /// beyond the limit are skipped with an error.
     pub fn set_max_rule_nesting(&mut self, n: u32) {
         self.st.max_rule_nesting = n;
+    }
+
+    /// Turn the runtime log on or off. While on, the VM records the same events libOsiris
+    /// writes to its log (see [`crate::trace`]); fetch them with [`Vm::take_log`].
+    pub fn set_logging(&mut self, on: bool) {
+        self.st.log = on.then(Vec::new);
+    }
+
+    fn push_log(&mut self, r: Option<Record>) {
+        if let (Some(log), Some(r)) = (self.st.log.as_mut(), r) {
+            log.push(r);
+        }
+    }
+
+    /// The log records written since the last call (empty if logging is off).
+    pub fn take_log(&mut self) -> Vec<Record> {
+        self.st.log.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// A value as the runtime log prints it.
+    pub fn log_value(&self, v: &Value) -> LogValue {
+        log_value(&self.prog, &self.strings, v)
     }
 
     fn exec<'a>(&'a mut self, host: &'a mut dyn Host) -> Exec<'a> {
@@ -185,6 +211,7 @@ impl Vm {
     pub fn init_game(&mut self, host: &mut dyn Host) {
         let mut x = self.exec(host);
         let p = x.p;
+        x.emit(|_| Record::GlobalInit);
         for a in &p.global_actions {
             x.fire(a, None);
         }
@@ -195,6 +222,12 @@ impl Vm {
             // Checked when the loop reaches the goal: a goal enabled earlier in this loop by a
             // completed parent (which already ran its INIT) runs INIT again here.
             if x.s.goal_flags[gid] & 2 == 0 {
+                x.emit(|_| Record::GoalSection {
+                    exit: false,
+                    goal: goal.name.clone(),
+                    id: gid as u32,
+                    woken: false,
+                });
                 for a in &goal.init {
                     x.fire(a, None);
                 }
@@ -202,20 +235,34 @@ impl Vm {
         }
     }
 
-    /// Inject an engine event (`COsiris::Event`). Arguments are converted to the declared
-    /// parameter types where the roots agree (e.g. a GUIDSTRING into a CHARACTER parameter).
+    /// Inject an engine event (`COsiris::Event`). Arguments keep their type id when their
+    /// root matches the declared parameter (libOsiris does not retag engine values); values of
+    /// another root are converted.
     // bg3: COsiris::Event (4.1.1.7631656)
     pub fn event(&mut self, host: &mut dyn Host, name: &str, args: &[Value]) -> EventOutcome {
         let Some(f) = self.prog.function(name, args.len()) else {
             return EventOutcome::Unknown;
         };
+        let logging = self.st.log.is_some();
+        self.push_log(logging.then_some(Record::EventCall));
         if args.iter().any(|a| a.ty == 0 || a.ty == 0x7f) {
+            self.push_log(
+                logging.then(|| Record::EventRejected("type of parameter unknown".to_owned())),
+            );
             return EventOutcome::BadArguments;
         }
         let node = self.prog.functions[f].node;
         if self.prog.node(node).is_none() {
+            self.push_log(logging.then(|| Record::EventIgnored {
+                name: self.prog.functions[f].name.clone(),
+                arity: args.len() as u32,
+            }));
             return EventOutcome::NoRules;
         }
+        self.push_log(logging.then(|| Record::Event {
+            name: self.prog.functions[f].name.clone(),
+            args: args.iter().map(|a| self.log_value(a)).collect(),
+        }));
         let params = self.prog.functions[f].params.clone();
         let args: Vec<Value> = args
             .iter()
@@ -226,6 +273,18 @@ impl Vm {
         x.s.stats.events += 1;
         x.start_add(node, args);
         EventOutcome::Processed
+    }
+
+    /// Whether the story uses event/function `name`/`arity` in a rule (`None`: unknown).
+    pub fn event_has_rules(&self, name: &str, arity: usize) -> Option<bool> {
+        let f = self.prog.function(name, arity)?;
+        Some(self.prog.node(self.prog.functions[f].node).is_some())
+    }
+
+    /// Declared parameter types of a function.
+    pub fn function_params(&self, name: &str, arity: usize) -> Option<Vec<TypeId>> {
+        let f = self.prog.function(name, arity)?;
+        Some(self.prog.functions[f].params.clone())
     }
 
     /// Rows of database `name`/`arity` in insertion order, or `None` if there is no such
@@ -316,14 +375,17 @@ impl Vm {
     }
 }
 
-/// Retag a host-provided value with a declared parameter type.
+/// Fit a host-provided value to a declared parameter type. A value whose root already
+/// matches keeps its own type id: libOsiris does not retag engine values (a GUIDSTRING passed
+/// for a `CHARACTER` parameter stays a GUIDSTRING; the runtime log prints it without the alias
+/// prefix). Only a value of another root is converted.
 fn coerce(strings: &mut StringTable, p: &Program, v: Value, ty: TypeId) -> Value {
     if v.ty == ty || ty == 0 {
         return v;
     }
     let root = p.types.root(ty);
     if root == v.root {
-        return Value { ty, ..v };
+        return v;
     }
     match (v.data, root) {
         (Data::Str(s), Root::String | Root::GuidString) => {
@@ -332,6 +394,62 @@ fn coerce(strings: &mut StringTable, p: &Program, v: Value, ty: TypeId) -> Value
         }
         _ => v,
     }
+}
+
+/// A value as libOsiris prints it in its runtime log: alias types get a `(TYPE)` prefix,
+/// enumerations print as `TYPE.LABEL`, unset values as `(unknown)` / `(TYPE)`.
+// bg3: COsiTypedValueBase printing in the runtime log (4.1.1.7631656)
+pub(crate) fn log_value(p: &Program, strings: &StringTable, v: &Value) -> LogValue {
+    let name = |ty: TypeId| p.type_names.get(ty as usize).cloned().unwrap_or_default();
+    if !v.is_valid() {
+        return LogValue {
+            ty: (v.ty != 0).then(|| name(v.ty)),
+            v: LogData::Unset,
+        };
+    }
+    if let Some(labels) = p.enums.get(&v.ty) {
+        let raw = match v.data {
+            Data::Int(i) => i as i64,
+            Data::Int64(i) => i,
+            _ => 0,
+        };
+        // Several labels can share a value (`__OSIRIS_ENUM_FALLBACK = 3`, `DOT = 3`); the log
+        // names the real label.
+        let label = labels
+            .iter()
+            .find(|(l, x)| *x as i64 == raw && l != "__OSIRIS_ENUM_FALLBACK")
+            .or_else(|| labels.iter().find(|(_, x)| *x as i64 == raw))
+            .map_or_else(|| format!("invalid_{raw}"), |(l, _)| l.clone());
+        return LogValue {
+            ty: None,
+            v: LogData::Enum(name(v.ty), label),
+        };
+    }
+    let ty = if v.ty > types::GUIDSTRING || v.ty == types::INTEGER64 {
+        Some(name(v.ty))
+    } else {
+        None
+    };
+    let data = match v.data {
+        Data::Undef => LogData::Unset,
+        Data::Int(i) => LogData::Int(i as i64),
+        Data::Int64(i) => LogData::Int(i),
+        Data::Real(f) => LogData::Real(f as f64),
+        Data::Str(s) => {
+            let text = strings.text(s).to_owned();
+            if v.root == Root::String {
+                LogData::Str(text)
+            } else {
+                LogData::Guid(text)
+            }
+        }
+    };
+    LogValue { ty, v: data }
+}
+
+/// [`log_value`] for a host callback.
+pub(crate) fn log_value_ctx(ctx: &HostCtx<'_>, v: &Value) -> LogValue {
+    log_value(ctx.prog, ctx.strings, v)
 }
 
 /// `COsiVariable::Assign`: take the source's type; the payload only if the type is set and
@@ -362,6 +480,24 @@ struct Exec<'a> {
 }
 
 impl<'a> Exec<'a> {
+    /// Append a runtime-log record (built only if logging is on).
+    fn emit(&mut self, f: impl FnOnce(&Self) -> Record) {
+        if self.s.log.is_some() {
+            let r = f(self);
+            if let Some(log) = self.s.log.as_mut() {
+                log.push(r);
+            }
+        }
+    }
+
+    fn lv(&self, v: &Value) -> LogValue {
+        log_value(self.p, self.strings, v)
+    }
+
+    fn lvs(&self, v: &[Value]) -> Vec<LogValue> {
+        v.iter().map(|x| self.lv(x)).collect()
+    }
+
     fn err(&mut self, msg: impl Into<String>) {
         self.s.error_count += 1;
         if self.s.errors.len() < MAX_RECORDED_ERRORS {
@@ -536,6 +672,10 @@ impl<'a> Exec<'a> {
                 }
             } else {
                 if db.find(&tuple).is_some() {
+                    self.emit(|x| Record::InsertFailed {
+                        start: true,
+                        tuple: x.lvs(&tuple),
+                    });
                     return;
                 }
                 db.push(&tuple);
@@ -734,6 +874,10 @@ impl<'a> Exec<'a> {
                 let tuple = Self::init_tuple(ad, &token, arity);
                 let db = self.db_mut(n.db);
                 if db.find(&tuple).is_some() {
+                    self.emit(|x| Record::InsertFailed {
+                        start: false,
+                        tuple: x.lvs(&tuple),
+                    });
                     return;
                 }
                 db.push(&tuple);
@@ -981,12 +1125,19 @@ impl<'a> Exec<'a> {
             self.s.user_queries_executed += 1;
         }
         self.s.stats.rules_fired += 1;
+        let depth = self.s.rule_nesting;
+        self.emit(|x| Record::RuleFires {
+            depth,
+            line: r.line,
+            vars: x.lvs(&x.s.rule_vars[node as usize]),
+        });
         self.s.rule_nesting += 1;
         self.s.stats.max_rule_nesting = self.s.stats.max_rule_nesting.max(self.s.rule_nesting);
         for a in &r.actions {
             self.fire(a, Some(node));
         }
         self.s.rule_nesting -= 1;
+        self.emit(|_| Record::RuleEnd { depth });
     }
 
     // ---- queries ----
@@ -1011,7 +1162,12 @@ impl<'a> Exec<'a> {
                 let v = if logical != -1 {
                     match token.iter().find(|(var, _)| *var == logical as u8) {
                         Some((_, v)) if v.is_valid() => *v,
-                        _ => Value::undef(ty, self.p.types.root(ty)),
+                        // Typed with the declared type's *root* (the log prints
+                        // `[out] (GUIDSTRING)` for a `TAG` out-parameter).
+                        _ => {
+                            let root = self.p.types.root(ty);
+                            Value::undef(root.type_id(), root)
+                        }
                     }
                 } else {
                     match ad.constant_at(i) {
@@ -1038,18 +1194,56 @@ impl<'a> Exec<'a> {
             .zip(&pf.params)
             .map(|(&(v, out), &decl)| {
                 if out {
-                    Value::undef(decl, self.p.types.root(decl))
+                    let root = self.p.types.root(decl);
+                    Value::undef(root.type_id(), root)
                 } else {
                     v
                 }
             })
             .collect();
+        self.emit(|x| Record::QueryExec {
+            kind: match n.kind {
+                PKind::DivQuery => "DIV query",
+                PKind::UserQuery => "Osi user query",
+                _ => "internal query",
+            }
+            .to_owned(),
+            name: pf.name.clone(),
+            args: params
+                .iter()
+                .map(|(v, out)| QueryArg {
+                    out: *out,
+                    value: x.lv(v),
+                })
+                .collect(),
+        });
         let ok = match n.kind {
             PKind::DivQuery => self.div_query(f, &mut args),
             PKind::InternalQuery => self.internal_query(pf.key0, &mut args),
             PKind::UserQuery => self.user_query(f, &args),
             _ => false,
         };
+        if !ok {
+            self.emit(|_| Record::QueryFailed);
+        }
+        if !args.is_empty() {
+            // Printed from the engine argument list, which carries root types only.
+            self.emit(|x| Record::QueryReturns {
+                name: pf.name.clone(),
+                args: args
+                    .iter()
+                    .map(|a| {
+                        if !a.is_valid() {
+                            // Printed as `(undef value)`, whatever the type.
+                            return LogValue::unset();
+                        }
+                        let enum_ty = x.p.enums.contains_key(&a.ty);
+                        let ty = if enum_ty { a.ty } else { a.root.type_id() };
+                        x.lv(&Value { ty, ..*a })
+                    })
+                    .collect(),
+            });
+        }
         if !ok {
             return false;
         }
@@ -1099,6 +1293,7 @@ impl<'a> Exec<'a> {
         let mut ctx = HostCtx {
             strings: self.strings,
             types: &self.p.types,
+            prog: self.p,
         };
         let ok = self.host.query(&mut ctx, &pf.name, args, &pf.out);
         for (i, a) in args.iter_mut().enumerate() {
@@ -1129,8 +1324,23 @@ impl<'a> Exec<'a> {
             self.err(format!("{def_name}: type should be user query"));
             return false;
         }
+        // The arguments travel as an engine argument list (`COsiArgumentDesc`), which only
+        // carries root types: the QRY rules see `GUIDSTRING`, not `TAG` (runtime log).
+        let args: Vec<Value> = args
+            .iter()
+            .map(|a| {
+                if self.p.enums.contains_key(&a.ty) {
+                    *a
+                } else {
+                    Value {
+                        ty: a.root.type_id(),
+                        ..*a
+                    }
+                }
+            })
+            .collect();
         let before = self.s.user_queries_executed;
-        self.start_add(def.node, args.to_vec());
+        self.start_add(def.node, args);
         let after = self.s.user_queries_executed;
         self.s.user_queries_executed = before;
         after > before
@@ -1335,8 +1545,14 @@ impl<'a> Exec<'a> {
     // bg3: COsiFunctionParseData::Fire (4.1.1.7631656)
     fn fire(&mut self, a: &'a PAction, rule: Option<u32>) {
         self.s.stats.actions_fired += 1;
+        let depth = self.s.rule_nesting;
         let f = match a.kind {
             ActionKind::GoalCompleted(g) => {
+                self.emit(|x| Record::GoalCompleted {
+                    depth,
+                    goal: x.p.goal(g).map_or_else(String::new, |g| g.name.clone()),
+                    id: g,
+                });
                 if self.p.goal(g).is_some() {
                     self.set_completed(g);
                 } else {
@@ -1361,6 +1577,19 @@ impl<'a> Exec<'a> {
             .iter()
             .map(|p| self.param_value(&p.param, rule))
             .collect();
+        self.emit(|x| Record::Action {
+            depth,
+            kind: match pf.kind {
+                FunctionKind::Database if a.negate => LogKind::DeleteFact,
+                FunctionKind::Database => LogKind::AddFact,
+                FunctionKind::Proc => LogKind::Proc,
+                FunctionKind::SysCall => LogKind::InternalCall,
+                _ => LogKind::DivCall,
+            },
+            // The name as written in the action (functions are matched case-insensitively).
+            name: a.name.clone(),
+            args: x.lvs(&values),
+        });
         match pf.kind {
             FunctionKind::Call => {
                 // Out-parameters go to the engine as typed empty arguments.
@@ -1379,8 +1608,11 @@ impl<'a> Exec<'a> {
                 let mut ctx = HostCtx {
                     strings: self.strings,
                     types: &self.p.types,
+                    prog: self.p,
                 };
-                self.host.call(&mut ctx, &pf.name, &args);
+                if !self.host.call(&mut ctx, &pf.name, &args) {
+                    self.emit(|_| Record::CallFailed);
+                }
             }
             FunctionKind::Database if a.negate => {
                 self.start_del(pf.node, values);
@@ -1414,6 +1646,12 @@ impl<'a> Exec<'a> {
             return;
         }
         self.s.goal_flags[g as usize] |= 6;
+        self.emit(|_| Record::GoalSection {
+            exit: true,
+            goal: goal.name.clone(),
+            id: g,
+            woken: true,
+        });
         for a in &goal.exit {
             self.fire(a, None);
         }
@@ -1425,6 +1663,13 @@ impl<'a> Exec<'a> {
                 self.err(format!("subgoal {sub} not in use"));
             }
         }
+        // The log's END line comes after the subgoals have run their INIT sections
+        // (observed in a runtime log of the game).
+        self.emit(|_| Record::GoalSectionEnd {
+            exit: true,
+            goal: goal.name.clone(),
+            id: g,
+        });
     }
 
     // bg3: COsiGoal::CheckEnableRules (4.1.1.7631656)
@@ -1469,8 +1714,19 @@ impl<'a> Exec<'a> {
             return;
         }
         self.s.goal_flags[g as usize] &= !3;
+        self.emit(|_| Record::GoalSection {
+            exit: false,
+            goal: goal.name.clone(),
+            id: g,
+            woken: true,
+        });
         for a in &goal.init {
             self.fire(a, None);
         }
+        self.emit(|_| Record::GoalSectionEnd {
+            exit: false,
+            goal: goal.name.clone(),
+            id: g,
+        });
     }
 }

@@ -24,6 +24,8 @@ pub mod builder;
 mod db;
 mod host;
 mod program;
+pub mod replay;
+pub mod trace;
 mod value;
 mod vm;
 
