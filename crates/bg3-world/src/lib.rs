@@ -6,10 +6,12 @@
 pub mod banks;
 pub mod level;
 pub mod templates;
+pub mod terrain;
 
 pub use banks::{MaterialResource, MeshObject, ResourceBanks, TextureResource, VisualResource};
 pub use level::{Level, LevelObject, Transform};
 pub use templates::{RootTemplate, RootTemplates};
+pub use terrain::{Terrain, TerrainBrush, TerrainPatch};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
