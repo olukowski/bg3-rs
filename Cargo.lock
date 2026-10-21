@@ -1986,6 +1986,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bg3-dialog"
+version = "0.0.0"
+dependencies = [
+ "bg3-install",
+ "bg3-lsf",
+ "bg3-vfs",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bg3-gr2"
 version = "0.0.0"
 dependencies = [
@@ -2088,8 +2098,10 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bevy",
+ "bg3-dialog",
  "bg3-gr2",
  "bg3-install",
+ "bg3-loca",
  "bg3-lsf",
  "bg3-material",
  "bg3-stats",
@@ -2135,6 +2147,7 @@ name = "bg3x"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bg3-dialog",
  "bg3-gr2",
  "bg3-install",
  "bg3-loca",

@@ -25,6 +25,7 @@ How the game's files are laid out, written in our own words: [formats/](formats/
 | [loca.md](formats/loca.md) | Localization strings |
 | [stats.md](formats/stats.md) | Stats text files and their inheritance |
 | [osiris-story.md](formats/osiris-story.md) | Compiled Osiris quest scripts (`story.div.osi`) |
+| [dialog.md](formats/dialog.md) | Dialogs: node types, flags, speakers, and the runtime rules for walking them |
 
 ## Research notes
 
@@ -50,6 +51,11 @@ still open.
 : Larian's rule-based scripting language and engine for quests and world logic. Scripts are compiled
   into a *story* (`story.div.osi`): a network of databases, rules and goals. The engine reacts to
   game events by updating databases and firing rules. Our VM is `bg3-osiris`.
+
+**Dialog resource**
+: How the game names a dialog (`Name_uuid` in Osiris): a bank entry pointing at the compiled
+  dialog file. Dialogs are trees of nodes (NPC lines, player options, rolls, jumps, nested
+  dialogs) gated and driven by flags.
 
 **Goal**
 : A unit of Osiris script with INIT and EXIT sections and its rules. Goals activate each other as
