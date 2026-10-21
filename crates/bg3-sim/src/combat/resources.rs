@@ -126,6 +126,28 @@ impl Resources {
         Some(payment)
     }
 
+    /// The largest maximum a cost could be paid from: for a group (`SpellSlotsGroup`), its
+    /// member resources at the cost's level or higher.
+    pub fn max_for(&self, cost: &ResourceSelector) -> f32 {
+        match self.groups.get(&cost.name) {
+            Some(members) => self
+                .entries
+                .iter()
+                .filter(|r| members.contains(&r.name) && r.level >= cost.level)
+                .map(|r| r.max)
+                .fold(0.0, f32::max),
+            None => self.max_at_level(&cost.name, cost.level),
+        }
+    }
+
+    /// The resource a cost names, with a group resolved to its first member.
+    pub fn resource_name<'a>(&'a self, cost: &'a ResourceSelector) -> &'a str {
+        self.groups
+            .get(&cost.name)
+            .and_then(|m| m.first())
+            .map_or(cost.name.as_str(), String::as_str)
+    }
+
     pub fn can_pay(&self, costs: &[(ResourceSelector, f32)]) -> bool {
         self.payment(costs, None).is_some()
     }

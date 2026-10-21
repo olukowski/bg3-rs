@@ -24,6 +24,7 @@ use super::score::{
 use super::simulate::{Planner, simulated_type};
 use crate::combat::data::Replenish;
 use crate::combat::path::{APPROXIMATE_RADIUS, walk_path};
+use crate::combat::resources::ResourceSelector;
 use crate::combat::{CombatError, distance};
 use crate::guid::Guid;
 use crate::sim::Sim;
@@ -40,7 +41,7 @@ struct UsableSpell {
     book_index: usize,
     range: f32,
     now: bool,
-    costs: Vec<(String, f32)>,
+    costs: Vec<(ResourceSelector, f32)>,
 }
 
 /// A place the character can stand this turn and the walk there.
@@ -181,14 +182,15 @@ impl Sim {
     /// Resource cost score of a spell: per cost, amount / the resource's maximum, weighted
     /// by how the resource replenishes.
     // bg3: esv::AiHelpers::GetResourceCostScore (0x10521cc50, 4.1.1.7631656)
-    fn ai_resource_cost(&self, who: Guid, m: &Modifiers, costs: &[(String, f32)]) -> f32 {
+    fn ai_resource_cost(&self, who: Guid, m: &Modifiers, costs: &[(ResourceSelector, f32)]) -> f32 {
         let Some(c) = self.combatant(who) else {
             return 0.0;
         };
         costs
             .iter()
-            .map(|(name, amount)| {
-                let max = c.resources.max(name);
+            .map(|(cost, amount)| {
+                let name = c.resources.resource_name(cost);
+                let max = c.resources.max_for(cost);
                 let max = if max > 0.0 { max } else { 1.0 };
                 let mult = match self.data.combat.resource(name).map(|r| r.replenish) {
                     Some(Replenish::Turn) => m.get(k::MULTIPLIER_RESOURCE_REPLENISH_TYPE_TURN),
@@ -385,7 +387,7 @@ impl Sim {
             let ever = d
                 .use_costs
                 .iter()
-                .all(|(n, a)| c.resources.max(n) + 1e-4 >= *a);
+                .all(|(n, a)| c.resources.max_for(n) + 1e-4 >= *a);
             if now || ever {
                 spells.push(UsableSpell {
                     name: s.clone(),
