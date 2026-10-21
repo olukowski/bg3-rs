@@ -5,7 +5,7 @@
 //! reports a [`CombatView`] of the running fight (turn order, hit points, the party's
 //! resources and actions) plus the sim's [`CombatEvent`]s. The viewer sends [`CombatCmd`]s
 //! back: moves (paid with the `bg3-nav` path length), casts, End Turn, and "play the next AI
-//! turn", which it then animates (walk the AI's move, a short pause for the attack) before
+//! turn", which it then animates (walk the AI's move, then combat clips) before
 //! asking for the next one.
 //!
 //! On screen: a turn-order bar (names, hit points; the acting characters framed), an action
@@ -16,8 +16,9 @@
 //! Controls in a fight: click an action (or press 1–9) and then a target; click the ground
 //! to move (the path stops where the movement runs out); Space or the button ends the turn;
 //! Tab switches between party members acting together; Esc drops the chosen action.
+//! F toggles camera follow; manual fly-camera input cancels the current turn's pan.
 //!
-//! Not from the game: the layout and look (portrait-less), the attack "animation" (a pause),
+//! Not from the game: the layout and look (portrait-less), generic combat clip selection,
 //! straight-line AI moves (the sim's AI walks straight, see `bg3_sim::combat::ai`).
 
 use std::collections::{HashMap, VecDeque};
@@ -32,12 +33,14 @@ use bg3_sim::combat::AiAction;
 use bg3_sim::{CombatEvent, Game, Guid};
 
 use crate::characters::{CharacterAnimator, CharacterRoot};
+use crate::fly_camera::CombatCamera;
 use crate::nav::{Controlled, Navigation};
 use crate::space;
+use bg3_world::characters::CombatAnimation;
 
 /// A left click within this many pixels of a character's chest picks it as a target.
 const PICK_RADIUS_PX: f32 = 45.0;
-/// Pause after an AI attack (no attack animations yet), seconds.
+/// Fallback when the attacker has no matching clip, seconds.
 const ATTACK_PAUSE_SECS: f32 = 0.7;
 /// Pause between AI turns that did nothing, seconds.
 const IDLE_PAUSE_SECS: f32 = 0.35;
@@ -95,6 +98,7 @@ pub struct CombatOut {
     pub ai_replies: u32,
     /// Refused actions and other notes for the log.
     pub notes: Vec<String>,
+    pub animation_kinds: HashMap<String, CombatAnimation>,
 }
 
 impl CombatOut {
@@ -215,6 +219,29 @@ impl CombatThread {
                 .find_map(|p| game.sim.combat_of(p).filter(|c| !c.finished).map(|c| c.id));
         }
         self.out.events.extend(game.take_combat_events());
+        for event in &self.out.events {
+            if let CombatEvent::SpellCast { spell, .. } = event {
+                let kind =
+                    game.sim
+                        .data
+                        .combat
+                        .spells
+                        .get(spell)
+                        .map_or(CombatAnimation::Cast, |d| {
+                            // Presentation classification from install stats, not spell-name matching.
+                            if d.has_flag("IsSpell") {
+                                CombatAnimation::Cast
+                            } else if d.has_flag("IsMelee") {
+                                CombatAnimation::Melee
+                            } else if d.has_flag("IsAttack") && d.spell_type == "Projectile" {
+                                CombatAnimation::Ranged
+                            } else {
+                                CombatAnimation::Cast
+                            }
+                        });
+                self.out.animation_kinds.insert(spell.clone(), kind);
+            }
+        }
         if let Some(cid) = self.current {
             let view = snapshot(game, cid);
             if view != self.last {
@@ -489,8 +516,13 @@ enum LogKind {
 
 /// What the AI animation is doing.
 enum Anim {
-    Walking(Entity, Option<Guid>),
+    Walking(Entity),
     Pause(f32),
+}
+
+enum Presentation {
+    Walk(AiTurn),
+    Event(CombatEvent),
 }
 
 #[derive(Resource)]
@@ -505,14 +537,13 @@ pub struct CombatUi {
     log: VecDeque<(String, LogKind)>,
     last_cast: Option<(Guid, Guid)>,
     waiting_ai: bool,
-    anims: VecDeque<AiTurn>,
+    anims: VecDeque<Presentation>,
+    animation_kinds: HashMap<String, CombatAnimation>,
     anim: Option<Anim>,
     /// Party turns played by the AI too (`--combat-autoplay`).
     autoplay: bool,
     ended: Option<f32>,
     dirty: bool,
-    /// Dead characters already laid down.
-    toppled: Vec<Guid>,
 }
 
 impl CombatUi {
@@ -803,7 +834,7 @@ impl Plugin for CombatPlugin {
             autoplay: self.autoplay,
             ended: None,
             dirty: true,
-            toppled: Vec::new(),
+            animation_kinds: HashMap::new(),
         })
         .insert_resource(CombatInbox::default())
         .insert_resource(CombatOutbox::default())
@@ -817,8 +848,10 @@ impl Plugin for CombatPlugin {
                 (combat_clicks, combat_keys)
                     .before(crate::play::talk_click)
                     .after(process_inbox),
-                (animate, drive_ai, topple_dead, refresh_panels, draw_rings)
-                    .after(crate::play::sync_characters),
+                (animate, drive_ai, refresh_panels, draw_rings)
+                    .chain()
+                    .after(crate::play::sync_characters)
+                    .before(crate::characters::animate_characters),
             ),
         );
     }
@@ -841,25 +874,24 @@ fn roots_by_id<'a>(
         .collect()
 }
 
-fn process_inbox(mut inbox: ResMut<CombatInbox>, mut ui: ResMut<CombatUi>, time: Res<Time>) {
+fn process_inbox(mut inbox: ResMut<CombatInbox>, mut ui: ResMut<CombatUi>) {
     for out in inbox.0.drain(..) {
         if let Some(v) = out.view {
-            if v.finished && ui.ended.is_none() {
-                ui.ended = Some(time.elapsed_secs());
-            }
             if !v.finished {
                 ui.ended = None;
             }
             ui.view = Some(v);
             ui.dirty = true;
         }
-        for e in out.events {
-            ui.log_event(e);
-        }
+        ui.animation_kinds.extend(out.animation_kinds);
+        // A game-thread AI step is already complete. Present its route before its cast,
+        // damage and next-turn notifications, including the camera focus change.
+        ui.anims.extend(out.ai.into_iter().map(Presentation::Walk));
+        ui.anims
+            .extend(out.events.into_iter().map(Presentation::Event));
         for n in out.notes {
             ui.push(n, LogKind::Note);
         }
-        ui.anims.extend(out.ai);
         if out.ai_replies > 0 {
             ui.waiting_ai = false;
         }
@@ -876,13 +908,14 @@ fn process_inbox(mut inbox: ResMut<CombatInbox>, mut ui: ResMut<CombatUi>, time:
     }
 }
 
-/// AI turns: walk the move, pause for the attack, then the next one.
+/// Present walks and combat events in order; clip durations gate the next AI request.
 #[allow(clippy::too_many_arguments)]
-fn animate(
+pub(crate) fn animate(
     mut commands: Commands,
     time: Res<Time>,
     mut ui: ResMut<CombatUi>,
     mut state: ResMut<crate::play::SimState>,
+    mut camera: ResMut<CombatCamera>,
     mut walkers: Query<(Entity, &mut CombatWalk, &mut Transform, &CharacterRoot)>,
     roots: Query<(Entity, &CharacterRoot)>,
     mut animators: Query<(&CharacterRoot, &mut CharacterAnimator)>,
@@ -923,34 +956,26 @@ fn animate(
             set_clip(&mut animators, root, true);
         }
     }
-    // The AI turn being shown.
     match ui.anim.take() {
-        Some(Anim::Walking(e, target)) => {
-            if walkers.contains(e) {
-                ui.anim = Some(Anim::Walking(e, target));
-            } else {
-                ui.anim = target.map(|_| Anim::Pause(ATTACK_PAUSE_SECS));
-            }
+        Some(Anim::Walking(e)) if walkers.contains(e) => {
+            ui.anim = Some(Anim::Walking(e));
+            return;
         }
-        Some(Anim::Pause(left)) => {
-            if left > dt {
-                ui.anim = Some(Anim::Pause(left - dt));
-            }
+        Some(Anim::Pause(left)) if left > dt => {
+            ui.anim = Some(Anim::Pause(left - dt));
+            return;
         }
-        None => {
-            let Some(turn) = ui.anims.pop_front() else {
-                return;
-            };
-            let by_id = roots_by_id(roots.iter());
-            let target = match &turn.action {
-                AiAction::Cast { target, .. } => Some(*target),
-                _ => None,
-            };
-            let moved = turn.path.len() >= 2;
-            match by_id.get(&turn.who) {
-                Some(&e) if moved => {
-                    // Presences already contain the sim's final position. Start the
-                    // animation at the recorded origin before following the walked route.
+        _ => {}
+    }
+    let by_id = roots_by_id(roots.iter());
+    // Non-visual events need no frame of their own. Stop at the first walk/clip.
+    while let Some(next) = ui.anims.pop_front() {
+        match next {
+            Presentation::Walk(turn) => {
+                camera.actor_started(turn.who);
+                if turn.path.len() >= 2
+                    && let Some(&e) = by_id.get(&turn.who)
+                {
                     let from = turn.from;
                     commands.queue(move |world: &mut World| {
                         if let Some(mut transform) = world.get_mut::<Transform>(e) {
@@ -963,18 +988,148 @@ fn animate(
                         speed,
                         end: turn.to,
                     });
-                    ui.anim = Some(Anim::Walking(e, target));
+                    ui.anim = Some(Anim::Walking(e));
+                    return;
                 }
-                _ => {
-                    ui.anim = Some(Anim::Pause(if target.is_some() {
-                        ATTACK_PAUSE_SECS
-                    } else {
-                        IDLE_PAUSE_SECS
-                    }));
+                if !matches!(turn.action, AiAction::Cast { .. }) {
+                    ui.anim = Some(Anim::Pause(IDLE_PAUSE_SECS));
+                    return;
+                }
+            }
+            Presentation::Event(event) => {
+                if matches!(event, CombatEvent::CombatEnded { .. }) {
+                    ui.ended = Some(time.elapsed_secs());
+                }
+                let pause = present_event(
+                    &event,
+                    &ui.animation_kinds,
+                    &by_id,
+                    &mut animators,
+                    &mut commands,
+                    &mut camera,
+                );
+                ui.log_event(event);
+                if pause > 0.0 {
+                    ui.anim = Some(Anim::Pause(pause));
+                    return;
                 }
             }
         }
     }
+}
+
+/// Viewer approximation: generic clips, without the original blueprint's blending, animation
+/// event markers, weapon subsets or directional hit selection. See the resource survey.
+fn present_event(
+    event: &CombatEvent,
+    kinds: &HashMap<String, CombatAnimation>,
+    by_id: &HashMap<Guid, Entity>,
+    animators: &mut Query<(&CharacterRoot, &mut CharacterAnimator)>,
+    commands: &mut Commands,
+    camera: &mut CombatCamera,
+) -> f32 {
+    let (who, kind) = match event {
+        CombatEvent::TurnStarted { entity } => {
+            camera.turn_started(*entity);
+            return 0.0;
+        }
+        CombatEvent::CombatEnded { .. } => {
+            camera.stop();
+            return 0.0;
+        }
+        CombatEvent::SpellCast {
+            caster,
+            spell,
+            target,
+        } => {
+            if let (Some(&actor), Some(&target)) = (by_id.get(caster), by_id.get(target)) {
+                commands.queue(move |world: &mut World| {
+                    let target = world.get::<Transform>(target).map(|t| t.translation);
+                    if let Some(target) = target
+                        && let Some(mut t) = world.get_mut::<Transform>(actor)
+                    {
+                        let delta = target - t.translation;
+                        if delta.x * delta.x + delta.z * delta.z > 1e-6 {
+                            t.rotation = Quat::from_rotation_y(delta.x.atan2(delta.z));
+                        }
+                    }
+                });
+            }
+            (
+                *caster,
+                kinds.get(spell).copied().unwrap_or(CombatAnimation::Cast),
+            )
+        }
+        CombatEvent::Damage { target, amount, .. } if *amount > 0 => {
+            (*target, CombatAnimation::Hit)
+        }
+        CombatEvent::Died { entity } => (*entity, CombatAnimation::Death),
+        CombatEvent::Downed { entity } => (*entity, CombatAnimation::Downed),
+        CombatEvent::Healed { target, hp, .. } if *hp > 0 => {
+            if let Some((root, mut a)) = animators
+                .iter_mut()
+                .find(|(r, _)| Guid::parse(&r.id) == Some(*target))
+                && a.incapacitated
+            {
+                a.revive(&root.idle);
+            }
+            return 0.0;
+        }
+        _ => return 0.0,
+    };
+    let fallback = if matches!(
+        kind,
+        CombatAnimation::Melee | CombatAnimation::Ranged | CombatAnimation::Cast
+    ) {
+        ATTACK_PAUSE_SECS
+    } else {
+        0.0
+    };
+    if let Some((root, mut a)) = animators
+        .iter_mut()
+        .find(|(r, _)| Guid::parse(&r.id) == Some(who))
+    {
+        if a.incapacitated && !matches!(kind, CombatAnimation::Death | CombatAnimation::Downed) {
+            return 0.0;
+        }
+        if let Some(clip) = root.combat.get(&kind) {
+            eprintln!(
+                "combat animation {} {kind:?}: {} ({:.3}s)",
+                root.name, clip.0.name, clip.0.duration
+            );
+            match kind {
+                CombatAnimation::Death => {
+                    a.incapacitated = true;
+                    return a.once(clip, None); // hold the exact final death pose
+                }
+                CombatAnimation::Downed => {
+                    a.downed(clip);
+                    return 0.0;
+                }
+                _ => return a.once(clip, root.idle.clone()),
+            }
+        }
+        if kind == CombatAnimation::Downed {
+            if let Some(clip) = root.combat.get(&CombatAnimation::Dead) {
+                a.incapacitated = true;
+                return a.once(clip, None);
+            }
+            a.freeze();
+        }
+        if kind == CombatAnimation::Death {
+            a.freeze();
+        }
+    }
+    if kind == CombatAnimation::Death
+        && let Some(&entity) = by_id.get(&who)
+    {
+        commands.queue(move |world: &mut World| {
+            if let Some(mut t) = world.get_mut::<Transform>(entity) {
+                t.rotation *= Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+            }
+        });
+    }
+    fallback
 }
 
 /// Run while walking a combat move, idle otherwise (nav.rs does the same for click-to-move).
@@ -987,14 +1142,7 @@ fn set_clip(
         return;
     };
     let want = if running { &root.run } else { &root.idle };
-    let Some((clip, bindings)) = want else {
-        return;
-    };
-    if !Arc::ptr_eq(&anim.animation, clip) {
-        anim.animation = clip.clone();
-        anim.bindings = bindings.clone();
-        anim.time = 0.0;
-    }
+    anim.locomotion(want);
 }
 
 /// Ask for the next AI turn when nobody in the party is to act (or always, with autoplay) and
@@ -1015,31 +1163,6 @@ fn drive_ai(mut ui: ResMut<CombatUi>, mut outbox: ResMut<CombatOutbox>) {
         outbox.0.push(CombatCmd::AiStep { party: autoplay });
         ui.waiting_ai = true;
     }
-}
-
-/// Dead fighters fall over (no death animation yet).
-fn topple_dead(
-    mut ui: ResMut<CombatUi>,
-    mut roots: Query<(&CharacterRoot, &mut Transform), Without<CombatWalk>>,
-) {
-    let Some(v) = &ui.view else {
-        return;
-    };
-    let dead: Vec<Guid> = v
-        .fighters()
-        .filter(|f| f.dead && !ui.toppled.contains(&f.id))
-        .map(|f| f.id)
-        .collect();
-    if dead.is_empty() {
-        return;
-    }
-    for (r, mut t) in &mut roots {
-        if Guid::parse(&r.id).is_some_and(|g| dead.contains(&g)) {
-            t.rotation *= Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-            t.translation.y += 0.25;
-        }
-    }
-    ui.toppled.extend(dead);
 }
 
 /// Physical cursor position over a node?

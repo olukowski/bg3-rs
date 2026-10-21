@@ -98,6 +98,8 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   lower deck for the imp fight) and play turn-based (`viewer/src/combat_ui.rs`): turn-order bar,
   action bar (click an action or `1`–`9`, then a target), click the floor to move (nav path length
   paid from Movement), `Space` ends the turn, `Tab` switches party member, combat log.
+  `F` toggles combat camera auto-follow; WASD/QE or right-mouse look cancels the current
+  turn's pan, with following resumed on the next turn.
   `--combat-test` jumps to the imp fight's set-up, `--combat-autoplay` lets the AI play the party.
 - Scratch output goes in `.cache/` only.
 - Thin arm64 slices for REA/Ghidra (it can't open the universal binary):

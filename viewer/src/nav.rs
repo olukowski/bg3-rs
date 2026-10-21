@@ -393,14 +393,7 @@ fn swap_animation(
 ) {
     for (c, root, mut anim) in &mut q {
         let want = if c.moving { &root.run } else { &root.idle };
-        let Some((clip, bindings)) = want else {
-            continue;
-        };
-        if !Arc::ptr_eq(&anim.animation, clip) {
-            anim.animation = clip.clone();
-            anim.bindings = bindings.clone();
-            anim.time = 0.0;
-        }
+        anim.locomotion(want);
     }
 }
 
