@@ -100,6 +100,8 @@ pub fn implements(name: &str, arity: usize) -> bool {
     CALLS
         .iter()
         .chain(QUERIES)
+        .chain(crate::story_misc::CALLS)
+        .chain(crate::story_misc::QUERIES)
         .any(|(n, a)| *a == arity && n.eq_ignore_ascii_case(name))
 }
 
@@ -149,6 +151,9 @@ impl<'a> SimFunctions<'a> {
     /// Run a call; `None` if the sim does not implement it, else whether it succeeded.
     pub fn call(&mut self, ctx: &mut HostCtx<'_>, name: &str, args: &[Value]) -> Option<bool> {
         let sim = &mut *self.sim;
+        if let Some(ok) = crate::story_misc::call(sim, ctx, name, args) {
+            return Some(ok);
+        }
         if let Some(ok) = crate::presentation::call(sim, ctx, name, args) {
             return Some(ok);
         }
@@ -233,6 +238,9 @@ impl<'a> SimFunctions<'a> {
         args: &mut [Value],
         _out: &[bool],
     ) -> Option<bool> {
+        if let Some(ok) = crate::story_misc::query(self.sim, ctx, name, args) {
+            return Some(ok);
+        }
         if let Some(ok) = crate::presentation::query(self.sim, ctx, name, args) {
             return Some(ok);
         }

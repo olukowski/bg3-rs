@@ -47,8 +47,11 @@ pub mod rules;
 pub mod sim;
 pub mod start;
 pub mod status;
+pub mod story_data;
+pub mod story_misc;
 pub mod tags;
 pub mod timers;
+pub mod use_item;
 
 pub use api::StoryState;
 pub use character::{CharacterDef, CharacterSheet};

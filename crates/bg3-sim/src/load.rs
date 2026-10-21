@@ -499,6 +499,7 @@ impl GameData {
             level_maps: bg3_rules::levelmap::LevelMaps::load(vfs, BASE_LOAD_ORDER),
             difficulty_classes: load_difficulty_classes(vfs)?,
             combat: crate::combat::CombatData::new(),
+            story: crate::story_data::StoryData::default(),
         };
         let mut names: Vec<String> = levels.iter().map(|l| (*l).to_owned()).collect();
         if names.is_empty() {
@@ -509,6 +510,7 @@ impl GameData {
                 .cloned()
                 .collect();
         }
+        data.story = crate::story_data::StoryData::load(vfs, &names)?;
         data.combat = crate::combat::CombatData::load(vfs, stats, &names)?;
         for l in names {
             let objs = load_level_objects(vfs, &l)?;

@@ -102,3 +102,56 @@ fn new_game_plays_the_opening() {
         .join()
         .expect("game thread");
 }
+
+/// full-nautiloid.log: using the start room's pool asks the story to start its dialog;
+/// UseFinished follows DialogStarted, while that dialog is still running.
+#[test]
+#[ignore = "needs BG3 install"]
+fn using_brinepool_starts_the_traced_dialog() {
+    let Some(vfs) = vfs() else {
+        return;
+    };
+    std::thread::Builder::new().stack_size(1 << 30).spawn(move || {
+        use bg3_osiris::trace::Record;
+        let (mut game, opts) = load_game(vfs).expect("load");
+        let started = new_game(&mut game, &opts);
+        // Finish the opening's dialogs before the player interacts.
+        for _ in 0..90 {
+            game.tick_live(1.0 / 30.0);
+            for n in game.take_notifications() {
+                match n {
+                    Notification::DialogLine { instance, .. } => game.dialog_advance(instance).unwrap(),
+                    Notification::DialogChoices { instance, choices } => {
+                        let i=choices.iter().position(|c|c.enabled).expect("enabled choice");
+                        game.dialog_choose(instance,i).unwrap();
+                    }
+                    _=>{},
+                }
+            }
+        }
+        let pool=game.sim.entities.iter().find(|e|e.name=="S_TUT_Start_Brinepool").expect("pool").id;
+        // The placed item overrides an ancestor's empty action list.
+        let actions=game.sim.item_use_actions(pool).expect("use actions");
+        assert_eq!(actions.iter().map(|a|a.kind).collect::<Vec<_>>(),[8]);
+        game.vm.set_logging(true);
+        game.vm.take_log();
+        assert!(game.use_item(started.avatar,pool));
+        game.tick(0.0);
+        let first=game.vm.take_log();
+        let names=|records: &[Record]| records.iter().filter_map(|r|match r {
+            Record::Event{name,..}=>Some(name.clone()), _=>None,
+        }).collect::<Vec<_>>();
+        let first_names=names(&first);
+        assert!(first_names.iter().any(|n|n=="UseStarted"),"{first_names:?}");
+        assert!(first_names.iter().any(|n|n=="TemplateUseStarted"),"{first_names:?}");
+        assert!(!first_names.iter().any(|n|n=="UseFinished"),"completion must wait for another tick");
+        game.tick(0.0);
+        let mut all=first_names;
+        all.extend(names(&game.vm.take_log()));
+        let relevant: Vec<&str>=all.iter().map(String::as_str).filter(|n|matches!(*n,"UseStarted"|"TemplateUseStarted"|"DialogStarted"|"UseFinished"|"TemplateUseFinished")).collect();
+        assert_eq!(relevant,["UseStarted","TemplateUseStarted","DialogStarted","UseFinished","TemplateUseFinished"]);
+        assert!(game.take_notifications().iter().any(|n|matches!(n,Notification::DialogStarted{dialog,..} if dialog.starts_with("TUT_Start_Brinepool_"))));
+        // Its dialog remains open after the item's lifecycle finishes, as in the log.
+        assert!(game.sim.dialogs.instances.iter().any(|i|i.name.starts_with("TUT_Start_Brinepool_") && !matches!(i.state,bg3_sim::InstanceState::Ended)));
+    }).expect("spawn").join().expect("game thread");
+}

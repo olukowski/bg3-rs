@@ -25,6 +25,7 @@ pub struct TagDef {
 #[derive(Clone, Debug, Default)]
 pub struct TagDefs {
     by_id: HashMap<Guid, TagDef>,
+    order: Vec<Guid>,
     by_name: HashMap<String, Guid>,
 }
 
@@ -34,6 +35,9 @@ impl TagDefs {
     }
 
     pub fn insert(&mut self, def: TagDef) {
+        if !self.by_id.contains_key(&def.id) {
+            self.order.push(def.id);
+        }
         self.by_name.insert(def.name.clone(), def.id);
         self.by_id.insert(def.id, def);
     }
@@ -45,6 +49,11 @@ impl TagDefs {
     /// A tag by name (conditions name tags: `Tagged('UNDEAD')`); the last definition wins.
     pub fn by_name(&self, name: &str) -> Option<Guid> {
         self.by_name.get(name).copied()
+    }
+
+    /// Definitions in deterministic resource load order.
+    pub fn iter(&self) -> impl Iterator<Item = &TagDef> {
+        self.order.iter().filter_map(|id| self.by_id.get(id))
     }
 
     pub fn len(&self) -> usize {
