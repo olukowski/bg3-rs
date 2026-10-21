@@ -12,6 +12,7 @@ bg3-gr2 = { path = "crates/bg3-gr2" }
 bg3-install = { path = "crates/bg3-install" }
 bg3-loca = { path = "crates/bg3-loca" }
 bg3-lsf = { path = "crates/bg3-lsf" }
+bg3-osiris = { path = "crates/bg3-osiris" }
 bg3-pak = { path = "crates/bg3-pak" }
 bg3-stats = { path = "crates/bg3-stats" }
 bg3-story = { path = "crates/bg3-story" }

@@ -52,6 +52,43 @@ impl Story {
         parse::parse_story(data)
     }
 
+    /// Assemble a story from its parts (e.g. a synthetic story authored in a test). Builds the
+    /// lookup indexes the parser would build; fails on duplicate ids.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        header: Header,
+        types: Vec<TypeInfo>,
+        enums: Vec<EnumDef>,
+        functions: Vec<Function>,
+        nodes: Vec<Node>,
+        adapters: Vec<Adapter>,
+        databases: Vec<Database>,
+        goals: Vec<Goal>,
+        global_actions: Vec<Action>,
+    ) -> Result<Self> {
+        let dup = |what| move |id| Error::DuplicateId { what, id };
+        let mut function_index = std::collections::HashMap::new();
+        for (i, f) in functions.iter().enumerate() {
+            function_index
+                .entry((f.signature.name.clone(), f.signature.arity()))
+                .or_insert(i);
+        }
+        Ok(Self {
+            header,
+            type_index: TypeIndex::new(&types),
+            types,
+            enums,
+            objects: Vec::new(),
+            functions,
+            nodes: Table::from_items(nodes).map_err(dup("node"))?,
+            adapters: Table::from_items(adapters).map_err(dup("adapter"))?,
+            databases: Table::from_items(databases).map_err(dup("database"))?,
+            goals: Table::from_items(goals).map_err(dup("goal"))?,
+            global_actions,
+            function_index,
+        })
+    }
+
     pub fn node(&self, id: NodeId) -> Option<&Node> {
         self.nodes.get(id)
     }
