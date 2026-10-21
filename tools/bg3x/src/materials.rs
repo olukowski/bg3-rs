@@ -20,15 +20,26 @@ fn channel_stats(vfs: &Vfs, path: &str) -> Option<String> {
         .or(levels.last())?
         .clone();
     let px = bg3_material::bc::decode_level(h.format, w, ht, data.get(range)?)?;
-    let n = (px.len() / 4) as f64;
-    let mut s = format!("{:?} {}x{}:", h.format, h.width, h.height);
+    Some(format!(
+        "{:?} {}x{}:{}",
+        h.format,
+        h.width,
+        h.height,
+        rgba_stats(&px)
+    ))
+}
+
+/// Per-channel mean and range of RGBA8 pixels.
+fn rgba_stats(px: &[u8]) -> String {
+    let n = (px.len() / 4).max(1) as f64;
+    let mut s = String::new();
     for (c, name) in "RGBA".chars().enumerate() {
         let vals = px.iter().skip(c).step_by(4);
         let mean = vals.clone().map(|&v| v as f64).sum::<f64>() / n / 255.0;
         let (lo, hi) = vals.fold((255u8, 0u8), |(lo, hi), &v| (lo.min(v), hi.max(v)));
         s += &format!(" {name}={mean:.2}[{lo}..{hi}]");
     }
-    Some(s)
+    s
 }
 
 pub fn survey(level_name: &str, verbose: bool) -> Result<()> {
@@ -36,6 +47,7 @@ pub fn survey(level_name: &str, verbose: bool) -> Result<()> {
     let level = Level::load(&vfs, level_name)?;
     let templates = RootTemplates::load(&vfs)?;
     let banks = ResourceBanks::load(&vfs)?;
+    let vts = bg3_vt::VirtualTextures::new(&vfs);
 
     // Materials of every LOD0 mesh of every object's visual.
     let mut uses: BTreeMap<&str, usize> = BTreeMap::new();
@@ -65,6 +77,9 @@ pub fn survey(level_name: &str, verbose: bool) -> Result<()> {
     for (&id, &n) in &uses {
         let Some(mat) = banks.materials.get(id) else {
             missing += 1;
+            if verbose {
+                println!("{id} ({n}×, e.g. at {:?}): not in any bank", example[id]);
+            }
             continue;
         };
         let source = mat.source_file.clone().unwrap_or_default();
@@ -126,6 +141,20 @@ pub fn survey(level_name: &str, verbose: bool) -> Result<()> {
                     tex.map_or("?", |t| t.name.as_str()),
                     tex.map(|t| t.srgb)
                 );
+            }
+            for id in &r.virtual_textures {
+                let Some(res) = banks.virtual_textures.get(id) else {
+                    println!("    VT {id}: not in banks");
+                    continue;
+                };
+                for layer in 0..3 {
+                    // A coarse level is enough for channel statistics.
+                    let stats = vts
+                        .extract(res, layer, 4, bg3_vt::OutputFormat::Rgba8)
+                        .map(|img| rgba_stats(&img.data))
+                        .unwrap_or_else(|e| e.to_string());
+                    println!("    VT {} layer {layer}: {stats}", res.name);
+                }
             }
             for (k, v) in &r.scalars {
                 println!("    {k} = {v}");

@@ -65,7 +65,7 @@ statistics of every Nautiloid map (`bg3x materials -v`):
 
 - **Normal map `_NM`** (BC3, linear): sampled `.wzyx`, i.e. tangent-space **X = A**, **Y = G**,
   **Z = B**; R is always 0. The shader then maps `x·T + z·N − y·Binormal` (it negates the Y). The
-  viewer re-packs to RG8 (R = A, G = G) and lets Bevy reconstruct Z. Integrability of the maps
+  viewer re-packs to BC5 (R = A, G = G) and lets Bevy reconstruct Z. Integrability of the maps
   shows green points along **+v** (rows down); the GR2 tangent frame mirrored into Bevy (see
   `coordinate-space.md`) has T along +u and the bitangent along +v, so **Bevy needs no
   `flip_normal_map_y`** (`examples/normal_convention.rs` checks all Nautiloid normal-mapped meshes).
@@ -83,36 +83,49 @@ statistics of every Nautiloid map (`bg3x materials -v`):
 
 The virtual texture has three layers (`SampleVirtualTexture(…, layer)`): **0 = base colour,
 1 = normal (same `.wzyx` swizzle), 2 = physical** (x metal, z occlusion, w SSS mask/thickness).
+Statistics of all 81 Nautiloid VTs (`bg3x materials -v`, coarse mip via `bg3-vt`) show the same
+channel layouts as the DDS maps for every graph, including `ENV_DetailMap_VT`: layer 1 has R = 0,
+G/A ≈ 0.5, B ≈ 1; layer 2 has R ≈ 0 except on metal, G mid-range, B ≈ 1 with dark crevices, A = 1.
+The albedo layer's alpha is opacity (e.g. glass ≈ 0.25).
 
 ## DDS files
 
 All 80 textures the Nautiloid's materials reference are legacy-header DDS (no `DX10` header, so no
 colour-space info: use the bank's `SRGB`), 2D, power-of-two, full mip chains: 43 BC1, 22 BC3, 8 BC4,
-1 BC5 (6 IDs have no texture resource). No BC7 or cube maps among them.
+1 BC5. No BC7 or cube maps among them. Defaults such as `Engine_Default_White`,
+`Engine_Default_Red`, `Engine_Default_BM` (checker) live in the **engine's** banks
+(`Public/Engine/Content/[PAK]_Engine/_merged.lsf`), which `ResourceBanks::load` therefore reads
+before the modules.
 
 ## Nautiloid survey (`bg3x materials`, `TUT_Avernus_C`)
 
-- 113 materials on LOD0 meshes (1 not in any bank). **94 take their main maps from virtual
-  textures** (`Base_VT`, `Base_SSS_VT`, `ENV_DetailMap_VT`, `Base_GM*_VT`, `Base_Translucency_VT`,
+- 113 materials on LOD0 meshes. **94 take their main maps from virtual textures** (`Base_VT`,
+  `Base_SSS_VT`, `ENV_DetailMap_VT`, `Base_GM*_VT`, `Base_Translucency_VT`,
   `Base_AlphaTest_2s_SSS_VT`, …), covering almost all walls, floors and organic architecture.
 - 15 have a plain base-colour map: glass (`Base_Glass*`), brain jars / aquarium
   (`VFX_Model_AlphaTest_DefaultLit_*`), `ENV_DetailMap` (non-VT exterior wall), membranes
   (`Base_SSS_AlphaTested`), shadow planes.
-- 3 have neither (`Helper_Color*` flat colours, the invisible overlay).
-- 33 shader graphs in total. `Helper_Invisible*` / `*_Invisible_*` graphs are helper geometry the
+- 4 have neither: `Helper_Color*` flat colours, the invisible overlay, and
+  `Engine_Default_Mesh_Lit_Opaque` (engine placeholder on 100 meshes; its maps are unnamed inputs).
+- 34 shader graphs in total. `Helper_Invisible*` / `*_Invisible_*` graphs are helper geometry the
   game doesn't draw; the viewer skips them.
+- The `VFX_Model_*` graphs glow from a vertex-colour mask unless `_Use_GlowMap_InsteadOfVCMask`
+  is set (their glow map is then an engine default), so the viewer gives them no glow.
 
 ## Viewer approximation (`viewer/src/materials.rs`)
 
-`StandardMaterial` per material ID: base colour + alpha mode, RG8 normal map, swizzled physical map
-as both `metallic_roughness_texture` and `occlusion_texture`, glow map as emissive. VT materials get
-flat grey (roughness 0.8) plus their glow map. Textures are deduplicated by (file, usage) and loaded
-with rayon: 51 textures (119 MiB GPU data) in ~40 ms on an M5 Pro.
+`StandardMaterial` per material ID: base colour + alpha mode, BC5 normal map, swizzled physical map
+as both `metallic_roughness_texture` and `occlusion_texture`, glow map as emissive (colour ×
+multiplier clamped to 10 × 150 nits, tuned by eye). Virtual-textured materials use their three
+VT layers (via `bg3-vt`, BC3 tiles kept compressed, converted like the DDS maps) from mip 1
+(`BG3_VT_LEVEL` overrides; 0 = full resolution). Textures are deduplicated by (file or VT, usage)
+and loaded with rayon. On an M5 Pro: 298 textures (55 DDS + 243 VT layers) = 276 MiB in ~65 ms at
+mip 1; 785 MiB in ~200 ms at mip 0.
 
 ## Open
 
-- Virtual textures (Granite `.gts`/`.gtp` tile sets referenced by `GTexFileName`) — needed for
-  almost every Nautiloid surface.
 - Detail maps (`ENV_DetailMap*`: `MicroDetailMap`, tiling, strengths), SSS, translucency, glow
-  animation, `Reflectance`, vertex-colour masks — would need a custom Bevy material/shader.
-- The glass dithering and the exact alpha-test threshold.
+  animation, `Reflectance`, vertex-colour masks, world-position offset — would need a custom Bevy
+  material/shader.
+- The glass dithering and the exact alpha-test threshold; `BlendStateID`s other than 0 and 7.
+- Streaming/feedback-driven VT residency (we extract whole textures up front).

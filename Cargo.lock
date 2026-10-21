@@ -2084,6 +2084,7 @@ dependencies = [
  "bg3-lsf",
  "bg3-material",
  "bg3-vfs",
+ "bg3-vt",
  "bg3-world",
  "clap",
  "rayon",
@@ -2113,6 +2114,7 @@ dependencies = [
  "bg3-lsf",
  "bg3-material",
  "bg3-vfs",
+ "bg3-vt",
  "rayon",
  "thiserror 2.0.21",
 ]
@@ -2131,6 +2133,7 @@ dependencies = [
  "bg3-stats",
  "bg3-story",
  "bg3-vfs",
+ "bg3-vt",
  "bg3-world",
  "clap",
 ]

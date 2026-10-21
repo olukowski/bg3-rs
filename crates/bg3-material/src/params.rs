@@ -58,10 +58,18 @@ fn read_param(c: &Node) -> Option<Param> {
         name,
         value,
         enabled,
+        // Texture parameters carry the binding directly; virtual textures per cache
+        // (`TranslationTable`, `Cache0` …) one level down.
         depth_pass: c.child("StaticDepth").is_some_and(|d| {
-            d.attr("DxPsIndex")
-                .and_then(|v| v.as_i64())
-                .is_some_and(|i| i >= 0)
+            let bound = |n: &Node| {
+                n.attr("DxPsIndex")
+                    .and_then(|v| v.as_i64())
+                    .is_some_and(|i| i >= 0)
+            };
+            bound(d)
+                || d.children
+                    .iter()
+                    .any(|c| c.name.starts_with("Cache") && bound(c))
         }),
     })
 }
@@ -127,12 +135,24 @@ mod tests {
             )
             .with_child(Node::new("StaticDepth").with_attr("DxPsIndex", Value::Int8(idx)))
         };
+        let vt = param(
+            "VirtualTextureParameters",
+            "virtualtexture",
+            false,
+            Value::FixedString("vt".into()),
+        )
+        .with_child(
+            Node::new("StaticDepth")
+                .with_child(Node::new("Cache0").with_attr("DxPsIndex", Value::Int8(1))),
+        );
         let node = Node::new("Material")
             .with_child(bound(0))
-            .with_child(bound(-1));
+            .with_child(bound(-1))
+            .with_child(vt);
         let params = read_params(&node);
         assert!(params[0].depth_pass);
         assert!(!params[1].depth_pass);
+        assert!(params[2].depth_pass);
     }
 
     #[test]

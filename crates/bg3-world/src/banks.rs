@@ -63,15 +63,8 @@ pub struct TextureResource {
     pub kind: i32,
 }
 
-/// A Granite virtual texture (`VirtualTextureBank`).
-#[derive(Debug, Clone)]
-pub struct VirtualTextureResource {
-    pub id: String,
-    pub name: String,
-    /// Tile-set file stem (`GTexFileName`).
-    pub gtex_file: Option<String>,
-    pub layer_config: u32,
-}
+/// A Granite virtual texture (`VirtualTextureBank`); see `bg3-vt`.
+pub use bg3_vt::VirtualTextureResource;
 
 #[derive(Debug, Default)]
 pub struct ResourceBanks {
@@ -95,8 +88,14 @@ struct BankFile {
 
 impl ResourceBanks {
     /// Scan every `_merged.lsf` under `Public/<Module>/` for each module in load order.
+    ///
+    /// The engine's own banks (`Public/Engine/`, e.g. default materials that level meshes
+    /// reference) come first.
     pub fn load(vfs: &Vfs) -> Result<Self> {
-        Self::load_modules(vfs, BASE_LOAD_ORDER)
+        let modules: Vec<&str> = std::iter::once("Engine")
+            .chain(BASE_LOAD_ORDER.iter().copied())
+            .collect();
+        Self::load_modules(vfs, &modules)
     }
 
     pub fn load_modules(vfs: &Vfs, modules: &[&str]) -> Result<Self> {
@@ -223,20 +222,7 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
             }
         })
         .collect();
-    let virtual_textures = resources(res, "VirtualTextureBank")
-        .map(|n| {
-            let (id, name) = id_name(n);
-            VirtualTextureResource {
-                id,
-                name,
-                gtex_file: str_attr(n, "GTexFileName"),
-                layer_config: n
-                    .attr("VirtualTextureLayerConfig")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0) as u32,
-            }
-        })
-        .collect();
+    let virtual_textures = VirtualTextureResource::read_bank(res);
     let kinds = res
         .regions
         .iter()

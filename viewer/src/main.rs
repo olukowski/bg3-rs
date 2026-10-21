@@ -1,7 +1,7 @@
 //! `bg3-viewer` — fly through BG3 levels.
 //!
-//! Current state: level objects rendered with their LOD0 GR2 meshes and flat placeholder
-//! materials; objects without a mesh (effects, …) are shown as small boxes.
+//! Current state: level objects rendered with their LOD0 GR2 meshes and textured materials
+//! (`materials.rs`); objects without a mesh (effects, …) are shown as small boxes.
 
 mod fly_camera;
 mod level;

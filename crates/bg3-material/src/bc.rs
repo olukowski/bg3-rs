@@ -111,6 +111,44 @@ pub fn swap_red_blue_bc1(block: &mut [u8], always_four: bool) {
     block[4..8].copy_from_slice(&bits.to_le_bytes());
 }
 
+/// Encode 16 values as a BC4 block: min/max endpoints (8-value mode), nearest index.
+/// Error is at most 1/14 of the block's value range.
+pub fn encode_bc4(values: &[u8; 16]) -> [u8; 8] {
+    let (lo, hi) = values
+        .iter()
+        .fold((255u8, 0u8), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    let mut block = [0u8; 8];
+    block[0] = hi;
+    block[1] = lo;
+    if hi == lo {
+        return block; // all indices 0 → hi
+    }
+    let span = (hi - lo) as u32;
+    let mut bits = 0u64;
+    for (i, &v) in values.iter().enumerate() {
+        // Step k = 0 (hi) … 7 (lo) along the 8-value ramp.
+        let k = (((hi - v) as u32 * 7 + span / 2) / span).min(7);
+        let index = match k {
+            0 => 0,
+            7 => 1,
+            k => k + 1,
+        } as u64;
+        bits |= index << (3 * i);
+    }
+    block[2..8].copy_from_slice(&bits.to_le_bytes()[..6]);
+    block
+}
+
+/// Re-pack a BG3 BC3 normal-map block (X in alpha, Y in green) as a BC5 block (X in red, Y in
+/// green). Red is the alpha block copied exactly; green is re-encoded from the decoded values.
+pub fn bc3_normal_to_bc5(block: &[u8]) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&block[..8]);
+    let green = decode_bc1(&block[8..16], true).map(|p| p[1]);
+    out[8..].copy_from_slice(&encode_bc4(&green));
+    out
+}
+
 /// Bytes per 4×4 block.
 pub fn block_bytes(format: crate::dds::DdsFormat) -> Option<usize> {
     use crate::dds::DdsFormat::*;
@@ -227,6 +265,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn bc4_encode_round_trip_is_close() {
+        let values: [u8; 16] = std::array::from_fn(|i| (i * 13 + 40) as u8);
+        let decoded = decode_bc4(&encode_bc4(&values));
+        let span = (values[15] - values[0]) as i32;
+        for (a, b) in values.iter().zip(decoded) {
+            assert!((*a as i32 - b as i32).abs() * 14 <= span + 14, "{a} vs {b}");
+        }
+        assert_eq!(decode_bc4(&encode_bc4(&[77; 16])), [77; 16]);
+    }
+
+    #[test]
+    fn bc3_normal_becomes_bc5_with_x_in_red() {
+        let mut bc3 = [0u8; 16];
+        bc3[0] = 200;
+        bc3[1] = 200; // alpha = 200 everywhere
+        let green = (32u16 << 5).to_le_bytes(); // G = 130
+        bc3[8..10].copy_from_slice(&green);
+        bc3[10..12].copy_from_slice(&green);
+        let bc5 = bc3_normal_to_bc5(&bc3);
+        assert_eq!(decode_bc4(&bc5[..8]), [200; 16]);
+        assert_eq!(decode_bc4(&bc5[8..]), [130; 16]);
     }
 
     #[test]

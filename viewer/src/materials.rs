@@ -1,9 +1,8 @@
-//! BG3 materials → Bevy `StandardMaterial`s with their plain (DDS) textures.
+//! BG3 materials → Bevy `StandardMaterial`s with their textures.
 //!
 //! Resolution (graph defaults, instance overrides, slots, blend modes) and channel re-packing
-//! live in `bg3-material`; this module only loads files, builds `Image`s and materials.
-//! Materials whose main maps come from virtual textures get a neutral grey for now, plus their
-//! glow map if they have one. See `docs/research/materials.md`.
+//! live in `bg3-material`; virtual textures are assembled by `bg3-vt`. This module only loads
+//! files, builds `Image`s and materials. See `docs/research/materials.md`.
 
 use std::collections::HashMap;
 
@@ -18,15 +17,29 @@ use bg3_vfs::Vfs;
 use bg3_world::ResourceBanks;
 use rayon::prelude::*;
 
+/// Virtual textures are extracted from this mip level down (0 = full resolution, up to
+/// 4096×2048 on the Nautiloid). 1 halves the size and quarters memory and load time.
+const VT_FIRST_LEVEL: usize = 1;
+
+/// `BG3_VT_LEVEL` overrides [`VT_FIRST_LEVEL`].
+fn vt_first_level() -> usize {
+    std::env::var("BG3_VT_LEVEL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(VT_FIRST_LEVEL)
+}
+
 /// How a texture is used, which decides its conversion and colour space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Usage {
-    /// Colour data; sRGB per the texture resource's `SRGB` flag.
-    Color {
-        srgb: bool,
-    },
+    /// DDS colour data; sRGB per the texture resource's `SRGB` flag.
+    Color { srgb: bool },
+    /// DDS normal map.
     Normal,
+    /// DDS physical map.
     Physical,
+    /// Layer of a virtual texture (0 albedo, 1 normal, 2 physical); the key is the VT ID.
+    VirtualLayer(usize),
 }
 
 /// Everything needed to build one `StandardMaterial`, with texture slots as indices into
@@ -50,6 +63,36 @@ pub struct PreparedMaterials {
 #[derive(Resource, Default)]
 pub struct LevelMaterials {
     pub by_id: HashMap<String, Option<Handle<StandardMaterial>>>,
+}
+
+/// Deduplicated list of textures to load.
+#[derive(Default)]
+struct TextureKeys {
+    keys: Vec<(String, Usage)>,
+    index: HashMap<(String, Usage), usize>,
+}
+
+impl TextureKeys {
+    fn add(&mut self, key: String, usage: Usage) -> usize {
+        let key = (key, usage);
+        if let Some(&i) = self.index.get(&key) {
+            return i;
+        }
+        self.keys.push(key.clone());
+        self.index.insert(key, self.keys.len() - 1);
+        self.keys.len() - 1
+    }
+
+    /// A `TextureBank` texture.
+    fn texture(
+        &mut self,
+        banks: &ResourceBanks,
+        id: &str,
+        usage: fn(bool) -> Usage,
+    ) -> Option<usize> {
+        let tex = banks.textures.get(id)?;
+        Some(self.add(tex.source_file.clone()?, usage(tex.srgb)))
+    }
 }
 
 impl PreparedMaterials {
@@ -78,34 +121,34 @@ impl PreparedMaterials {
             })
             .collect();
 
-        let mut keys: Vec<(String, Usage)> = Vec::new();
-        let mut index: HashMap<(String, Usage), usize> = HashMap::new();
-        let mut slot = |id: &str, usage: fn(bool) -> Usage| -> Option<usize> {
-            let tex = banks.textures.get(id)?;
-            let key = (tex.source_file.clone()?, usage(tex.srgb));
-            Some(*index.entry(key.clone()).or_insert_with(|| {
-                keys.push(key);
-                keys.len() - 1
-            }))
-        };
+        let mut keys = TextureKeys::default();
         let mut plans = HashMap::new();
         for (id, mat) in &materials {
             let path = mat.source_file.as_deref().unwrap_or_default();
             let material = resolve(path, graphs.get(path), &mat.params);
             let tex = |s: Slot| material.texture(s).map(|t| t.id.clone());
-            let vt = material.needs_virtual_texture();
+            let vt = material
+                .virtual_textures
+                .first()
+                .filter(|vt| banks.virtual_textures.contains_key(*vt));
             // With a virtual texture, the plain base/normal/physical parameters are graph
-            // leftovers (or detail inputs), so only the glow map is used.
-            let (base, normal, physical) = if vt {
-                (None, None, None)
-            } else {
-                (
-                    tex(Slot::BaseColor).and_then(|t| slot(&t, |s| Usage::Color { srgb: s })),
-                    tex(Slot::Normal).and_then(|t| slot(&t, |_| Usage::Normal)),
-                    tex(Slot::Physical).and_then(|t| slot(&t, |_| Usage::Physical)),
-                )
+            // leftovers or detail inputs: the VT layers take their place.
+            let (base, normal, physical) = match vt {
+                Some(vt) => (
+                    Some(keys.add(vt.clone(), Usage::VirtualLayer(0))),
+                    Some(keys.add(vt.clone(), Usage::VirtualLayer(1))),
+                    Some(keys.add(vt.clone(), Usage::VirtualLayer(2))),
+                ),
+                None if material.needs_virtual_texture() => (None, None, None),
+                None => (
+                    tex(Slot::BaseColor)
+                        .and_then(|t| keys.texture(banks, &t, |s| Usage::Color { srgb: s })),
+                    tex(Slot::Normal).and_then(|t| keys.texture(banks, &t, |_| Usage::Normal)),
+                    tex(Slot::Physical).and_then(|t| keys.texture(banks, &t, |_| Usage::Physical)),
+                ),
             };
-            let emissive = tex(Slot::Emissive).and_then(|t| slot(&t, |s| Usage::Color { srgb: s }));
+            let emissive = tex(Slot::Emissive)
+                .and_then(|t| keys.texture(banks, &t, |s| Usage::Color { srgb: s }));
             plans.insert(
                 (*id).to_owned(),
                 Plan {
@@ -118,32 +161,40 @@ impl PreparedMaterials {
             );
         }
 
+        let vts = bg3_vt::VirtualTextures::new(vfs);
         let decoded: Vec<Option<Image>> = keys
+            .keys
             .par_iter()
-            .map(|(path, usage)| match load_texture(vfs, path, *usage) {
-                Ok(img) => Some(img),
-                Err(e) => {
-                    eprintln!("texture {path}: {e}");
-                    None
-                }
-            })
+            .map(
+                |(key, usage)| match load_texture(vfs, &vts, banks, key, *usage) {
+                    Ok(img) => Some(img),
+                    Err(e) => {
+                        eprintln!("texture {key} ({usage:?}): {e}");
+                        None
+                    }
+                },
+            )
             .collect();
         let bytes: usize = decoded
             .iter()
             .flatten()
             .filter_map(|i| i.data.as_ref().map(Vec::len))
             .sum();
-        let vt = plans
+        let count = |f: fn(&Usage) -> bool| keys.keys.iter().filter(|(_, u)| f(u)).count();
+        let virtual_layers = count(|u| matches!(u, Usage::VirtualLayer(_)));
+        let missing_vt = plans
             .values()
-            .filter(|p| p.material.needs_virtual_texture())
+            .filter(|p| p.material.needs_virtual_texture() && p.base.is_none())
             .count();
         let textured = plans.values().filter(|p| p.base.is_some()).count();
         eprintln!(
-            "materials: {} resolved ({textured} with plain base colour, {vt} virtual-textured → grey), {} graphs; {}/{} textures ({:.0} MiB) in {:.2?}",
+            "materials: {} resolved ({textured} textured, {missing_vt} with an unresolved virtual texture), {} graphs; {}/{} textures ({} DDS, {virtual_layers} VT layers from mip {}), {:.0} MiB, in {:.2?}",
             plans.len(),
             graphs.len(),
             decoded.iter().flatten().count(),
-            keys.len(),
+            keys.keys.len(),
+            keys.keys.len() - virtual_layers,
+            vt_first_level(),
             bytes as f64 / (1024.0 * 1024.0),
             started.elapsed()
         );
@@ -154,12 +205,47 @@ impl PreparedMaterials {
     }
 }
 
-fn load_texture(vfs: &Vfs, path: &str, usage: Usage) -> anyhow::Result<Image> {
-    let dds = vfs.read(path)?;
+fn load_texture(
+    vfs: &Vfs,
+    vts: &bg3_vt::VirtualTextures,
+    banks: &ResourceBanks,
+    key: &str,
+    usage: Usage,
+) -> anyhow::Result<Image> {
     let (texture, srgb) = match usage {
-        Usage::Normal => (convert::normal_map(&dds)?, false),
-        Usage::Physical => (convert::physical_map(&dds)?, false),
+        Usage::VirtualLayer(layer) => {
+            let res = banks
+                .virtual_textures
+                .get(key)
+                .ok_or_else(|| anyhow::anyhow!("not in VirtualTextureBank"))?;
+            let mips = vts.extract_mips(res, layer, vt_first_level(), bg3_vt::OutputFormat::Bc)?;
+            let first = mips.first().ok_or_else(|| anyhow::anyhow!("no mips"))?;
+            let format = match first.format {
+                bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc1) => DdsFormat::Bc1,
+                bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc3) => DdsFormat::Bc3,
+                bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc4) => DdsFormat::Bc4,
+                bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc5) => DdsFormat::Bc5,
+                bg3_vt::ImageFormat::Rgba8 => anyhow::bail!("expected BC tiles"),
+            };
+            let srgb = first.srgb;
+            let t = Texture {
+                format: TexelFormat::Bc(format),
+                width: first.width,
+                height: first.height,
+                mip_count: mips.len() as u32,
+                data: mips.iter().flat_map(|m| &m.data).copied().collect(),
+            };
+            // Same channel layouts as the DDS maps (see docs/research/materials.md).
+            match layer {
+                1 => (convert::normal_texture(t)?, false),
+                2 => (convert::physical_texture(t)?, false),
+                _ => (t, srgb),
+            }
+        }
+        Usage::Normal => (convert::normal_map(&vfs.read(key)?)?, false),
+        Usage::Physical => (convert::physical_map(&vfs.read(key)?)?, false),
         Usage::Color { srgb } => {
+            let dds = vfs.read(key)?;
             let t = convert::passthrough(&dds)?;
             // Single-channel maps would sample as red only; expand them to grey RGBA.
             let t = if t.format == TexelFormat::Bc(DdsFormat::Bc4) {

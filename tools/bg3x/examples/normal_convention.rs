@@ -128,7 +128,7 @@ fn mesh_side(vfs: &Vfs, gr2: &str, mesh: &str) -> Option<(f64, f64)> {
         ]
     };
     let (mut sum, mut sum_t, mut n) = (0.0, 0.0, 0.0);
-    for tri in m.indices.chunks_exact(3) {
+    for tri in m.indices.as_chunks::<3>().0 {
         let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
         let (e1, e2) = (sub(p(b), p(a)), sub(p(c), p(a)));
         let (du1, dv1) = (uv[b][0] - uv[a][0], uv[b][1] - uv[a][1]);

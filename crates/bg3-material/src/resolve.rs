@@ -78,8 +78,14 @@ impl ResolvedMaterial {
     /// First approximation: the graphs' pulse/gradient animations (`MinGlow`/`MaxGlow`,
     /// `PulseSpeed`, …) are ignored, and the multiplier is clamped to 10 because a few
     /// materials use values in the hundreds that only make sense with BG3's exposure.
+    ///
+    /// The `VFX_Model_*` graphs glow from a vertex-colour mask unless
+    /// `_Use_GlowMap_InsteadOfVCMask` is set; that mask isn't modelled, so they don't glow.
     pub fn glow(&self) -> Option<[f32; 3]> {
         self.texture(Slot::Emissive)?;
+        if self.scalar("_Use_GlowMap_InsteadOfVCMask") == Some(0.0) {
+            return None;
+        }
         let color = ["GlowColour", "GlowColor", "GlowMap_ColorMult"]
             .iter()
             .find_map(|n| self.vector(n))
@@ -127,10 +133,14 @@ pub fn resolve(
     }
     let file = graph_path.rsplit('/').next().unwrap_or(graph_path);
     // Alpha testing: the depth pass samples the base colour (its alpha decides coverage).
+    // (For virtual textures the depth pass binds the albedo layer's cache.)
     let alpha_tested = params.iter().any(|p| {
         p.depth_pass
-            && matches!(p.value, ParamValue::Texture(_))
-            && classify(&p.name) == Slot::BaseColor
+            && match p.value {
+                ParamValue::Texture(_) => classify(&p.name) == Slot::BaseColor,
+                ParamValue::VirtualTexture(_) => true,
+                _ => false,
+            }
     });
     let blend = match graph {
         Some(g) if g.alpha_blended() => BlendMode::Blend,
@@ -287,6 +297,12 @@ mod tests {
         assert_eq!(m.glow(), Some([2.0, 1.0, 0.0]));
         assert_eq!(m.flat_color(), Some([0.1, 0.2, 0.3]));
         assert_eq!(resolve("x", Some(&graph(vec![])), &[]).glow(), None);
+        let vc_masked = [p(
+            "_Use_GlowMap_InsteadOfVCMask",
+            ParamValue::Scalar(0.0),
+            true,
+        )];
+        assert_eq!(resolve("x", Some(&g), &vc_masked).glow(), None);
     }
 
     #[test]

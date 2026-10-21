@@ -4,8 +4,10 @@
 //! - normal map (`_NM`, BC3): tangent-space X in **A**, Y in **G**, Z in **B**, R unused;
 //! - physical map (`_PM` BC1 / `_PMA` BC3): **R** metalness, **G** roughness, **B** occlusion.
 //!
-//! glTF/Bevy want normal XY in RG and metallic-roughness as G = roughness, B = metalness with
-//! occlusion in R — so the physical map needs only an R↔B swap, done losslessly on the blocks.
+//! glTF/Bevy want normal XY in RG (BC5: the BC3 alpha block is copied, green re-encoded) and
+//! metallic-roughness as G = roughness, B = metalness with occlusion in R — so the physical map
+//! needs only an R↔B swap, done losslessly on the blocks. The virtual textures' normal and
+//! physical layers use the same layouts.
 
 use crate::bc;
 use crate::dds::{DdsFormat, DdsHeader};
@@ -99,35 +101,76 @@ fn decoded_rgba(h: &DdsHeader, levels: &[Level<'_>]) -> Result<Texture, ConvertE
     })
 }
 
-/// BG3 normal map → two-channel RG8 (R = X from alpha, G = Y from green). Z is reconstructed by
-/// the renderer. BC5 maps are already two-channel and pass through.
+/// BG3 normal map (DDS) → two-channel (X in red, Y in green); see [`normal_texture`].
 pub fn normal_map(dds: &[u8]) -> Result<Texture, ConvertError> {
-    let (h, levels) = levels(dds)?;
-    let pick: fn(&[u8; 4]) -> [u8; 2] = match h.format {
-        DdsFormat::Bc5 => return passthrough(dds),
-        DdsFormat::Bc3 => |p| [p[3], p[1]],
-        // Without alpha the X component can only be in red.
-        DdsFormat::Bc1 => |p| [p[0], p[1]],
-        f => return Err(ConvertError::Unsupported(f)),
-    };
+    normal_texture(passthrough(dds)?)
+}
+
+/// Re-pack a BG3 normal map (X in alpha, Y in green; also the virtual textures' normal layer)
+/// as two channels so the renderer reconstructs Z: BC3 → BC5 block by block, BC5 as is, anything
+/// else decoded to RG8.
+pub fn normal_texture(mut t: Texture) -> Result<Texture, ConvertError> {
+    match t.format {
+        TexelFormat::Bc(DdsFormat::Bc3) => {
+            for block in t.data.as_chunks_mut::<16>().0 {
+                *block = bc::bc3_normal_to_bc5(block);
+            }
+            t.format = TexelFormat::Bc(DdsFormat::Bc5);
+        }
+        TexelFormat::Bc(DdsFormat::Bc5) => {}
+        TexelFormat::Bc(f @ DdsFormat::Bc1) => {
+            // No alpha: X can only be in red.
+            t = rg8_from(t, f, |p| [p[0], p[1]])?;
+        }
+        TexelFormat::Rgba8 => {
+            t.data = t
+                .data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [p[3], p[1]])
+                .collect();
+            t.format = TexelFormat::Rg8;
+        }
+        TexelFormat::Bc(f) => return Err(ConvertError::Unsupported(f)),
+        TexelFormat::Rg8 => {}
+    }
+    Ok(t)
+}
+
+fn rg8_from(
+    t: Texture,
+    format: DdsFormat,
+    pick: fn(&[u8; 4]) -> [u8; 2],
+) -> Result<Texture, ConvertError> {
+    let block = bc::block_bytes(format).ok_or(ConvertError::Unsupported(format))?;
     let mut data = Vec::new();
-    for &(w, ht, bytes) in &levels {
-        let px =
-            bc::decode_level(h.format, w, ht, bytes).ok_or(ConvertError::Unsupported(h.format))?;
+    let mut off = 0;
+    for level in 0..t.mip_count {
+        let (w, h) = ((t.width >> level).max(1), (t.height >> level).max(1));
+        let len = bc::mip_bytes(w, h, block);
+        let px = t
+            .data
+            .get(off..off + len)
+            .and_then(|b| bc::decode_level(format, w, h, b))
+            .ok_or(ConvertError::Truncated)?;
         data.extend(px.as_chunks::<4>().0.iter().flat_map(pick));
+        off += len;
     }
     Ok(Texture {
         format: TexelFormat::Rg8,
-        width: h.width,
-        height: h.height,
-        mip_count: levels.len() as u32,
         data,
+        ..t
     })
 }
 
-/// BG3 physical map → occlusion (R), roughness (G), metalness (B), by swapping R and B.
+/// BG3 physical map (DDS) → occlusion (R), roughness (G), metalness (B); see [`physical_texture`].
 pub fn physical_map(dds: &[u8]) -> Result<Texture, ConvertError> {
-    let mut t = passthrough(dds)?;
+    physical_texture(passthrough(dds)?)
+}
+
+/// Swap R and B of a physical map (also the virtual textures' physical layer), exactly.
+pub fn physical_texture(mut t: Texture) -> Result<Texture, ConvertError> {
     match t.format {
         TexelFormat::Bc(DdsFormat::Bc1) => t
             .data
@@ -148,7 +191,7 @@ pub fn physical_map(dds: &[u8]) -> Result<Texture, ConvertError> {
             .iter_mut()
             .for_each(|p| p.swap(0, 2)),
         TexelFormat::Bc(f) => return Err(ConvertError::Unsupported(f)),
-        TexelFormat::Rg8 => unreachable!("passthrough never yields RG8"),
+        TexelFormat::Rg8 => return Err(ConvertError::Unsupported(DdsFormat::Bc5)),
     }
     Ok(t)
 }
@@ -187,9 +230,19 @@ mod tests {
         // G = 32/63 → 130, alpha 200, R = 0, B = 31 → 255.
         let colour = (32 << 5) | 31;
         let t = normal_map(&dds(4, 4, b"DXT5", &bc3_solid(200, colour))).unwrap();
-        assert_eq!(t.format, TexelFormat::Rg8);
-        assert_eq!(t.data.len(), 16 * 2);
-        assert_eq!(&t.data[..2], &[200, 130]);
+        assert_eq!(t.format, TexelFormat::Bc(DdsFormat::Bc5));
+        assert_eq!(t.data.len(), 16);
+        assert_eq!(bc::decode_bc4(&t.data[..8])[0], 200);
+        assert_eq!(bc::decode_bc4(&t.data[8..])[0], 130);
+        // Uncompressed fallback keeps the same mapping.
+        let rgba = Texture {
+            format: TexelFormat::Rgba8,
+            width: 1,
+            height: 1,
+            mip_count: 1,
+            data: vec![0, 130, 255, 200],
+        };
+        assert_eq!(normal_texture(rgba).unwrap().data, [200, 130]);
     }
 
     #[test]
