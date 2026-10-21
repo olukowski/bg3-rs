@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use bg3_sim::combat::ai::AiPlan;
 use bg3_sim::combat::{AiAction, CombatEvent};
 use bg3_sim::{Game, Guid, Sim};
 
@@ -14,6 +15,8 @@ pub struct Options {
     pub max_turns: usize,
     pub events: bool,
     pub nav: bool,
+    /// `--ai-debug`: print this many candidates per AI decision.
+    pub ai_debug: Option<usize>,
 }
 
 fn find(sim: &Sim, s: &str) -> Option<Guid> {
@@ -132,7 +135,12 @@ pub fn run(o: Options) -> Result<()> {
         println!("turn order: {}", order.join(" | "));
         let mut turns = Vec::new();
         for _ in 0..o.max_turns {
-            let next = game.combat_auto(cid, 1);
+            let top = o.ai_debug;
+            let next = game.combat_auto_traced(cid, 1, &mut |sim, plan| {
+                if let Some(n) = top {
+                    print_plan(sim, plan, n);
+                }
+            });
             if next.is_empty() {
                 break;
             }
@@ -186,6 +194,68 @@ pub fn run(o: Options) -> Result<()> {
         .spawn(run)?
         .join()
         .map_err(|_| anyhow::anyhow!("combat thread panicked"))?
+}
+
+/// `--ai-debug`: the best candidates of one decision with their score parts.
+fn print_plan(sim: &Sim, plan: &AiPlan, top: usize) {
+    let n = |g: Guid| name(sim, g);
+    println!(
+        "  [ai] {} (archetype {}, average damage {:.1}): {} candidates{}",
+        n(plan.actor),
+        plan.archetype,
+        plan.average_damage,
+        plan.candidates.len(),
+        if plan.chosen().is_none() {
+            ", none scores above 0: ends turn"
+        } else {
+            ""
+        }
+    );
+    for (i, c) in plan.candidates.iter().take(top).enumerate() {
+        println!(
+            "  [ai] {}{:>2}. {:>8.2}  {} -> {}{}  chance {:.0}% (believed {:.0}%)  walk {:.1} m to {:.1?}",
+            if i == 0 && plan.chosen().is_some() {
+                "*"
+            } else {
+                " "
+            },
+            i + 1,
+            c.score,
+            c.spell,
+            n(c.target),
+            if c.this_turn { "" } else { " (next turn)" },
+            c.chance * 100.0,
+            c.believed * 100.0,
+            c.tile.cost,
+            c.tile.position,
+        );
+        println!(
+            "  [ai]        score {:.2} - cost {:.2}; position raw {:.4} (allies {:.4}, enemies {:.4}, far {:.4}); AoO damage {:.2}{}",
+            c.breakdown.total,
+            c.cost,
+            c.position.raw(),
+            c.position.allies,
+            c.position.enemies,
+            c.position.far,
+            c.aoo_damage,
+            if c.breakdown.invalid { "; invalid" } else { "" },
+        );
+        for t in &c.breakdown.targets {
+            let e = c.effects.get(t.entity);
+            println!(
+                "  [ai]        {:<28} {:>8.2} = damage {:.2} (exp. {:.2}{}) heal {:.2} dot {:.2} raw {:.2}; x{:.2}",
+                n(t.entity),
+                t.total,
+                t.damage,
+                e.damage,
+                if t.kill { ", kill" } else { "" },
+                t.heal,
+                t.dot,
+                t.raw,
+                t.target_multiplier,
+            );
+        }
+    }
 }
 
 fn print_events(sim: &Sim, events: Vec<CombatEvent>, verbose: bool) {

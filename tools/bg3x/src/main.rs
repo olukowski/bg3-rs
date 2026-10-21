@@ -239,8 +239,8 @@ enum Command {
         #[arg(long)]
         regions: bool,
     },
-    /// Run a fight headless on bg3-sim with the story (party and enemies on the approximate
-    /// AI) and print the combat log, e.g. `bg3x combat TUT_Avernus_C --party
+    /// Run a fight headless on bg3-sim with the story (party and enemies on the scoring AI)
+    /// and print the combat log, e.g. `bg3x combat TUT_Avernus_C --party
     /// S_Player_Laezel,S_Player_ShadowHeart --target S_FirstFight_Imp_Melee_01`. The party
     /// stands 3 m from the target.
     Combat {
@@ -263,6 +263,12 @@ enum Command {
         /// Follow the level AI grid and print movement walkability diagnostics.
         #[arg(long)]
         nav: bool,
+        /// Print each AI decision's best candidates with their score breakdowns.
+        #[arg(long)]
+        ai_debug: bool,
+        /// How many candidates `--ai-debug` prints per decision.
+        #[arg(long, default_value_t = 5)]
+        ai_top: usize,
     },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
@@ -416,6 +422,8 @@ fn main() -> Result<()> {
             max_turns,
             events,
             nav,
+            ai_debug,
+            ai_top,
         } => combat::run(combat::Options {
             level,
             party,
@@ -424,6 +432,7 @@ fn main() -> Result<()> {
             max_turns,
             events,
             nav,
+            ai_debug: ai_debug.then_some(ai_top),
         }),
         Command::Nav {
             level,

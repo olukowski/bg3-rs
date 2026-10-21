@@ -549,9 +549,9 @@ fn ai_stops_on_path_in_attack_range() {
 fn ai_without_a_path_stays_put_and_ends_turn_but_can_attack_in_range() {
     let mut s = path_fight(Arc::new(NoPath));
     let from = s.entity(g(HERO1)).unwrap().position;
+    // No route to anyone: the walk towards the imp doesn't move, which the AI rejects.
     let action = s.ai_turn(g(HERO1)).unwrap();
-    assert!(matches!(action, AiAction::MovedOnly { moved: 0.0, .. }));
-    assert!(action.path().is_empty());
+    assert_eq!(action, AiAction::Nothing);
     assert_eq!(s.entity(g(HERO1)).unwrap().position, from);
     assert_eq!(
         s.combatant(g(HERO1)).unwrap().resources.get("Movement"),

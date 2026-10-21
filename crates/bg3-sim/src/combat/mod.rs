@@ -359,6 +359,9 @@ impl Sim {
                 if out.combat_group.is_none() {
                     out.combat_group = c.combat_group.clone();
                 }
+                if out.archetype.is_none() {
+                    out.archetype = c.archetype.clone();
+                }
             }
         }
         out
