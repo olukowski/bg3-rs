@@ -48,8 +48,13 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
   sheets from stats, dialog checks through `bg3-rules`); the story starts dialogs on the sim and
   all six dialogs of the recorded opening run on it event for event (`dialog_e2e`,
   `bg3x sim-replay`, `bg3x dialog --walk --sim`); `bg3_sim::Game` packages VM + sim for a front end
-- [ ] Integration step 2: the viewer drives a live `bg3_sim::Game` (ticks, dialog panel from
-  notifications, player choices)
+- [x] Integration step 2: the viewer drives a live `bg3_sim::Game` (`bg3-viewer --play`,
+  headless `bg3x play`): new game started like the trace (character creation skipped, placeholder
+  avatar), characters/items follow on-stage state and story teleports, the avatar's position goes
+  back to the sim and trigger volumes raise `EnteredTrigger`/`LeftTrigger`, clicking a character
+  raises `DialogStartRequested`, story dialogs show in a panel with rolls (`live_game` tests)
+- [ ] Live game gaps: item use (`UseStarted`, e.g. the Brinepool), character creation, combat/HP,
+  perception, path-found scripted moves, the ~60 story functions `bg3x play` lists as missing
 
 ## M5 — First playable slice
 - [x] Characters: visuals, skinning, idle animation, weapons in hand (docs/research/characters.md)

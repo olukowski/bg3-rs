@@ -73,6 +73,9 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   text, keep it local), `sim-replay [TRACE] [--check|--both] [--inventory] [--dump OUT]
   [--no-dialogs]` (the same with `bg3-sim` as the engine, running the story's dialogs too, see
   `docs/research/osiris-engine-api.md`),
+  `play [--seconds N] [--choices 1,2] [--talk NAME] [--move-to x,y,z] [--triggers SUBSTR]`
+  (the viewer's `--play` headless: new game, dialogs with rolls, stage changes, the story
+  functions still missing; output is game text, keep it local),
   `rules eval "<expr>" --kind condition|functor|roll|expr`, `rules cast <spell>`, `rules survey`
   (stats expression languages, see `docs/formats/stats-expressions.md`),
   `nav [LEVEL] [--regions] [--subgrids] [--at x,y,z] [--path=x,y,z --path=x,y,z]` (AI grid summary,
@@ -84,6 +87,10 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `--dialog <name>` runs a dialog in an on-screen panel (number keys pick options).
   `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled
   character (`--player <name>`, default nearest the camera target), `--walk-to x,y,z` on start.
+  `--play` starts a new game on `bg3_sim::Game` (thread with a 1 GiB stack) and drives the level
+  from it: characters follow the story, the avatar's position feeds trigger volumes, left click on
+  a character asks to talk, story dialogs show in a panel. `--talk <name>` clicks a character on
+  start, `--shot-after <secs>` delays `--shot`.
 - Scratch output goes in `.cache/` only.
 - Thin arm64 slices for REA/Ghidra (it can't open the universal binary):
   `lipo -thin arm64 -output .cache/bin/bg3-arm64 "<app>/Contents/MacOS/Baldur's Gate 3"`.

@@ -25,6 +25,7 @@ straight from **your own installed copy** of Baldur's Gate 3, without modifying 
 | **Quest scripting (Osiris)** | The compiled story loads, and our VM **replays a recorded session of the real game's opening with 100% matching behaviour**: 8,434 rule firings, 15,722 database changes, 16,511 queries, in the same order |
 | **Characters** | All 54 Nautiloid characters assembled from their visuals, skinned, holding their weapons and playing their idle animation; all 228,541 animations decode |
 | **Dialogue** | All 9,386 compiled dialogs parse; a headless runner replays the six Nautiloid dialogs in our trace with exactly the logged events; try `bg3x dialog <name> --walk` or the viewer's `--dialog` panel |
+| **Play mode** | `bg3-viewer --play` starts a new game on our engine: the story runs live, characters appear, vanish and teleport as it says, walking into trigger volumes fires story events, clicking a character starts its dialog, and dialogs (with dice rolls) show on screen. Character creation is skipped (a placeholder avatar) |
 | **Simulation** | Our own engine state (flags, tags, statuses, timers, entities) answers 87% of the scripts' engine queries in the recorded opening, with **zero disagreements** with the real game; the replay still matches 100% |
 | **Rules** | Every expression in the stats files parses (functors, conditions, dice formulas, boosts, …), plus the game's 75 Lua-based helper scripts; attacks, saving throws and damage evaluate between test combatants with the game's own dice generator |
 | Combat flow, movement, UI | Not started yet; see the roadmap |
@@ -49,12 +50,16 @@ cd bg3-rs
 # Check that your install is found (set BG3_INSTALL=/path/to/game if it isn't)
 cargo run --release -p bg3x -- info
 
-# Fly through the Nautiloid
+# Wake up on the Nautiloid: the story runs live (character creation is skipped)
+cargo run --release -p bg3-viewer -- --play
+
+# Or just fly through it
 cargo run --release -p bg3-viewer -- --camera=-25,30,-389 --look-at=-60,14,-389
 ```
 
 **Viewer controls:** hold the right mouse button to look around · `W A S D` to move · `Q`/`E` to go
-down/up · `Shift` to go faster.
+down/up · `Shift` to go faster. With `--play`: left click the floor to walk, left click a
+character to talk to it; in dialogs `1`–`9` choose and `Space` skips a line.
 
 Other things to try:
 

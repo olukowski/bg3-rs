@@ -314,6 +314,44 @@ How the numbers moved while building it (sim mode, segments identical): no sim (
 character creation, a race override on the instance) → 100% with 0 disagreements after objects
 created outside the sim fell back to the log and the instance `Race` was read.
 
+## Live game (no trace)
+
+`bg3_sim::start::new_game` starts the campaign in the trace's order (`InitGame`,
+`GameModeStarted("Campaign", 0, 0)`, the character-creation level, `CharacterMadePlayer`,
+`CharacterReservedUserIDChanged`, `GainedControl`, `CharacterSelectedForUser`,
+`CompanionSelectedForUser`, `CharacterJoinedParty`, `CharacterCreationFinished`, the story's
+`TeleportPartiesToLevelWithMovie`, `LevelUnloading`, `LevelLoaded`, `LevelGameplayStarted`,
+`LevelGameplayReady`). **Placeholder:** character creation is skipped; the avatar and guardian are
+made from the trace's preset root templates with fixed UUIDs, and the user profile id is a fixed
+string. The party lands on the level's `TriggerStart` trigger (`S_TUT_StartPoint_001`, the
+position of the trace's `Teleported(…, "RegionSwap")`).
+
+`bg3_sim::presentation` adds, for live games only (`Stage::live`; the replay numbers above don't
+include them):
+
+| Function / event | Behaviour | Source |
+|---|---|---|
+| `SetOnStage` → `WentOnStage(<bare uuid>, on)` | only when the state changes | trace (`esv::OsirisGameFunctions::SetOnStage`) |
+| `SetVisible` | state only | `esv::OsirisGameFunctions::SetVisible` |
+| `TeleportTo`, `TeleportToPosition` | into another level: `LeftLevel`, `EnteredLevel`, `Teleported(…, "RegionSwap")`; else `Teleported(…, "Invalid")` / `ItemTeleported`; then `EntityEvent(object, event)` | trace (Shadowheart, the avatar, the pod); order *inferred* |
+| `CharacterMoveTo` | straight line at the default run/walk speed (no path finding yet), `EntityEvent` on arrival | trace; speed is a placeholder |
+| `TriggerRegisterForCharacter` / `Unregister…` → `EnteredTrigger` / `LeftTrigger` | registered characters for area triggers; every character for `RoomTrigger`s | trace (*inferred* split), `esv::trigger::TrackingSystem` |
+| `GetPosition`, `GetReservedUserID`, `GetUserProfileID` | from the sim's state | |
+| `DialogStartRequested(target, player)` | raised for the player's click; the story selects and starts the dialog (`QRY_SelectAndStartDialog`) | `esv::CharacterProtocol::ProcessMsg` → `esv::StoryDialogEventManager::ThrowDialogRequestEvent` (the only caller) |
+
+Trigger shapes (level `Triggers` objects and their root templates, `PhysicsType`): 1 sphere
+(`Radius`), 2 box (`Extents` = half sizes, *inferred*: only then is the start point inside
+`S_TUT_SaveTrigger_Start` and `S_TUT_MovementTutorialArea_001`, which the trace reports the
+avatar entering; test `live_game::start_point_is_in_the_traced_triggers`), 3 prism over `Points`
+(local x/z) up `Height` from the position (*inferred*).
+
+What runs: the intro dialog, the automated wake-up line, walking into `S_TUT_Misc_RubbleRoom_001`
+starts the devourer victim's ambient dialog, clicking the victim starts `TUT_Lab_TrappedDevourer`
+with its rolls; 14 characters the story takes off stage in the trace are off stage
+(`live_game::new_game_plays_the_opening`, `bg3x play`). Not yet: item use (the Brinepool),
+combat, perception; `bg3x play` lists the ~60 story functions still unimplemented
+(`RegisterWaypoint`, `EnableTutorialEvent`, crime switches, `GetHostCharacter`, …).
+
 ## RE notes (symbols, 4.1.1.7631656)
 
 - `esv::OsirisDialogFunctions::SetFlag/GetFlag/ClearFlag` → `scr::SetFlag`, `scr::GetFlag`:

@@ -78,3 +78,12 @@ The front end drives one `bg3_sim::Game` (the story VM plus the `Sim`): `tick(dt
 `dialog_advance` / `dialog_choose`, and `take_notifications()` for what to show (dialog lines,
 choices, rolls). Everything stays headless and deterministic (seeded dice), so the trace harness
 and the game run the same code.
+
+A **live** game adds `bg3_sim::start` (`load_game`, `new_game`: the campaign start of the
+trace with character creation skipped) and `bg3_sim::presentation`: on-stage/visibility state,
+teleports and scripted moves, trigger volumes from the level data, the player's input
+(`set_position`, `request_dialog_with` → `DialogStartRequested`) and `presences()` for the
+front end. Those Osiris functions answer only when `Stage::live` is set, so the trace replay is
+unaffected. `bg3-viewer --play` runs the `Game` on its own thread (deep rule recursion needs a
+big stack): each frame it sends the frame time and input and gets back changed presences and
+dialog notifications; Bevy only presents (`viewer/src/play.rs`).
