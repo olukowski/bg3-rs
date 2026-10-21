@@ -227,6 +227,12 @@ pub trait RulesContext {
         let _ = e;
         None
     }
+    /// The ability of unarmed melee attacks (`UnarmedAttackAbility` of the `Character` stats
+    /// entry, `Strength` in `_Base`).
+    fn unarmed_attack_ability(&self, e: EntityId) -> Ability {
+        let _ = e;
+        Ability::Strength
+    }
     /// Flat bonus to the spell save DC from boosts (`SpellSaveDC(n)`).
     fn spell_dc_bonus(&self, e: EntityId) -> i32 {
         let _ = e;
@@ -240,6 +246,17 @@ pub trait RulesContext {
     fn weapon(&self, e: EntityId, hand: Hand) -> Option<Weapon> {
         let _ = (e, hand);
         None
+    }
+    /// The weapon an attack of the given type uses. Defaults to [`RulesContext::weapon`] for
+    /// the attack's hand; contexts with separate melee and ranged weapon slots (the engine's
+    /// `Melee Main Weapon` / `Ranged Main Weapon`) pick by the attack type.
+    fn attack_weapon(&self, e: EntityId, attack: AttackType) -> Option<Weapon> {
+        let hand = if attack.is_offhand() {
+            Hand::Off
+        } else {
+            Hand::Main
+        };
+        self.weapon(e, hand)
     }
     fn resistance(&self, e: EntityId, t: DamageType) -> Resistance {
         let _ = (e, t);

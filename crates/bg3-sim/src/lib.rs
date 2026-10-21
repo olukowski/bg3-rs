@@ -28,6 +28,7 @@
 
 pub mod api;
 pub mod character;
+pub mod combat;
 pub mod dialog;
 pub mod driver;
 pub mod entity;
@@ -46,6 +47,7 @@ pub mod timers;
 
 pub use api::StoryState;
 pub use character::{CharacterDef, CharacterSheet};
+pub use combat::{Combat, CombatEvent, Combatant};
 pub use dialog::{
     DialogBank, DialogError, DialogInstance, DialogRollRecord, DialogScript, InstanceState,
     Notification, SimDialogWorld,

@@ -44,7 +44,7 @@ pub enum LoadError {
 /// Object directories that hold story-relevant objects.
 const OBJECT_DIRS: &[&str] = &["Characters", "Items", "Triggers"];
 
-fn parse(vfs: &Vfs, path: &str) -> Result<bg3_lsf::Resource, LoadError> {
+pub(crate) fn parse(vfs: &Vfs, path: &str) -> Result<bg3_lsf::Resource, LoadError> {
     let data = vfs.read(path)?;
     bg3_lsf::parse(&data).map_err(|source| LoadError::Lsf {
         path: path.to_owned(),
@@ -52,13 +52,13 @@ fn parse(vfs: &Vfs, path: &str) -> Result<bg3_lsf::Resource, LoadError> {
     })
 }
 
-fn s(node: &Node, name: &str) -> Option<String> {
+pub(crate) fn s(node: &Node, name: &str) -> Option<String> {
     node.attr(name)
         .map(ToString::to_string)
         .filter(|s| !s.is_empty())
 }
 
-fn guid_attr(node: &Node, name: &str) -> Option<Guid> {
+pub(crate) fn guid_attr(node: &Node, name: &str) -> Option<Guid> {
     s(node, name).and_then(|v| Guid::parse(&v))
 }
 
@@ -160,7 +160,7 @@ pub fn load_tags(vfs: &Vfs) -> Result<TagDefs, LoadError> {
     Ok(out)
 }
 
-fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = &Node> {
+pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = &Node> {
     res.region("Templates")
         .into_iter()
         .flat_map(|n| n.children_named("GameObjects"))
@@ -498,6 +498,7 @@ impl GameData {
             characters: crate::character::character_defs(stats),
             level_maps: bg3_rules::levelmap::LevelMaps::load(vfs, BASE_LOAD_ORDER),
             difficulty_classes: load_difficulty_classes(vfs)?,
+            combat: crate::combat::CombatData::new(),
         };
         let mut names: Vec<String> = levels.iter().map(|l| (*l).to_owned()).collect();
         if names.is_empty() {
@@ -508,6 +509,7 @@ impl GameData {
                 .cloned()
                 .collect();
         }
+        data.combat = crate::combat::CombatData::load(vfs, stats, &names)?;
         for l in names {
             let objs = load_level_objects(vfs, &l)?;
             data.levels.insert(l, objs);

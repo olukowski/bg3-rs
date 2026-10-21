@@ -134,6 +134,8 @@ pub struct GameData {
     pub level_maps: LevelMaps,
     /// `DifficultyClasses`: the DC of each difficulty class (dialog rolls refer to them).
     pub difficulty_classes: HashMap<Guid, i32>,
+    /// What combat needs (factions, resources, weapons, spells, …).
+    pub combat: crate::combat::CombatData,
 }
 
 impl GameData {
@@ -286,6 +288,8 @@ pub struct Sim {
     pub quest_steps: HashSet<Guid>,
     /// What happened, for the presentation layer (lines to show, choices to offer, …).
     pub(crate) notifications: Vec<Notification>,
+    /// Fights and combatants (see [`crate::combat`]).
+    pub combat: crate::combat::CombatState,
 }
 
 /// An argument of an observed engine event: the declared Osiris type name of the parameter
