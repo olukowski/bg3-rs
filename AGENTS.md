@@ -69,7 +69,9 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   see `docs/research/osiris-runtime-log.md`), `dialog <name> [--walk] [--choices 1,2] [--rolls s,f]
   [--events] | --list <substr>` (dialog tree with loca text, or a walk with the runner; output is
   game text, keep it local), `sim-replay [TRACE] [--check|--both] [--inventory] [--dump OUT]`
-  (the same with `bg3-sim` as the engine, see `docs/research/osiris-engine-api.md`).
+  (the same with `bg3-sim` as the engine, see `docs/research/osiris-engine-api.md`),
+  `rules eval "<expr>" --kind condition|functor|roll|expr`, `rules cast <spell>`, `rules survey`
+  (stats expression languages, see `docs/formats/stats-expressions.md`).
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
   level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),

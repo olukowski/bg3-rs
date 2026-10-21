@@ -24,6 +24,7 @@ How the game's files are laid out, written in our own words: [formats/](formats/
 | [virtual-textures.md](formats/virtual-textures.md) | Granite virtual textures (`.gts` / `.gtp`) |
 | [loca.md](formats/loca.md) | Localization strings |
 | [stats.md](formats/stats.md) | Stats text files and their inheritance |
+| [stats-expressions.md](formats/stats-expressions.md) | The languages inside stats fields (functors, conditions, formulas, boosts), Thoth `.khn` scripts, and D&D rolls |
 | [osiris-story.md](formats/osiris-story.md) | Compiled Osiris quest scripts (`story.div.osi`) |
 | [dialog.md](formats/dialog.md) | Dialogs: node types, flags, speakers, and the runtime rules for walking them |
 
@@ -87,6 +88,14 @@ still open.
 : Text files defining spells, items, statuses, characters and passives, with inheritance
   (`using "Parent"`) across modules. They include a small expression language for conditions and
   effects.
+
+**Functor**
+: A stats effect such as `DealDamage(…)` or `ApplyStatus(…)`, listed in fields like
+  `SpellSuccess`. See [stats-expressions.md](formats/stats-expressions.md).
+
+**Thoth / `.khn`**
+: The engine's embedded Lua 5.3 (plus `try`/`catch`). Stats conditions are compiled to Thoth, and
+  their helper functions are `.khn` scripts.
 
 **Module ("mod")**
 : A layer of game content. The base game is several modules loaded in order (`Shared`, `Gustav`,

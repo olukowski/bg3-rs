@@ -132,6 +132,9 @@ Namespaces: `new entry` objects share one namespace across all types; `ItemCombi
 
 ## Expression-valued fields (kept as raw strings)
 
+`bg3-stats` keeps these as strings; their languages are parsed and evaluated by `bg3-rules`, see
+[stats-expressions.md](stats-expressions.md).
+
 The field schema is `Structure/Modifiers.txt` (`modifier "Field","ValueType"`). Expression types:
 
 - `StatsFunctors` — e.g. SpellData `SpellProperties`, `SpellSuccess`, `SpellFail`,

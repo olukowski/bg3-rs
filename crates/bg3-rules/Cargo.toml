@@ -1,0 +1,20 @@
+[package]
+name = "bg3-rules"
+description = "Baldur's Gate 3 rules engine: the stats expression languages (functors, conditions, boosts, formulas), the Thoth condition scripting language, and D&D 5e rolls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bg3-lsf.workspace = true
+bg3-stats.workspace = true
+bg3-vfs.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bg3-install.workspace = true
+bg3-pak.workspace = true
+
+[lints]
+workspace = true

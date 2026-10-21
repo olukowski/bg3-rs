@@ -12,6 +12,7 @@ prior art (e.g. LSLib) where that informed us.
 | [virtual-textures.md](virtual-textures.md) | Granite `.gts` / `.gtp` | `bg3-vt` |
 | [loca.md](loca.md) | `.loca` localization | `bg3-loca` |
 | [stats.md](stats.md) | Stats text files | `bg3-stats` |
+| [stats-expressions.md](stats-expressions.md) | Stats expression languages (functors, conditions, formulas, boosts), Thoth `.khn` scripts, rolls | `bg3-rules` |
 | [osiris-story.md](osiris-story.md) | Compiled Osiris story | `bg3-story` |
 | [dialog.md](dialog.md) | Dialogs (`DialogsBinary`), dialog resources, flags, and how dialogs run | `bg3-dialog` |
 

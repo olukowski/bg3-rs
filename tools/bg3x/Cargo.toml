@@ -18,6 +18,7 @@ bg3-lsf.workspace = true
 bg3-pak.workspace = true
 bg3-sim.workspace = true
 bg3-stats.workspace = true
+bg3-rules.workspace = true
 bg3-story.workspace = true
 bg3-vt.workspace = true
 bg3-world.workspace = true

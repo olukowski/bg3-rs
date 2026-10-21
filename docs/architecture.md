@@ -5,7 +5,7 @@
 ```
  game / viewer (Bevy)      bg3-viewer          (planned: bg3-game, UI, audio, animation plugins)
                                 │
- simulation (headless)     bg3-osiris · bg3-sim · bg3-dialog · bg3-stats · bg3-world   (planned: bg3-rules, nav)
+ simulation (headless)     bg3-osiris · bg3-sim · bg3-dialog · bg3-rules · bg3-stats · bg3-world   (planned: nav)
                                 │
  file formats (no Bevy)    bg3-pak · bg3-vfs · bg3-lsf · bg3-gr2 · bg3-vt · bg3-loca · bg3-story · bg3-material
                                 │
@@ -47,9 +47,10 @@
 | `bg3-vt` | Granite virtual textures | done |
 | `bg3-material` | Shader-graph parameters, material instances, texture slot/channel mapping | first approximation |
 | `bg3-world` | Resource banks, root templates, levels, terrain, lights | done for rendering |
+| `bg3-rules` | Stats expression languages (functors, conditions, formulas, boosts), Thoth (Lua 5.3) parser and interpreter, rolls, `RulesContext` | all fields and `.khn` parse; single-target casts evaluate |
 | `bg3x` | Command-line inspector over all of the above | |
 | `bg3-viewer` | Bevy level viewer | |
 
-Planned: `bg3-rules` (stats expressions, rolls, combat), navigation, dialogue, animation, and
-UI. See the
+Planned: navigation, combat flow, and UI. `bg3-sim` will implement
+`bg3_rules::RulesContext` and `bg3_dialog::DialogWorld`. See the
 [roadmap](roadmap.md).
