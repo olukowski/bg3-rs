@@ -1,0 +1,17 @@
+/target/
+**/*.rs.bk
+
+# Anything derived from the user's game install — never commit.
+/.cache/
+/extracted/
+/traces/
+*.pak
+*.lsf
+*.lsv
+*.gr2
+*.GR2
+*.osi
+*.wem
+*.bnk
+
+.DS_Store
