@@ -95,6 +95,13 @@ pub const SIM_OWNED_EVENTS: &[&str] = &[
     "StatusApplied",
     "StatusRemoved",
     "BaseFactionChanged",
+    "TagEvent",
+    "CharacterTagEvent",
+    "EntityEvent",
+    "UseStarted",
+    "TemplateUseStarted",
+    "UseFinished",
+    "TemplateUseFinished",
     // Raised by the sim's dialogs (from `DIALOG_EVENTS_FROM` on).
     "DialogStarted",
     "AutomatedDialogStarted",
@@ -576,6 +583,23 @@ impl Host for HarnessHost<'_> {
         st.sim += 1;
         let sim_text = render(ctx, sim_ok, &sim_args, out);
         match &logged {
+            // Some successful engine queries log an unset output (GetHostCharacter from
+            // an untyped call in the DLC timer). The VM normalizes its output type, so it
+            // cannot reproduce that call-site quirk. Keep the incomplete logged answer to
+            // preserve the replay, but do not count it as agreement or disagreement.
+            Some(ans)
+                if sim_ok
+                    && ans.ok
+                    && out.iter().any(|o| *o)
+                    && ans
+                        .values
+                        .iter()
+                        .zip(out)
+                        .all(|(v, o)| !*o || matches!(v.v, LogData::Unset)) =>
+            {
+                st.ungraded += 1;
+                return ReplayHost::apply(ctx, ans, args, out);
+            }
             Some(ans) if ans.segment == self.segment => {
                 let log_text = render_logged(ans, out);
                 if sim_text == log_text {
@@ -679,7 +703,7 @@ impl Pending {
 }
 
 /// Index of the first dialog event in [`SIM_OWNED_EVENTS`].
-const DIALOG_EVENTS_FROM: usize = 10;
+const DIALOG_EVENTS_FROM: usize = 17;
 
 /// The dialog instance an event belongs to. `by_dialog` finds the instance of a dialog by its
 /// `Name_<uuid>` (for `DialogRollResult`, which names no instance).
@@ -977,6 +1001,14 @@ pub fn sim_replay(story: &Story, log: &str, data: GameData, opts: &Options) -> S
                     && !pending.contains(&key, &uuid)
                 {
                     dialogs.pump(&mut sim, &mut pending, inst, &key, &uuid);
+                }
+                // The trace has no frame clock. Advance a requested script use's lifecycle
+                // when its corresponding logged start/finish arrives, like forced timers.
+                if matches!(name.as_str(), "UseStarted" | "UseFinished") {
+                    sim.update_item_uses();
+                    for e in sim.take_events() {
+                        pending.push(e);
+                    }
                 }
                 // A timer the sim has running fires when the log says it did.
                 if matches!(name.as_str(), "TimerFinished" | "ObjectTimerFinished") {

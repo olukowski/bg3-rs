@@ -85,10 +85,10 @@ source:
 | party | `CharacterJoinedParty`, `CharacterLeftParty`, `AttachedToPartyGroup` |
 | inventory and equipment (treasure generation, equipment sets) | `AddedTo`, `TemplateAddedTo`, `Equipped`, `TemplateEquipped`, `EquipFailed`, `StackedWith`, `GoldChanged`, `UnlockedRecipe` |
 | combat, HP, death, perception, AI | `HitpointsChanged`, `Died`, `Dying`, `Saw`, `LostSightOf`, `ReactionInterruptAdded`, `MoveCapabilityChanged`, `CanBeLootedCapabilityChanged`, `ObscuredStateChanged`, `SwarmAIGroupJoined`, `CastSpell`, `UsingSpell`, `RollResult`, `Fell`, `Falling` |
-| interaction | `UseStarted`/`Finished`, `RequestCanUse`, `Opened`, `Closed`, `TemplateOpening`, `EnteredTrigger`, `LeftTrigger`, `Activated`, `Deactivated`, `WentOnStage`, `ReposeAdded` |
+| interaction | `RequestCanUse`, `Opened`, `Closed`, `TemplateOpening`, `EnteredTrigger`, `LeftTrigger`, `Activated`, `Deactivated`, `WentOnStage`, `ReposeAdded` |
 | dialog | `DialogStartRequested` (the player clicks someone); dialog events of dialogs the sim did not start |
 | crime | `CrimeIsRegistered`, `CrimeProcessingStarted`, `OnCrimeRemoved` |
-| scripts and misc | `EntityEvent`, `UserEvent`, `TagEvent`, `CharacterTagEvent`, `OnStoryOverride`, `TutorialEvent`, `TutorialClosed`, `QuestAccepted`, `QuestUpdateUnlocked`, `RelationChanged`, `Teleported`, … |
+| scripts and misc | `UserEvent`, `OnStoryOverride`, `TutorialEvent`, `TutorialClosed`, `QuestAccepted`, `QuestUpdateUnlocked`, `RelationChanged`, `Teleported`, … |
 
 Observing an external event updates the sim the way the engine's own state changed: objects
 named with a `CHARACTER`/`ITEM`/`TRIGGER` parameter exist (kind from the type),
@@ -257,6 +257,91 @@ and the sim for a front end: `tick(dt)` (dialogs start, timers fire, events are 
 `dialog_advance` / `dialog_choose` (player input), `take_notifications` (dialog lines, choices,
 rolls to show). `bg3x dialog <name> --walk --sim` plays a dialog on the sim's world.
 
+## Small story APIs and item use (2026-10-21)
+
+`story_misc` dispatches the same compiled-story signatures in replay and live games. Symbols
+were located in the reference build's symbol index; this addition used data resources and
+runtime logs, without decompilation. `story_data` reads resources through the install VFS.
+No resource contents or trace files are committed.
+
+| Functions | State / answer | Limits |
+|---|---|---|
+| `SetHasDialog/2`, `SetCanInteract/2`, `SetCanFight/2`, `SetDetached/2`, `MakeNPC/1` | `Entity::story` retains dialog/interact/fight overrides, detachment and player/NPC state | Flags are readable by a front end; combat and presentation systems must opt into these overrides. `MakeNPC` does not remove a character from the party. |
+| `CharacterDisableCrime/2`, `CharacterEnableCrime/2`, `CharacterDisableAllCrimes/1` | per-crime overrides and the all-crimes switch; disabling all clears older overrides, a later enable can override it | Crime detection and investigation remain absent. |
+| `AddPreferredAiTargetTag/2`, `AddPassive/2` | ordered, duplicate-free target tags and script passives; an existing character sheet receives the passive too | AI targeting and passive boost execution are not added here. |
+| `GetHostCharacter/1` | avatar selected by `CharacterSelectedForUser`, as a bare UUID | Single local host; platform/user ownership beyond the opening is not established. |
+| `GetInventoryOwner/2`, `TemplateIsInInventory/3` | current inventory holder; count of known matching-template items, including nested containers, with cycle protection | Treasure generation and stack quantities are not added. All 97 owner and 63 template queries agree with the opening log; its template counts are zero. |
+| `DataGetBackgroundTagCount/2`, `DataGetGodTagCount/2`, `DataGetReallyTagCount/2` and the three corresponding `…At/3` queries | `Origins/Origins.lsx` maps `GlobalTemplate` to `ReallyTags`, `BackgroundUUID`, `GodUUID`; background/god `Tags` are read from their definition resources | These are character-creation data, not the current merged tags. Empty/missing lists fail, indices start at **1**, outputs are `Name_uuid`. Custom character-creation choices are not available. All 57 queries agree with the trace. |
+| `IterateOriginTags/3` | current tags in the `Origin` category → `CharacterTagEvent(character, tag, each_label)`, then `EntityEvent(character, finish_label)` | Template tags are available during story INIT, before their merge. The ten logged origin tag events match. |
+| `IterateTagsCategory/3` | definitions in the requested enum category → `TagEvent(tag, each_label)`, then `EntityEvent(NULL, finish_label)` | 95 non-ignored category tag events and both completion events match. Iteration uses deterministic resource order; the original's order **within a multi-tag category is not established** by the replay's queue matcher. |
+| `CheckRulesetModifierBool/3`, `CheckRulesetModifierString/3`, `GetRulesetModifierString/2` | modifier `Default`, overlaid by `RULESET_LARIAN`, then `DIFFICULTY_MEDIUM` values from `Ruleset/{RulesetModifiers,Rulesets,RulesetValues}.lsx` | Balanced only; unknown modifiers remain data gaps. Boolean/string checks return an integer comparison result, not query success/failure. All 16 queries agree. |
+| `GetDisplayName/2`, `GetIdentity/3` | nearest instance/template translated-string handle; identity selector 0 from `MALE`/`FEMALE` identity tags | Runtime custom display names (`ResStr_…`) cannot be inferred from a template, so replay leaves characters without an explicit runtime name to the log (including companions loaded from saves). Other identity selectors remain data gaps. |
+| `CharacterGetOwner/2`, `IsPartyFollower/2`, `IsActive/2` | explicit owner/follower/active state; activation/deactivation events update active state | No summoning/ownership or follower subsystem is introduced; the opening's queried defaults agree. |
+| `CharacterHasDLC/3` | explicit, optional per-character entitlement set | Platform entitlements cannot be inferred from installed paks. Without host-provided data, this is a **data gap**, not an invented false answer. |
+| `GetMaxPartySize/1` | 4, verified by all five opening queries | The reference campaign default; configurable/modded party limits are not loaded. |
+
+`InitializePlayerData/1` is a **placeholder**: it records initialization on the entity, without
+creating equipment, spells, or a character-creation selection. `SetMagicPocketsFlag/3` and
+`ClearMagicPocketsFlag/3` maintain a separate `(character, flag)` set and retain their full
+requests. Their propagation into ordinary story flags/party inventories remains a placeholder;
+the two existing `FlagSet` gaps remain visible in replay.
+
+The following are **recorded requests**, available through `Sim::take_story_effects`, with
+no simulated UI/save/recipe/scheduler effect: `RegisterWaypoint/2`, `EnableTutorialEvent/2`,
+`SetForceUpdate/2`, `UnlockRecipe/3`, `AddEntryToCustomBook/2`, `MapMarkerChangeLevel/2`,
+`LookAtEntity/3`, `SetAiHint/2`, `AutoSave/0`. Their arguments remain available to a front end.
+
+### Item-use evidence and supported lifecycle
+
+`full-nautiloid.log` contains twelve complete uses (48 instance/template use events). The
+opening's five script `Use(character, item, int, int, completion_label)` calls precede their
+use events. For calls with a nonempty completion label, `EntityEvent(character, label)` comes
+before `UseStarted`; story reactions to that event can run first. The common sequence is:
+
+1. `UseStarted(character, item)`; its entire story reaction runs.
+2. `TemplateUseStarted(character, root_template, item)`.
+3. `UseFinished(character, item, 1)`; its story reaction runs.
+4. `TemplateUseFinished(character, root_template, item, 1)`.
+
+For the operation chair and drain beds these events are adjacent engine deliveries, apart
+from the story processing between them. Shadowheart and the other occupied chair also have
+story/status events between start and finish. The Brinepool is `S_TUT_Start_Brinepool`:
+`UseStarted` invokes `PROC_ProcessUseItemWithDialog`; `TemplateUseStarted` follows, then
+`DialogStarted` for `TUT_Start_Brinepool`, then the successful finish pair **while the dialog
+is still running**. Dialog completion is later. Doors also have `Opened`/`Opening` and
+`TemplateOpening` events before their use pair; those action effects are not implemented here.
+The trace has **no timestamps or frame markers**: adjacency does not prove the same tick, and
+no exact duration can be inferred.
+
+`Game::use_item(user, item)` and script `Use/5` now queue the lifecycle without delivering
+events inside the call. `Sim::tick` starts requests and completes them on a later tick;
+requested dialogs start before item completions in that tick. This scheduling is an explicit
+headless approximation, not a measured animation duration. The two integer script options are
+retained without inventing their full meaning. Script use can seat an NPC on an item already
+disabled with `SetCanInteract(…, 0)`, as the opening does; player use respects that switch.
+Sit/lie uses retain `Entity::story::using_item`; animation and physical occupancy constraints
+are not simulated.
+
+Use availability comes from the **nearest explicit** `OnUsePeaceActions` list, instance first,
+then the root-template chain; an explicit empty list blocks inheritance. The Brinepool has an
+instance action (type 8) overriding an empty ancestor list; chair/bed actions (types 14/15)
+are inherited. Combat lists and action attributes are retained for an executor. The current
+lifecycle accepts these three observed action kinds, without nonempty conditions or healing;
+other action kinds are rejected rather than reported as executed. Spell/consumable/door/lever
+action effects, path-to-item, range, and animations need their own implementations. Combat uses are rejected until combat action selection is established; no claim is made
+about unobserved action outcomes.
+
+`live_game::using_brinepool_starts_the_traced_dialog` starts a new game, finishes the intro,
+uses the pool through `Game::use_item`, and asserts the five-event sequence through dialog
+start and successful item completion. Synthetic tests cover disabled player vs scripted use,
+unsupported actions, one completion per request, removal during use, nested inventory cycles,
+and origin queries driving story iteration.
+
+Replay now grades tag iteration and the four use events as sim-owned. With no clock in the
+log, requested script uses are advanced at logged use boundaries (as timers already are).
+Player-driven uses remain trace inputs in replay; the new install test exercises that API
+without a trace.
+
 ## Validation: `sim-replay`
 
 The VM boots the story and receives the logged events in order. Sim-owned events are matched
@@ -283,11 +368,29 @@ Results on `full-nautiloid.log` (12 382 segments = `InitGame` + 12 381 events):
 |---|---|---|
 | segments identical to the game (every fact, rule, call, query, PROC, goal record) | 100.00% | **100.00%** |
 | databases with identical fact history | 1 133 / 1 133 | 1 133 / 1 133 |
-| queries answered by the sim | 11 917 / 13 543 (88.0%) | 11 917 / 13 543 (88.0%) |
+| queries answered by the sim | 12 183 / 13 543 (89.96%) | 12 183 / 13 543 (89.96%) |
 | sim answers that disagree with the game | 0 | 0 |
-| queries from the log: not implemented / implemented, no data | 1 180 / 446 | 1 180 / 446 |
-| calls run by the sim | 473 / 1 115 (42.4%) | 473 / 1 115 |
+| queries from the log: not implemented / implemented, no data | 842 / 518 | 842 / 518 |
+| calls run by the sim | 779 / 1 115 (69.87%) | 779 / 1 115 |
 | dialog instances run by the sim, every event equal to the log | 6 / 6 | 6 / 6 |
+
+Before the small-story/item-use change, the measured baseline was **11 919 / 13 543
+(88.01%)**, with 0 disagreements and 510 / 1 115 calls run. Afterwards, 12 181 answers agree,
+0 disagree, and **2 are ungraded**: `GetHostCharacter` calls in the DLC timer log a successful
+query with an unset output, followed by four typed calls returning the avatar UUID. The VM
+normalizes the output type; the discrepancy appears to be a call-site typing quirk. Those
+two incomplete logged answers are preserved in both
+modes and excluded from agreement/disagreement totals. All 12 382 segments and all 1 133
+database fact histories remain identical in both modes. Only successful queries for which
+**every output is unset in the log** are treated this way; success/failure and defined output
+mismatches still count as disagreements.
+
+The loaded-save trace `combat-20261021-183321.log` was also checked against an unchanged
+checkout of the branch's starting commit: **11 disagreements before and after** (faction,
+party membership and dialog participants absent from the loaded-save initialization), with
+answers increasing from 1 084 / 1 178 to 1 092 / 1 178. It does not start with a new-game
+initialization sequence, so it is not the zero-disagreement opening benchmark. No combat or
+dialog implementation files were changed by this work.
 
 Before the dialogs ran on the sim (`--no-dialogs`, and the state of this page before): 11 742
 queries answered (86.7%), 458 calls, 5 863 sim-owned events generated, otherwise the same.
@@ -309,9 +412,14 @@ Sim-owned events (both modes):
 | `StatusApplied` | 210 | 135 | 7 | 68 | 17 |
 | `StatusRemoved` | 7 | 4 | 0 | 3 | 0 |
 | `BaseFactionChanged` | 9 | 9 | 0 | 0 | 0 |
+| `TagEvent` | 103 | 95 | 8 (ignored) | 0 | 0 |
+| `CharacterTagEvent` | 10 | 10 | 0 | 0 | 0 |
+| `EntityEvent` | 24 | 16 | 1 | 7 | 0 |
+| `UseStarted` / `TemplateUseStarted` | 12 / 12 | 5 / 5 | 3 / 3 | 4 / 4 | 0 |
+| `UseFinished` / `TemplateUseFinished` | 12 / 12 | 5 / 5 | 3 / 3 | 4 / 4 | 0 |
 
 Every event the sim raised for a story call (flags, tags, timers, statuses) matches the game;
-the gaps are all engine-side: two `FlagSet`s from `SetMagicPocketsFlag` (not implemented),
+the gaps are all engine-side: two `FlagSet`s from `SetMagicPocketsFlag` (propagation not implemented),
 `TagSet`s from gender and passive/boost tags (`MALE` on templates without it, `*_ADV` tags),
 `TagCleared` from a shapeshift, and statuses applied by passives. The extras are spawn
 `StatusList` statuses and weight tags the game did not apply (doors and some chests, see open
@@ -356,9 +464,20 @@ avatar entering; test `live_game::start_point_is_in_the_traced_triggers`), 3 pri
 What runs: the intro dialog, the automated wake-up line, walking into `S_TUT_Misc_RubbleRoom_001`
 starts the devourer victim's ambient dialog, clicking the victim starts `TUT_Lab_TrappedDevourer`
 with its rolls; 14 characters the story takes off stage in the trace are off stage
-(`live_game::new_game_plays_the_opening`, `bg3x play`). Not yet: item use (the Brinepool),
-combat, perception; `bg3x play` lists the ~60 story functions still unimplemented
-(`RegisterWaypoint`, `EnableTutorialEvent`, crime switches, `GetHostCharacter`, …).
+(`live_game::new_game_plays_the_opening`, `bg3x play`). The Brinepool now works through item
+use, as described above. The measured `play --quiet` missing-functions list falls from **67
+to 29**; newly reached initialization branches account for some of what remains:
+
+| Remaining functions | Why |
+|---|---|
+| `RemoveSpell/3` (36), `GetEquippedItem/3` (11), `IsInInventoryOf/3`, `IterateInventoryByTemplate/4`, `ToInventory/5` | Spellbook/equipment mutations and inventory iteration/transfers need their own semantics. |
+| `DialogSetVariableTranslatedString/3` (5) | Runtime translated dialog variables/custom names. |
+| `BlockFlee/1`, `CombatGetGuidFor/2`, `SetImmortal/2`, `CanTrade/2`, `SetCanTrade/2`, `IsControlled/2` | Combat, trade, control and ownership integration beyond this change. |
+| `GetModuleVersion/5`, `IsGameStateRunning/1`, `IterateUsers/2`, `NotifyCharacterCreationFinished/0`, `StartCharacterCreation/0`, `SatisfiesTagExpression/3`, `Random/2` | Session/module/character-creation services, tag expressions and engine random semantics. |
+| `HideAllActivities/1`, `PlayHUDSound/2`, `PlayLoopEffect/5`, `QuestUpdate/3`, `SetDoNotFaceFlag/2`, `SetLevelStartingDialog/2`, `ShowActivity/1`, `ShowTutorial/2`, `StartActivity/1`, `TriggerSetSoundState/4` | Additional presentation/journal requests outside the requested API inventory. |
+
+Uncounted data gaps remain visible in replay (notably platform DLC entitlements and custom
+names); being registered does not imply that every call has enough data to answer.
 
 ## RE notes (symbols, 4.1.1.7631656)
 
@@ -429,30 +548,30 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 
 | Subsystem | calls (uses) | queries (uses) | events (deliveries) | in bg3-sim |
 |---|---|---|---|---|
-| Character creation | 3 (12) | 1 (6) | 5 (5) | 1 of 9 |
-| Combat, AI & perception | 13 (168) | 8 (652) | 21 (1941) | 5 of 42 |
-| Crime | 5 (51) | 10 (48) | 3 (9) | 0 of 18 |
-| Dialog | 5 (40) | 11 (177) | 8 (38) | 19 of 24 |
-| Entities & templates | 10 (180) | 12 (4518) | 9 (229) | 5 of 31 |
-| Flags | 5 (83) | 2 (63) | 1 (34) | 5 of 8 |
-| Inventory & items | 8 (19) | 15 (673) | 19 (2456) | 1 of 42 |
-| Levels & game flow | 5 (7) | 6 (226) | 10 (358) | 4 of 21 |
-| Math & strings | 0 (0) | 9 (635) | 0 (0) | 6 of 9 |
+| Character creation | 3 (12) | 1 (6) | 5 (5) | 2 of 9 |
+| Combat, AI & perception | 13 (168) | 8 (652) | 21 (1941) | 8 of 42 |
+| Crime | 5 (51) | 10 (48) | 3 (9) | 3 of 18 |
+| Dialog | 5 (40) | 11 (177) | 8 (38) | 20 of 24 |
+| Entities & templates | 10 (180) | 12 (4518) | 9 (229) | 12 of 31 |
+| Flags | 5 (83) | 2 (63) | 1 (34) | 7 of 8 |
+| Inventory & items | 8 (19) | 15 (673) | 19 (2456) | 10 of 42 |
+| Levels & game flow | 5 (7) | 6 (226) | 10 (358) | 7 of 21 |
+| Math & strings | 0 (0) | 9 (635) | 0 (0) | 8 of 9 |
 | Movement | 2 (7) | 0 (0) | 3 (7) | 0 of 5 |
-| Other | 2 (11) | 0 (0) | 0 (0) | 0 of 2 |
-| Party & users | 5 (26) | 12 (586) | 7 (22) | 2 of 24 |
-| Presentation | 5 (7) | 1 (3) | 0 (0) | 0 of 6 |
-| Quests & journal | 2 (4) | 0 (0) | 2 (2) | 0 of 4 |
+| Other | 2 (11) | 0 (0) | 0 (0) | 1 of 2 |
+| Party & users | 5 (26) | 12 (586) | 7 (22) | 7 of 24 |
+| Presentation | 5 (7) | 1 (3) | 0 (0) | 1 of 6 |
+| Quests & journal | 2 (4) | 0 (0) | 2 (2) | 1 of 4 |
 | Statuses | 2 (37) | 6 (4532) | 6 (440) | 11 of 14 |
-| Tags | 5 (313) | 8 (1418) | 4 (6790) | 5 of 17 |
+| Tags | 5 (313) | 8 (1418) | 4 (6790) | 16 of 17 |
 | Timers | 6 (79) | 0 (0) | 2 (42) | 8 of 8 |
-| Tutorials | 6 (71) | 2 (6) | 2 (8) | 0 of 10 |
+| Tutorials | 6 (71) | 2 (6) | 2 (8) | 1 of 10 |
 
 ### Character creation
 
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
-| call | `InitializePlayerData/1` | 10 |  |  | `InitializePlayerData((CHARACTER)S_Player_Karlach_…)` |
+| call | `InitializePlayerData/1` | 10 |  | yes | `InitializePlayerData((CHARACTER)S_Player_Karlach_…)` |
 | call | `NotifyCharacterCreationFinished/0` | 1 |  |  | `NotifyCharacterCreationFinished()` |
 | call | `StartCharacterCreation/0` | 1 |  |  | `StartCharacterCreation()` |
 | query | `IsCharacterCreationLevel/2` | 6 |  | yes | `IsCharacterCreationLevel("SYS_CC_I", [out] 1)` |
@@ -469,11 +588,11 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | call | `ClearRelation/2` | 104 |  |  | `ClearRelation((FACTION)ACT0_TUT_LabDevourer_…, (FACTION)Hero_Player1_…)` |
 | call | `RemoveSpell/3` | 36 |  |  | `RemoveSpell(Gnomes_Male_Deep_Player_…, "Shout_Bard_Perform_DOS2_1_Drum", 1)` |
 | call | `SetFaction/2` | 9 |  | yes | `SetFaction((CHARACTER)S_Player_Karlach_…, (FACTION)Origin_Karlach_…)` |
-| call | `SetCanFight/2` | 5 |  |  | `SetCanFight(S_TUT_Helm_MindFlayer_…, 0)` |
+| call | `SetCanFight/2` | 5 |  | yes | `SetCanFight(S_TUT_Helm_MindFlayer_…, 0)` |
 | call | `SetRelation/3` | 4 |  |  | `SetRelation((FACTION)ACT0_TUT_LabDevourer_…, (FACTION)Hero_…, 0)` |
-| call | `SetAiHint/2` | 2 |  |  | `SetAiHint((CHARACTER)S_TUT_Helm_MindFlayer_…, (TAG)AI_HINT_UNIQUE_…)` |
+| call | `SetAiHint/2` | 2 |  | yes | `SetAiHint((CHARACTER)S_TUT_Helm_MindFlayer_…, (TAG)AI_HINT_UNIQUE_…)` |
 | call | `SetCanJoinCombat/2` | 2 |  |  | `SetCanJoinCombat(S_TUT_Lab_TrappedDevourer_…, 0)` |
-| call | `AddPassive/2` | 1 |  |  | `AddPassive(S_Player_ShadowHeart_…, "FearOfWolves_Shadowheart")` |
+| call | `AddPassive/2` | 1 |  | yes | `AddPassive(S_Player_ShadowHeart_…, "FearOfWolves_Shadowheart")` |
 | call | `BlockFlee/1` | 1 |  |  | `BlockFlee(Gnomes_Male_Deep_Player_…)` |
 | call | `Die/6` | 1 |  |  | `Die(S_TUT_Lab_DevourerVictim_…, DEATHTYPE.PHYSICAL, NULL_…, 0, 0, 0.0)` |
 | call | `SetHitpointsPercentage/3` | 1 |  |  | `SetHitpointsPercentage(S_TUT_Lab_TrappedDevourer_…, 100.0, "Guaranteed")` |
@@ -513,10 +632,10 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
-| call | `CharacterDisableCrime/2` | 25 |  |  | `CharacterDisableCrime((CHARACTER)S_Player_Karlach_…, "DangerousMonsterReaction")` |
-| call | `CharacterDisableAllCrimes/1` | 15 |  |  | `CharacterDisableAllCrimes((CHARACTER)S_GLO_JergalAvatar_…)` |
+| call | `CharacterDisableCrime/2` | 25 |  | yes | `CharacterDisableCrime((CHARACTER)S_Player_Karlach_…, "DangerousMonsterReaction")` |
+| call | `CharacterDisableAllCrimes/1` | 15 |  | yes | `CharacterDisableAllCrimes((CHARACTER)S_GLO_JergalAvatar_…)` |
 | call | `BlockNewCrimeReactions/2` | 4 |  |  | `BlockNewCrimeReactions(S_TUT_Lab_TrappedDevourer_…, 1)` |
-| call | `CharacterEnableCrime/2` | 4 |  |  | `CharacterEnableCrime((CHARACTER)S_GLO_Monitor_…, "SelfHealing")` |
+| call | `CharacterEnableCrime/2` | 4 |  | yes | `CharacterEnableCrime((CHARACTER)S_GLO_Monitor_…, "SelfHealing")` |
 | call | `CharacterStopCrimeWithID/2` | 3 |  |  | `CharacterStopCrimeWithID(…, 1)` |
 | query | `CharacterGetCrimeRegion/2` | 12 |  |  | `CharacterGetCrimeRegion(S_GLO_BaneDummyForGortashSwD_…, [out] (STRING))` |
 | query | `CrimeGetType/2` | 6 |  |  | `CrimeGetType(1, [out] (STRING))` |
@@ -536,7 +655,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
-| call | `SetHasDialog/2` | 17 |  |  | `SetHasDialog(S_Player_Jaheira_…, 1)` |
+| call | `SetHasDialog/2` | 17 |  | yes | `SetHasDialog(S_Player_Jaheira_…, 1)` |
 | call | `DialogRequestStop/1` | 14 |  | yes | `DialogRequestStop(Gnomes_Male_Deep_Player_…)` |
 | call | `DialogSetVariableTranslatedString/3` | 7 |  |  | `DialogSetVariableTranslatedString((DIALOGRESOURCE)GLO_CompanionSwap_Camp_…, "GLO_CompanionSwap_AvatarName1_…", "h…")` |
 | call | `DialogAddActorAtReservedSlot/5` | 1 |  | yes | `DialogAddActorAtReservedSlot(7, S_TUT_Lab_TrappedDevourer_…, 0, 0, 0)` |
@@ -566,10 +685,10 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
 | call | `TriggerRegisterForCharacter/2` | 82 |  |  | `TriggerRegisterForCharacter((TRIGGER)S_Tutorials_AdvancedMovement_04_…, Gnomes_Male_Deep_Player_…)` |
-| call | `RegisterWaypoint/2` | 40 |  |  | `RegisterWaypoint("WAYP_CRE_Exterior", (ITEM)S_CRE_Exterior_Waypoint_…)` |
+| call | `RegisterWaypoint/2` | 40 |  | yes | `RegisterWaypoint("WAYP_CRE_Exterior", (ITEM)S_CRE_Exterior_Waypoint_…)` |
 | call | `SetOnStage/2` | 37 |  | yes | `SetOnStage((CHARACTER)S_PLA_ZhentShipment_Spectator_…, 0)` |
-| call | `SetCanInteract/2` | 8 |  |  | `SetCanInteract((ITEM)S_TUT_Lab_OperationChair_…, 0)` |
-| call | `SetDetached/2` | 3 |  |  | `SetDetached(S_TUT_Misc_PodMindflayer_…, 1)` |
+| call | `SetCanInteract/2` | 8 |  | yes | `SetCanInteract((ITEM)S_TUT_Lab_OperationChair_…, 0)` |
+| call | `SetDetached/2` | 3 |  | yes | `SetDetached(S_TUT_Misc_PodMindflayer_…, 1)` |
 | call | `SetVisible/2` | 3 |  |  | `SetVisible(S_TUT_Misc_PodMindflayer_…, 0)` |
 | call | `TriggerUnregisterForCharacter/2` | 3 |  |  | `TriggerUnregisterForCharacter(S_TUT_SaveTrigger_Start_…, Gnomes_Male_Deep_Player_…)` |
 | call | `SetEntityEvent/3` | 2 |  |  | `SetEntityEvent(S_TUT_Lab_TrappedDevourer_…, "ClearPeaceReturn", 1)` |
@@ -582,16 +701,16 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | query | `GetDefaultState/2` | 31 |  |  | `GetDefaultState(S_GLO_BaneDummyForGortashSwD_…, [out] "")` |
 | query | `IgnoreGenerics/2` | 10 |  |  | `IgnoreGenerics(S_TUT_Start_Brinepool_…, [out] 0)` |
 | query | `CreateAtObject/7` | 5 |  |  | `CreateAtObject((ROOT)DLC_LOOT_Dye_Larian_…, Gnomes_Male_Deep_Player_…, 0, 0, "", 0, [out] (GUIDSTRING))` |
-| query | `GetDisplayName/2` | 5 |  |  | `GetDisplayName(Gnomes_Male_Deep_Player_…, [out] (STRING))` |
-| query | `IsActive/2` | 2 |  |  | `IsActive(Gnomes_Male_Deep_Player_…, [out] 1)` |
+| query | `GetDisplayName/2` | 5 |  | yes | `GetDisplayName(Gnomes_Male_Deep_Player_…, [out] (STRING))` |
+| query | `IsActive/2` | 2 |  | yes | `IsActive(Gnomes_Male_Deep_Player_…, [out] 1)` |
 | query | `IsDead/2` | 2 |  |  | `IsDead(S_TUT_Lab_DevourerVictim_…, [out] 0)` |
-| query | `GetIdentity/3` | 1 |  |  | `GetIdentity(Humans_Female_Daisy_…, 0, [out] (STRING))` |
+| query | `GetIdentity/3` | 1 |  | yes | `GetIdentity(Humans_Female_Daisy_…, 0, [out] (STRING))` |
 | query | `GetPosition/4` | 1 |  |  | `GetPosition((TRIGGER)S_TUT_Misc_Elevator002_Up_…, [out] (REAL), [out] (REAL), [out] (REAL))` |
 | event | `EnteredTrigger/2` | 57 |  | external | `EnteredTrigger(S_Player_ShadowHeart_…, RoomTrigger_ShadowHeart_F1_…)` |
 | event | `Activated/1` | 48 |  | external | `Activated(S_GLO_CharacterCreationDummy_003_…)` |
 | event | `Deactivated/1` | 42 |  | external | `Deactivated(S_GLO_CharacterCreationDummy_003_…)` |
 | event | `WentOnStage/2` | 34 |  | external | `WentOnStage(…, 0)` |
-| event | `EntityEvent/2` | 24 |  | external | `EntityEvent(NULL_…, "GLO_FillRaceTags_Finish")` |
+| event | `EntityEvent/2` | 24 |  | raises | `EntityEvent(NULL_…, "GLO_FillRaceTags_Finish")` |
 | event | `LeftTrigger/2` | 11 |  | external | `LeftTrigger(Gnomes_Male_Deep_Player_…, S_TUT_SaveTrigger_Start_…)` |
 | event | `OnStoryOverride/1` | 11 |  | external | `OnStoryOverride(S_TUT_Helm_MindFlayer_…)` |
 | event | `AnimationEvent/3` | 1 |  | external | `AnimationEvent(S_TUT_Lab_TrappedDevourer_…, "Script_SpellFinished", 0)` |
@@ -603,8 +722,8 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 |---|---|---:|---:|---|---|
 | call | `ClearFlag/4` | 29 |  | yes | `ClearFlag((FLAG)GLO_Origin_PartOfTheTeam_Halsin_…, NULL_…, 0, 1)` |
 | call | `SetFlag/4` | 25 |  | yes | `SetFlag((FLAG)Debug_CAMP_IgnoreCampTypeRestrictions_…, NULL_…, 0, 1)` |
-| call | `ClearMagicPocketsFlag/3` | 20 |  |  | `ClearMagicPocketsFlag(Gnomes_Male_Deep_Player_…, (FLAG)ORI_Karlach_State_HasSoulCoin_…, 1)` |
-| call | `SetMagicPocketsFlag/3` | 8 |  |  | `SetMagicPocketsFlag(S_Player_ShadowHeart_…, (FLAG)GLO_InfernalBox_State_CharacterHasBox_…, 1)` |
+| call | `ClearMagicPocketsFlag/3` | 20 |  | yes | `ClearMagicPocketsFlag(Gnomes_Male_Deep_Player_…, (FLAG)ORI_Karlach_State_HasSoulCoin_…, 1)` |
+| call | `SetMagicPocketsFlag/3` | 8 |  | yes | `SetMagicPocketsFlag(S_Player_ShadowHeart_…, (FLAG)GLO_InfernalBox_State_CharacterHasBox_…, 1)` |
 | call | `SetDoNotFaceFlag/2` | 1 |  |  | `SetDoNotFaceFlag(S_TUT_Helm_MindFlayer_…, 1)` |
 | query | `GetFlag/3` | 44 |  | yes | `GetFlag((FLAG)GLO_SpeakWithDead_State_QuestionsLimitReached_…, (CHARACTER)S_Player_Minsc_…, [out] 0)` |
 | query | `GetFlagName/2` | 19 |  | yes | `GetFlagName((FLAG)NIGHT_Gale_TressymJoin_…, [out] (STRING))` |
@@ -615,16 +734,16 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
 | call | `SendToCampChest/2` | 5 |  |  | `SendToCampChest(…, Gnomes_Male_Deep_Player_…)` |
-| call | `Use/5` | 5 |  |  | `Use((CHARACTER)S_TUT_Lab_DevourerVictim_…, (ITEM)S_TUT_Lab_OperationChair_…, 1, 0, "TUT_Lab_SitOnChair")` |
-| call | `UnlockRecipe/3` | 4 |  |  | `UnlockRecipe(Gnomes_Male_Deep_Player_…, "ALCH_Potion_Healing_RoguesMorsel", 0)` |
+| call | `Use/5` | 5 |  | yes | `Use((CHARACTER)S_TUT_Lab_DevourerVictim_…, (ITEM)S_TUT_Lab_OperationChair_…, 1, 0, "TUT_Lab_SitOnChair")` |
+| call | `UnlockRecipe/3` | 4 |  | yes | `UnlockRecipe(Gnomes_Male_Deep_Player_…, "ALCH_Potion_Healing_RoguesMorsel", 0)` |
 | call | `IterateInventoryByTemplate/4` | 1 |  |  | `IterateInventoryByTemplate((CHARACTER)S_GLO_GithKnight_…, (ITEMROOT)MAG_Primeval_Silver_Longsword_…, "GLO_CharacterBlockedFromSellingTemplate_SetNonTradeable", "")` |
 | call | `PlatformMoveTo/7` | 1 |  |  | `PlatformMoveTo((LEVELTEMPLATE)LT_PLT_TUT_Elevator_002_…, -1.0, 23.5, -428.5, 1.5, "TUT_Misc_ElevatorMoved", 0)` |
 | call | `SetCanTrade/2` | 1 |  |  | `SetCanTrade((CHARACTER)S_Player_Jaheira_…, 0)` |
 | call | `TemplateAddTo/4` | 1 |  |  | `TemplateAddTo((ITEMROOT)LOOT_Camp_Pack_…, Gnomes_Male_Deep_Player_…, 1, 0)` |
 | call | `ToInventory/5` | 1 |  |  | `ToInventory((ITEM)S_GLO_PuzzleBox_…, S_Player_ShadowHeart_…, 1, 1, 1)` |
 | query | `IsWeapon/2` | 436 |  | yes | `IsWeapon(WPN_GTY_HeavyCrossbow_A_…, [out] 1)` |
-| query | `GetInventoryOwner/2` | 97 | 89 |  | `GetInventoryOwner((ITEM)S_SCL_SpidersLyre_…, [out] (GUIDSTRING))` |
-| query | `TemplateIsInInventory/3` | 63 |  |  | `TemplateIsInInventory((ITEMROOT)LOOT_SoulCoin_…, Gnomes_Male_Deep_Player_…, [out] (INTEGER))` |
+| query | `GetInventoryOwner/2` | 97 | 89 | yes | `GetInventoryOwner((ITEM)S_SCL_SpidersLyre_…, [out] (GUIDSTRING))` |
+| query | `TemplateIsInInventory/3` | 63 |  | yes | `TemplateIsInInventory((ITEMROOT)LOOT_SoulCoin_…, Gnomes_Male_Deep_Player_…, [out] (INTEGER))` |
 | query | `ItemGetSupplyValue/2` | 15 |  |  | `ItemGetSupplyValue(Underwear_Gnomes_A_…, [out] (INTEGER))` |
 | query | `GetEquippedItem/3` | 11 | 11 |  | `GetEquippedItem(Gnomes_Male_Deep_Player_…, "MusicalInstrument", [out] (GUIDSTRING))` |
 | query | `CanSitOn/2` | 9 |  |  | `CanSitOn(S_TUT_TransformChamber_HackChair_…, [out] 0)` |
@@ -632,7 +751,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | query | `IsLadder/2` | 7 |  |  | `IsLadder(S_TUT_Start_Brinepool_…, [out] 0)` |
 | query | `IsPublicDomain/2` | 7 |  |  | `IsPublicDomain(S_TUT_Start_Brinepool_…, [out] 0)` |
 | query | `IsRangedWeapon/3` | 7 |  |  | `IsRangedWeapon(Underwear_Gnomes_A_…, 1, [out] 1)` |
-| query | `CharacterGetOwner/2` | 4 | 4 |  | `CharacterGetOwner(S_GLO_CharacterCreationDummy_003_…, [out] (GUIDSTRING))` |
+| query | `CharacterGetOwner/2` | 4 | 4 | yes | `CharacterGetOwner(S_GLO_CharacterCreationDummy_003_…, [out] (GUIDSTRING))` |
 | query | `GetOwner/2` | 3 |  |  | `GetOwner(S_TUT_Start_Brinepool_…, [out] (GUIDSTRING))` |
 | query | `IsLocked/2` | 3 |  |  | `IsLocked(S_TUT_Start_Brinepool_…, [out] 1)` |
 | query | `CanTrade/2` | 1 |  |  | `CanTrade(S_WYR_Windmill_MF_…, [out] 1)` |
@@ -643,10 +762,10 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | event | `TemplateEquipped/2` | 421 |  | external | `TemplateEquipped(WPN_GTY_HeavyCrossbow_A_…, S_GLO_GithKnight_…)` |
 | event | `EquipFailed/2` | 81 |  | external | `EquipFailed(LOOT_SCROLL_Revivify_…, S_TUT_GithGuide_…)` |
 | event | `StackedWith/2` | 36 |  | external | `StackedWith(LOOT_SCROLL_Revivify_…, LOOT_SCROLL_Revivify_…)` |
-| event | `TemplateUseFinished/4` | 12 |  | external | `TemplateUseFinished(S_TUT_TransformChamber_DrainVictim_001_…, BLD_MF_Nautiloid_Mind_Draining_Device_Bed_…, S_TUT_TransformChamber_DrainBed_001_…, 1)` |
-| event | `TemplateUseStarted/3` | 12 |  | external | `TemplateUseStarted(S_TUT_TransformChamber_DrainVictim_001_…, BLD_MF_Nautiloid_Mind_Draining_Device_Bed_…, S_TUT_TransformChamber_DrainBed_001_…)` |
-| event | `UseFinished/3` | 12 |  | external | `UseFinished(S_TUT_TransformChamber_DrainVictim_001_…, S_TUT_TransformChamber_DrainBed_001_…, 1)` |
-| event | `UseStarted/2` | 12 |  | external | `UseStarted(S_TUT_TransformChamber_DrainVictim_001_…, S_TUT_TransformChamber_DrainBed_001_…)` |
+| event | `TemplateUseFinished/4` | 12 |  | raises | `TemplateUseFinished(S_TUT_TransformChamber_DrainVictim_001_…, BLD_MF_Nautiloid_Mind_Draining_Device_Bed_…, S_TUT_TransformChamber_DrainBed_001_…, 1)` |
+| event | `TemplateUseStarted/3` | 12 |  | raises | `TemplateUseStarted(S_TUT_TransformChamber_DrainVictim_001_…, BLD_MF_Nautiloid_Mind_Draining_Device_Bed_…, S_TUT_TransformChamber_DrainBed_001_…)` |
+| event | `UseFinished/3` | 12 |  | raises | `UseFinished(S_TUT_TransformChamber_DrainVictim_001_…, S_TUT_TransformChamber_DrainBed_001_…, 1)` |
+| event | `UseStarted/2` | 12 |  | raises | `UseStarted(S_TUT_TransformChamber_DrainVictim_001_…, S_TUT_TransformChamber_DrainBed_001_…)` |
 | event | `RequestCanUse/3` | 9 |  | external | `RequestCanUse(S_Player_ShadowHeart_…, S_TUT_TransformChamber_HackChair_…, 5)` |
 | event | `GoldChanged/2` | 8 |  | external | `GoldChanged(S_DEN_CharmedKid_…, 15)` |
 | event | `UnlockedRecipe/2` | 4 |  | external | `UnlockedRecipe(Gnomes_Male_Deep_Player_…, "ALCH_Potion_Healing_RoguesMorsel")` |
@@ -661,14 +780,14 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
-| call | `MapMarkerChangeLevel/2` | 3 |  |  | `MapMarkerChangeLevel("GLO_CrownController_Ketheric", "TUT_Avernus_C")` |
-| call | `AutoSave/0` | 1 |  |  | `AutoSave()` |
+| call | `MapMarkerChangeLevel/2` | 3 |  | yes | `MapMarkerChangeLevel("GLO_CrownController_Ketheric", "TUT_Avernus_C")` |
+| call | `AutoSave/0` | 1 |  | yes | `AutoSave()` |
 | call | `ShowActivity/1` | 1 |  |  | `ShowActivity("Tutorial")` |
 | call | `StartActivity/1` | 1 |  |  | `StartActivity("Tutorial")` |
 | call | `TeleportPartiesToLevelWithMovie/3` | 1 |  | yes | `TeleportPartiesToLevelWithMovie("TUT_Avernus_C", "", "GUS_CGI01_Part2")` |
 | query | `GetRegion/2` | 182 |  | yes | `GetRegion((ITEM)S_SCL_SpidersLyre_…, [out] "SYS_CC_I")` |
 | query | `IsGameLevel/2` | 33 |  | yes | `IsGameLevel("SYS_CC_I", [out] 1)` |
-| query | `CheckRulesetModifierBool/3` | 6 |  |  | `CheckRulesetModifierBool((RULESETMODIFIER)HONOUR_STATS_…, 1, [out] 1)` |
+| query | `CheckRulesetModifierBool/3` | 6 |  | yes | `CheckRulesetModifierBool((RULESETMODIFIER)HONOUR_STATS_…, 1, [out] 1)` |
 | query | `IsGameStateRunning/1` | 3 |  |  | `IsGameStateRunning([out] 0)` |
 | query | `GetActiveModStartupLevel/1` | 1 |  | yes | `GetActiveModStartupLevel([out] (STRING))` |
 | query | `GetModuleVersion/5` | 1 |  |  | `GetModuleVersion("GustavX", [out] (INTEGER), [out] (INTEGER), [out] (INTEGER), [out] (INTEGER))` |
@@ -693,8 +812,8 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | query | `Random/2` | 8 |  |  | `Random(10000, [out] (INTEGER))` |
 | query | `ConcatenateInteger/3` | 6 |  | yes | `ConcatenateInteger("StuckTimelineLoad_Detector_TUT_Start_OriginIntroduction_Default_…", 1, [out] (STRING))` |
 | query | `GUIDToString/2` | 6 |  | yes | `GUIDToString(TUT_Start_OriginIntroduction_Default_…, [out] (STRING))` |
-| query | `GetRulesetModifierString/2` | 6 |  |  | `GetRulesetModifierString((RULESETMODIFIER)SCRIPTED_COMBAT_MECHANICS_…, [out] (STRING))` |
-| query | `CheckRulesetModifierString/3` | 4 |  |  | `CheckRulesetModifierString((RULESETMODIFIER)SCRIPTED_COMBAT_MECHANICS_…, "HARD", [out] 1)` |
+| query | `GetRulesetModifierString/2` | 6 |  | yes | `GetRulesetModifierString((RULESETMODIFIER)SCRIPTED_COMBAT_MECHANICS_…, [out] (STRING))` |
+| query | `CheckRulesetModifierString/3` | 4 |  | yes | `CheckRulesetModifierString((RULESETMODIFIER)SCRIPTED_COMBAT_MECHANICS_…, "HARD", [out] 1)` |
 | query | `IntegerProduct/3` | 4 |  | yes | `IntegerProduct(7026, 50, [out] (INTEGER))` |
 
 ### Movement
@@ -711,26 +830,26 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
-| call | `SetForceUpdate/2` | 10 |  |  | `SetForceUpdate((ITEM)S_TUT_Misc_Tentacle_000_…, 1)` |
+| call | `SetForceUpdate/2` | 10 |  | yes | `SetForceUpdate((ITEM)S_TUT_Misc_Tentacle_000_…, 1)` |
 | call | `HideAllActivities/1` | 1 |  |  | `HideAllActivities("Progression")` |
 
 ### Party & users
 
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
-| call | `MakeNPC/1` | 14 |  |  | `MakeNPC((CHARACTER)S_GLO_CharacterCreationDummy_001_…)` |
+| call | `MakeNPC/1` | 14 |  | yes | `MakeNPC((CHARACTER)S_GLO_CharacterCreationDummy_001_…)` |
 | call | `RequestProcessed/3` | 9 |  |  | `RequestProcessed(S_Player_ShadowHeart_…, 5, 1)` |
 | call | `Follow/2` | 1 |  |  | `Follow((CHARACTER)S_TUT_Lab_TrappedDevourer_…, (CHARACTER)S_TUT_Lab_IntellectDevourer_…)` |
 | call | `IterateUsers/2` | 1 |  |  | `IterateUsers("GLO_SafeRomance_Check", "")` |
 | call | `StopFollow/1` | 1 | 1 |  | `StopFollow((CHARACTER)S_TUT_Lab_TrappedDevourer_…)` |
 | query | `IsSummon/2` | 358 |  | yes | `IsSummon(S_GLO_CharacterCreationDummy_003_…, [out] 1)` |
-| query | `CharacterHasDLC/3` | 66 |  |  | `CharacterHasDLC(Gnomes_Male_Deep_Player_…, (DLC)DLC_Gustav_DigitalDeluxe_…, [out] 1)` |
+| query | `CharacterHasDLC/3` | 66 |  | yes | `CharacterHasDLC(Gnomes_Male_Deep_Player_…, (DLC)DLC_Gustav_DigitalDeluxe_…, [out] 1)` |
 | query | `GetReservedUserID/2` | 64 |  |  | `GetReservedUserID((CHARACTER)S_GLO_CharacterCreationDummy_001_…, [out] (INTEGER))` |
 | query | `IsPartyMember/3` | 53 |  | yes | `IsPartyMember(S_GLO_BaneDummyForGortashSwD_…, 1, [out] 0)` |
-| query | `IsPartyFollower/2` | 14 |  |  | `IsPartyFollower(S_GLO_CharacterCreationDummy_003_…, [out] 1)` |
+| query | `IsPartyFollower/2` | 14 |  | yes | `IsPartyFollower(S_GLO_CharacterCreationDummy_003_…, [out] 1)` |
 | query | `GetUserProfileID/2` | 11 |  |  | `GetUserProfileID(65537, [out] (STRING))` |
-| query | `GetHostCharacter/1` | 6 |  |  | `GetHostCharacter([out] (unknown))` |
-| query | `GetMaxPartySize/1` | 5 |  |  | `GetMaxPartySize([out] (INTEGER))` |
+| query | `GetHostCharacter/1` | 6 |  | yes | `GetHostCharacter([out] (unknown))` |
+| query | `GetMaxPartySize/1` | 5 |  | yes | `GetMaxPartySize([out] (INTEGER))` |
 | query | `IsPlayer/2` | 4 |  |  | `IsPlayer(S_GLO_CharacterCreationDummy_001_…, [out] 0)` |
 | query | `IsControlled/2` | 3 |  |  | `IsControlled(Gnomes_Male_Deep_Player_…, [out] 0)` |
 | query | `GetAttitudeTowardsPlayer/3` | 1 |  |  | `GetAttitudeTowardsPlayer(S_TUT_Lab_DevourerVictim_…, Gnomes_Male_Deep_Player_…, [out] (INTEGER))` |
@@ -747,7 +866,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
-| call | `LookAtEntity/3` | 2 |  |  | `LookAtEntity((CHARACTER)S_TUT_Helm_MindFlayer_…, (CHARACTER)S_TUT_Helm_Devil_005_…, 3.0)` |
+| call | `LookAtEntity/3` | 2 |  | yes | `LookAtEntity((CHARACTER)S_TUT_Helm_MindFlayer_…, (CHARACTER)S_TUT_Helm_Devil_005_…, 3.0)` |
 | call | `StopLoopEffect/1` | 2 |  |  | `StopLoopEffect((INTEGER64)144115192370840100)` |
 | call | `PlayHUDSound/2` | 1 |  |  | `PlayHUDSound(Gnomes_Male_Deep_Player_…, "TUT_Start_MuteSound")` |
 | call | `SetTadpoleTreeState/2` | 1 |  |  | `SetTadpoleTreeState(Gnomes_Male_Deep_Player_…, 0)` |
@@ -758,7 +877,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
-| call | `AddEntryToCustomBook/2` | 3 |  |  | `AddEntryToCustomBook("ORI_Laezel_OrpheusChapter1", "ORI_Laezel_OrpheusChapter1")` |
+| call | `AddEntryToCustomBook/2` | 3 |  | yes | `AddEntryToCustomBook("ORI_Laezel_OrpheusChapter1", "ORI_Laezel_OrpheusChapter1")` |
 | call | `QuestUpdate/3` | 1 |  |  | `QuestUpdate(Gnomes_Male_Deep_Player_…, "TUT_NautiloidEscape", "Start")` |
 | event | `QuestAccepted/2` | 1 |  | external | `QuestAccepted(Gnomes_Male_Deep_Player_…, "TUT_NautiloidEscape")` |
 | event | `QuestUpdateUnlocked/3` | 1 |  | external | `QuestUpdateUnlocked(Gnomes_Male_Deep_Player_…, "TUT_NautiloidEscape", "Start")` |
@@ -787,21 +906,21 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
 | call | `SetTag/2` | 272 |  | yes | `SetTag((CHARACTER)S_GLO_Hirelings_Barbarian_…, (TAG)PLAYABLE_…)` |
-| call | `AddPreferredAiTargetTag/2` | 22 |  |  | `AddPreferredAiTargetTag((CHARACTER)S_TUT_Helm_DevilBackUp_001_…, (TAG)AVATAR_…)` |
-| call | `IterateOriginTags/3` | 11 |  |  | `IterateOriginTags((CHARACTER)S_Player_Karlach_…, "GLO_OriginTag", "GLO_DataGetOriginTags_Finish")` |
+| call | `AddPreferredAiTargetTag/2` | 22 |  | yes | `AddPreferredAiTargetTag((CHARACTER)S_TUT_Helm_DevilBackUp_001_…, (TAG)AVATAR_…)` |
+| call | `IterateOriginTags/3` | 11 |  | yes | `IterateOriginTags((CHARACTER)S_Player_Karlach_…, "GLO_OriginTag", "GLO_DataGetOriginTags_Finish")` |
 | call | `ClearTag/2` | 6 |  | yes | `ClearTag(Gnomes_Male_Deep_Player_…, (TAG)DAISY_REASONTRACK_…)` |
-| call | `IterateTagsCategory/3` | 2 |  |  | `IterateTagsCategory(TAGCATEGORY.RACE, "GLO_RaceTag", "GLO_FillRaceTags_Finish")` |
+| call | `IterateTagsCategory/3` | 2 |  | yes | `IterateTagsCategory(TAGCATEGORY.RACE, "GLO_RaceTag", "GLO_FillRaceTags_Finish")` |
 | query | `IsTagged/3` | 1360 |  | yes | `IsTagged((CHARACTER)S_GLO_Hirelings_Barbarian_…, (TAG)BLOCK_RESURRECTION_…, [out] 0)` |
-| query | `DataGetBackgroundTagAt/3` | 11 |  |  | `DataGetBackgroundTagAt((CHARACTER)S_Player_Karlach_…, 1, [out] (GUIDSTRING))` |
-| query | `DataGetBackgroundTagCount/2` | 11 |  |  | `DataGetBackgroundTagCount((CHARACTER)S_Player_Karlach_…, [out] (INTEGER))` |
-| query | `DataGetGodTagCount/2` | 11 | 10 |  | `DataGetGodTagCount((CHARACTER)S_Player_Karlach_…, [out] (INTEGER))` |
-| query | `DataGetReallyTagAt/3` | 11 |  |  | `DataGetReallyTagAt((CHARACTER)S_Player_Karlach_…, 1, [out] (GUIDSTRING))` |
-| query | `DataGetReallyTagCount/2` | 11 |  |  | `DataGetReallyTagCount((CHARACTER)S_Player_Karlach_…, [out] (INTEGER))` |
-| query | `DataGetGodTagAt/3` | 2 |  |  | `DataGetGodTagAt((CHARACTER)S_Player_ShadowHeart_…, 1, [out] (GUIDSTRING))` |
+| query | `DataGetBackgroundTagAt/3` | 11 |  | yes | `DataGetBackgroundTagAt((CHARACTER)S_Player_Karlach_…, 1, [out] (GUIDSTRING))` |
+| query | `DataGetBackgroundTagCount/2` | 11 |  | yes | `DataGetBackgroundTagCount((CHARACTER)S_Player_Karlach_…, [out] (INTEGER))` |
+| query | `DataGetGodTagCount/2` | 11 | 10 | yes | `DataGetGodTagCount((CHARACTER)S_Player_Karlach_…, [out] (INTEGER))` |
+| query | `DataGetReallyTagAt/3` | 11 |  | yes | `DataGetReallyTagAt((CHARACTER)S_Player_Karlach_…, 1, [out] (GUIDSTRING))` |
+| query | `DataGetReallyTagCount/2` | 11 |  | yes | `DataGetReallyTagCount((CHARACTER)S_Player_Karlach_…, [out] (INTEGER))` |
+| query | `DataGetGodTagAt/3` | 2 |  | yes | `DataGetGodTagAt((CHARACTER)S_Player_ShadowHeart_…, 1, [out] (GUIDSTRING))` |
 | query | `SatisfiesTagExpression/3` | 1 |  |  | `SatisfiesTagExpression(Gnomes_Male_Deep_Player_…, "CAT_… \| RAVEN_… \| RAT_… \| FROG_… \| CRAB_… \| (SUMMON_… & SPIDER_…) \| GASEOUS_FORM_… \| WYR_CIRCUS_CHEESE_… \| INTELLECT_DEVOURER_…", [out] 1)` |
 | event | `TagSet/2` | 6673 |  | raises | `TagSet(S_CRE_EntrypointFromSCL02_…, …)` |
-| event | `TagEvent/2` | 103 |  | external | `TagEvent(REALLY_ZARIELTIEFLING_…, "GLO_RaceTag")` |
-| event | `CharacterTagEvent/3` | 10 |  | external | `CharacterTagEvent(S_Player_Karlach_…, KARLACH_…, "GLO_OriginTag")` |
+| event | `TagEvent/2` | 103 |  | raises | `TagEvent(REALLY_ZARIELTIEFLING_…, "GLO_RaceTag")` |
+| event | `CharacterTagEvent/3` | 10 |  | raises | `CharacterTagEvent(S_Player_Karlach_…, KARLACH_…, "GLO_OriginTag")` |
 | event | `TagCleared/2` | 4 |  | raises | `TagCleared(S_GLO_DevilishOx_…, …)` |
 
 ### Timers
@@ -821,7 +940,7 @@ calls logged as failed, queries logged as failed, events logged as ignored (no r
 
 | | Function | Count | Failed / ignored | Sim | Example |
 |---|---|---:|---:|---|---|
-| call | `EnableTutorialEvent/2` | 34 |  |  | `EnableTutorialEvent(Gnomes_Male_Deep_Player_…, (TUTORIALEVENT)AttackHit_Immunity_…)` |
+| call | `EnableTutorialEvent/2` | 34 |  | yes | `EnableTutorialEvent(Gnomes_Male_Deep_Player_…, (TUTORIALEVENT)AttackHit_Immunity_…)` |
 | call | `HideTutorial/2` | 16 |  |  | `HideTutorial(Gnomes_Male_Deep_Player_…, (UNIFIEDTUTORIAL)Camera_Movement_…)` |
 | call | `SetTutorialShown/2` | 7 |  |  | `SetTutorialShown(Gnomes_Male_Deep_Player_…, (UNIFIEDTUTORIAL)Camera_Movement_…)` |
 | call | `DisableTutorialEvent/2` | 5 |  |  | `DisableTutorialEvent(Gnomes_Male_Deep_Player_…, (TUTORIALEVENT)UserAction_CameraTrackPlayer_…)` |

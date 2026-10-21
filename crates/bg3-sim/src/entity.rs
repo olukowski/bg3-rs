@@ -84,6 +84,8 @@ pub struct Entity {
     /// What the rules need of a character (abilities, HP, level, proficiencies), from its
     /// stats entry; `None` for objects without a `Character` stats entry.
     pub sheet: Option<CharacterSheet>,
+    /// Story-controlled interaction and character state.
+    pub story: crate::story_misc::EntityStory,
 }
 
 impl Entity {
@@ -104,6 +106,7 @@ impl Entity {
             stats: None,
             faction: None,
             sheet: None,
+            story: crate::story_misc::EntityStory::default(),
         }
     }
 

@@ -136,6 +136,7 @@ pub struct GameData {
     pub difficulty_classes: HashMap<Guid, i32>,
     /// What combat needs (factions, resources, weapons, spells, …).
     pub combat: crate::combat::CombatData,
+    pub story: crate::story_data::StoryData,
 }
 
 impl GameData {
@@ -292,6 +293,8 @@ pub struct Sim {
     pub stage: crate::presentation::Stage,
     /// Fights and combatants (see [`crate::combat`]).
     pub combat: crate::combat::CombatState,
+    pub story: crate::story_misc::StoryState,
+    pub item_uses: crate::use_item::ItemUses,
 }
 
 /// An argument of an observed engine event: the declared Osiris type name of the parameter
@@ -475,6 +478,7 @@ impl Sim {
             let texts: Vec<&str> = args.iter().map(|a| a.text.as_str()).collect();
             self.observe_dialog_event(name, &texts);
         }
+        crate::story_misc::observe(self, name, args);
         match (name, args.len()) {
             ("TagSet", 2) => {
                 if let Some(e) = self.observe_entity(text(0), EntityKind::Unknown)
@@ -667,6 +671,7 @@ impl Sim {
     /// One frame of the live game: requested dialogs start, then [`Sim::advance`].
     pub fn tick(&mut self, dt: f64) {
         self.update_dialogs();
+        self.update_item_uses();
         self.advance(dt);
     }
 
