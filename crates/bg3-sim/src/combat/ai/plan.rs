@@ -37,6 +37,7 @@ const RANGE_MARGIN: f32 = 0.05;
 /// A known spell the AI may use: now, or once its resources are back (future action).
 struct UsableSpell {
     name: String,
+    book_index: usize,
     range: f32,
     now: bool,
     costs: Vec<(String, f32)>,
@@ -56,6 +57,8 @@ pub struct Tile {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {
     pub spell: String,
+    /// Position of the spell in the character's spell list (weapon attacks first).
+    pub book_index: usize,
     pub target: Guid,
     /// False: the action can't be done this turn; executing it walks towards it.
     pub this_turn: bool,
@@ -92,15 +95,16 @@ impl AiPlan {
     }
 }
 
-/// Sort order: final score, raw score, then the shorter walk.
+/// Sort order: final score, raw score, the shorter walk, then spell-book and target order.
 // bg3: ls::LEGACY_Set<esv::CombatAIAction>::Sort (0x105213e6c, 4.1.1.7631656) compares the
-// final score, the raw score, a flag, whether there is a target, then a distance-like value.
+// final score, the raw score, a flag, whether there is a target, then a distance-like value;
+// our walk, book and target keys stand in for the unread rest (ties are common).
 fn order(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
     b.score
         .total_cmp(&a.score)
         .then(b.breakdown.total.total_cmp(&a.breakdown.total))
         .then(a.tile.cost.total_cmp(&b.tile.cost))
-        .then(a.spell.cmp(&b.spell))
+        .then(a.book_index.cmp(&b.book_index))
         .then(a.target.0.cmp(&b.target.0))
 }
 
@@ -358,7 +362,7 @@ impl Sim {
         );
         // Spells: castable now, or (future) with full resources.
         let mut spells: Vec<UsableSpell> = Vec::new();
-        for s in &c.spells {
+        for (book_index, s) in c.spells.iter().enumerate() {
             let Some(d) = self.data.combat.spells.get(s) else {
                 continue;
             };
@@ -376,6 +380,7 @@ impl Sim {
             if now || ever {
                 spells.push(UsableSpell {
                     name: s.clone(),
+                    book_index,
                     range,
                     now,
                     costs: d.use_costs.clone(),
@@ -393,6 +398,7 @@ impl Sim {
         let mut candidates = Vec::new();
         for UsableSpell {
             name: spell,
+            book_index,
             range,
             now,
             costs,
@@ -444,6 +450,7 @@ impl Sim {
                     }
                     candidates.push(Candidate {
                         spell: spell.clone(),
+                        book_index: *book_index,
                         target: t,
                         this_turn,
                         tile,

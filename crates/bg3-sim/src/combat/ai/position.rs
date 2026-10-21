@@ -25,7 +25,8 @@ pub fn nearby_value(d: f32, min: f32, max: f32, base: f32) -> f32 {
     if range == 0.0 {
         if d < min { base } else { 0.0 }
     } else {
-        base * (1.0 - (d - min).clamp(0.0, range) / range)
+        // As the engine: max(d - min, 0), then min(…, range); a max below the min gives 0.
+        base * (1.0 - (d - min).max(0.0).min(range) / range)
     }
 }
 
@@ -143,6 +144,7 @@ mod tests {
         assert!((nearby_value(4.0, 2.0, 6.0, 0.2) - 0.1).abs() < 1e-6);
         assert_eq!(nearby_value(7.0, 2.0, 6.0, 0.2), 0.0);
         assert_eq!(nearby_value(1.0, 2.0, 2.0, 0.2), 0.2);
+        assert_eq!(nearby_value(1.0, 1.9, 0.0, 0.2), 0.0, "max below min");
     }
 
     #[test]

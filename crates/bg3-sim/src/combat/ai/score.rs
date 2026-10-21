@@ -314,7 +314,7 @@ pub fn score_target(
     }
     let mut hot_v = -hot;
     if hot > 0.0 {
-        let after = (hp + heal as i32 - e.damage as i32).clamp(0, max_hp);
+        let after = (hp + heal as i32 - e.damage as i32).max(0).min(max_hp);
         let mut v = (max_hp - after) as f32;
         if hot + after as f32 <= max_hp as f32 {
             v = hot;

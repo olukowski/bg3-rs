@@ -89,6 +89,16 @@ data "TargetConditions" "not Dead()"
 data "UseCosts" "ActionPoint:1"
 data "SpellFlags" "IsAttack;IsMelee;IsHarmful"
 
+new entry "Projectile_T_Bolt"
+type "SpellData"
+data "SpellType" "Projectile"
+data "TargetRadius" "18"
+data "SpellRoll" "Attack(AttackType.RangedSpellAttack)"
+data "SpellSuccess" "DealDamage(1d10,Fire)"
+data "TargetConditions" "not Dead()"
+data "UseCosts" "ActionPoint:1"
+data "SpellFlags" "IsSpell;IsHarmful"
+
 new entry "T_SLOW_START"
 type "StatusData"
 data "StatusType" "BOOST"
@@ -565,4 +575,90 @@ fn ai_without_a_path_stays_put_and_ends_turn_but_can_attack_in_range() {
         s.ai_turn(g(HERO1)).unwrap(),
         AiAction::Cast { moved: 0.0, .. }
     ));
+}
+
+// ---- the scoring AI (our own archetype text, not the game's) -------------------------------
+
+/// A fight with HERO1 on the AI, the imps placed around it, and `archetype` as `base`.
+fn ai_fight(archetype: &str, imps: [[f32; 3]; 2]) -> Sim {
+    let mut s = sim(0);
+    Arc::make_mut(&mut s.data).combat.ai.add("base", archetype);
+    s.entities.get_mut(g(HERO2)).unwrap().position = [-20.0, 0.0, 0.0];
+    for (id, p) in [IMP1, IMP2].into_iter().zip(imps) {
+        s.entities.get_mut(g(id)).unwrap().position = p;
+    }
+    s.enter_combat(g(HERO1), g(IMP1)).unwrap();
+    s
+}
+
+const AI_BASE: &str = "SCORE_MOD 100\nMULTIPLIER_DAMAGE_ENEMY_POS 1\nMULTIPLIER_DAMAGE_SELF_NEG 1\n\
+    MULTIPLIER_KILL_ENEMY 2\nMULTIPLIER_ACTION_RESOURCE_COST 0.01\n\
+    MULTIPLIER_CANNOT_EXECUTE_THIS_TURN 0.2\nENABLE_MOVEMENT_AVOID_AOO 1\nBASE_NEARBY_SCORE 0.2\n\
+    ENDPOS_ENEMIES_NEARBY_MIN_DISTANCE 2\nENDPOS_ENEMIES_NEARBY_MAX_DISTANCE 6\n";
+
+#[test]
+fn ai_hit_chance_is_exact_and_the_kill_wins() {
+    let mut s = ai_fight(AI_BASE, [[1.2, 0.0, 0.0], [-1.2, 0.0, 0.0]]);
+    // The expected hit (0.95 * 7) would kill a 6 HP imp: make the other one tougher.
+    let sheet = s.entities.get_mut(g(IMP1)).unwrap().sheet.as_mut().unwrap();
+    (sheet.max_hp, sheet.hp) = (20, 20);
+    s.set_hitpoints(g(IMP2), 1);
+    let plan = s.ai_plan(g(HERO1)).unwrap();
+    let c = plan.chosen().expect("an attack");
+    assert_eq!(c.target, g(IMP2), "the killing blow");
+    assert!(c.breakdown.targets.iter().any(|t| t.kill));
+    // d20 + 3 (Strength) + 2 (proficiency) against AC 7 (8, Dexterity -1): all but a 1.
+    assert!((c.chance - 0.95).abs() < 1e-6, "{}", c.chance);
+    // Stupidity 0 (not set): the chance counts as it is.
+    assert_eq!(c.believed, c.chance);
+}
+
+#[test]
+fn ai_walking_out_of_reach_provokes_and_costs() {
+    let mut s = ai_fight(AI_BASE, [[1.2, 0.0, 0.0], [-6.0, 0.0, 0.0]]);
+    let plan = s.ai_plan(g(HERO1)).unwrap();
+    let stay = plan
+        .candidates
+        .iter()
+        .find(|c| c.target == g(IMP1) && c.this_turn)
+        .unwrap();
+    let away = plan
+        .candidates
+        .iter()
+        .find(|c| c.target == g(IMP2) && c.this_turn)
+        .expect("the other imp is in reach");
+    assert_eq!(stay.aoo_damage, 0.0);
+    assert!(away.aoo_damage > 0.0, "leaving the imp's reach");
+    assert!(away.score < stay.score);
+    assert_eq!(plan.chosen().unwrap().target, g(IMP1));
+}
+
+#[test]
+fn ai_ranged_archetype_steps_away_from_enemies() {
+    let bolt_only = |s: &mut Sim| {
+        let c = s.combatant_mut(g(HERO1)).unwrap();
+        c.spells = vec!["Projectile_T_Bolt".to_owned()];
+    };
+    let ranged = format!("{AI_BASE}MULTIPLIER_ENDPOS_ENEMIES_NEARBY -0.5\n");
+    let mut s = ai_fight(&ranged, [[1.2, 0.0, 0.0], [40.0, 0.0, 0.0]]);
+    bolt_only(&mut s);
+    // No attacks of opportunity: the imp has used its reaction.
+    s.combatant_mut(g(IMP1))
+        .unwrap()
+        .resources
+        .entries
+        .retain(|r| r.name != "ReactionActionPoint");
+    let from = s.entity(g(HERO1)).unwrap().position;
+    let plan = s.ai_plan(g(HERO1)).unwrap();
+    let c = plan.chosen().unwrap();
+    assert_eq!(c.spell, "Projectile_T_Bolt");
+    assert!(c.tile.cost > 0.0);
+    let to_imp = |p: [f32; 3]| distance(p, [1.2, 0.0, 0.0]);
+    assert!(to_imp(c.tile.position) > to_imp(from) + 3.0, "{:?}", c.tile);
+    // The same fight with an archetype that likes enemies nearby stays put.
+    let melee = format!("{AI_BASE}MULTIPLIER_ENDPOS_ENEMIES_NEARBY 0.5\n");
+    let mut s = ai_fight(&melee, [[1.2, 0.0, 0.0], [40.0, 0.0, 0.0]]);
+    bolt_only(&mut s);
+    let c = s.ai_plan(g(HERO1)).unwrap().chosen().unwrap().clone();
+    assert_eq!(c.tile.cost, 0.0);
 }
