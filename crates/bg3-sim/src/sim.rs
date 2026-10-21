@@ -109,6 +109,8 @@ impl ModuleLevels {
 /// tests.
 #[derive(Clone, Debug, Default)]
 pub struct GameData {
+    /// Localization loaded from the user's install (English by default).
+    pub loca: bg3_loca::Loca,
     pub flags: FlagDefs,
     pub tags: TagDefs,
     pub statuses: StatusDefs,

@@ -124,8 +124,9 @@ impl RulesContext for Sim {
     }
 
     fn name(&self, e: EntityId) -> String {
-        self.entity_guid(e)
-            .map_or_else(String::new, |g| self.render(g))
+        self.entity_guid(e).map_or_else(String::new, |g| {
+            self.display_name(g).unwrap_or_else(|| self.render(g))
+        })
     }
 
     fn is_character(&self, e: EntityId) -> bool {

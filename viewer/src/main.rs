@@ -249,12 +249,7 @@ fn main() -> Result<()> {
             &app.world().resource::<GameData>().vfs,
             "English",
         )?);
-        let names = play::speaker_names(
-            &app.world().resource::<GameData>().vfs,
-            &args.level,
-            &loca,
-            started.avatar,
-        );
+        let names = started.names.clone();
         app.add_plugins(play::PlayPlugin {
             link: std::sync::Mutex::new(Some(link)),
             loca: loca.clone(),

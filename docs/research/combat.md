@@ -132,6 +132,23 @@ story teleports the party into the imp room (`IsInTrigger`), and the imps notice
 - **Spell costs** (*data*): `UseCosts` are checked and paid before the cast
   (`ActionPoint:1` for weapon attacks).
 
+### Presentation names
+
+`Sim::display_name_handle` shares the story's `GetDisplayName` source: runtime story handle,
+then the placed object's `DisplayName` **TranslatedString**, then the nearest root-template
+`DisplayName` along `ParentTemplateId`. The ranged imp's placed object has no name handle;
+its root template provides it. `Sim::display_name` resolves that handle through install-loaded
+`bg3_loca::Loca` (English by default). Missing translations return `None`, allowing the viewer
+to keep its object-name fallback. The viewer uses this for turn order, combat log and live or
+standalone dialog speakers. Live dialog names are refreshed from the sim to honor story overrides.
+The story query still returns a **handle**, not translated prose, and retains its conservative
+replay boundary for names that may have been changed in a save.
+
+Synthetic template/LOCA tests cover inherited, placed and story names and missing translation;
+the ignored install test checks every first-fight imp resolves to a non-empty localized name
+that differs from its object identifier. No extracted names, tables or localization are saved
+in tracked files.
+
 ## Attacks, spells, damage
 
 A weapon attack is a spell (`Target_MainHandAttack`, `Projectile_MainHandAttack`,

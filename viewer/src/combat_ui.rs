@@ -130,6 +130,7 @@ impl CombatView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fighter {
     pub id: Guid,
+    pub name: String,
     pub hp: i32,
     pub max_hp: i32,
     pub position: [f32; 3],
@@ -231,7 +232,11 @@ impl CombatThread {
 
     /// Carry out the player's (or the AI step's) command; results show at the next tick.
     pub fn apply(&mut self, game: &mut Game, cmd: CombatCmd) {
-        let name = |game: &Game, id: Guid| game.sim.render(id);
+        let name = |game: &Game, id: Guid| {
+            game.sim
+                .display_name(id)
+                .unwrap_or_else(|| game.sim.render(id))
+        };
         match cmd {
             CombatCmd::Move { who, distance, to } => {
                 if let Err(e) = game.combat_move(who, distance, Some(to)) {
@@ -336,6 +341,7 @@ fn snapshot(game: &mut Game, cid: Guid) -> Option<CombatView> {
             let active = c.is_active(m);
             let mut f = Fighter {
                 id: m,
+                name: sim.display_name(m).unwrap_or_else(|| e.name.clone()),
                 hp,
                 max_hp,
                 position: e.position,
@@ -517,6 +523,13 @@ pub struct CombatUi {
 
 impl CombatUi {
     fn name(&self, id: Guid) -> String {
+        if let Some(f) = self
+            .view
+            .as_ref()
+            .and_then(|v| v.fighters().find(|f| f.id == id))
+        {
+            return crate::dialog::clean_markup(&f.name);
+        }
         self.names
             .get(&id)
             .cloned()

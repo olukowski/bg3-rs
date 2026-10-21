@@ -16,7 +16,6 @@ use bg3_dialog::runner::placeholder_speakers;
 use bg3_dialog::{DialogRunner, Guid, MemoryWorld, StartParams, Step};
 use bg3_install::Install;
 use bg3_loca::Loca;
-use bg3_lsf::Value;
 use bg3_vfs::Vfs;
 
 /// Seconds a line stays up before the runner continues: a base plus a per-character reading
@@ -58,7 +57,7 @@ impl DialogPlugin {
         let dialog = lib.load_resource(&resource.id)?;
         let defs = Definitions::load(&vfs)?;
         let loca = load_loca(&vfs, "English")?;
-        let characters = level_characters(&vfs, level);
+        let characters = level_characters(&vfs, level)?;
 
         let speakers = placeholder_speakers(&dialog);
         let mut speaker_names = Vec::new();
@@ -128,42 +127,25 @@ pub(crate) fn load_loca(vfs: &Vfs, language: &str) -> Result<Loca> {
     Ok(loca)
 }
 
-/// Level characters and items (`Mods/*/Levels/<level>/{Characters,Items}` and every
-/// `Mods/*/Globals/*/{Characters,Items}`; speakers can be items, e.g. speaker helpers) by UUID: (internal name, display-name loca handle).
-pub(crate) fn level_characters(vfs: &Vfs, level: &str) -> HashMap<Guid, (String, Option<String>)> {
-    let level = level.to_ascii_lowercase();
-    let mut out = HashMap::new();
-    for f in vfs.files_under("mods/") {
-        let p = f.entry.name.to_ascii_lowercase();
-        let wanted = (p.ends_with("/characters/_merged.lsf") || p.ends_with("/items/_merged.lsf"))
-            && (p.contains("/globals/") || p.contains(&format!("/levels/{level}/")));
-        if !wanted {
-            continue;
-        }
-        let Ok(res) = f
-            .read()
-            .map_err(anyhow::Error::from)
-            .and_then(|d| Ok(bg3_lsf::parse(&d)?))
-        else {
-            continue;
-        };
-        for region in &res.regions {
-            for obj in region.node.children_named("GameObjects") {
-                let Some(id) = obj.attr_str("MapKey").and_then(Guid::parse) else {
-                    continue;
-                };
-                let name = obj.attr_str("Name").unwrap_or_default().to_owned();
-                let display = match obj.attr("DisplayName") {
-                    Some(Value::TranslatedString(t)) if !t.handle.is_empty() => {
-                        Some(t.handle.clone())
-                    }
-                    _ => None,
-                };
-                out.insert(id, (name, display));
-            }
-        }
-    }
-    out
+/// Standalone dialogs use the same name inheritance as the live sim.
+fn level_characters(vfs: &Vfs, level: &str) -> Result<HashMap<Guid, (String, Option<String>)>> {
+    let stats = bg3_stats::install::load(vfs.packages(), bg3_vfs::modules::BASE_LOAD_ORDER)?;
+    let data = bg3_sim::GameData::load(vfs, &stats, &[level])?;
+    let mut sim = bg3_sim::Sim::new(data);
+    sim.load_level(level);
+    Ok(sim
+        .entities
+        .iter()
+        .map(|e| {
+            (
+                bg3_sim::dialog::to_lsf(e.id),
+                (
+                    e.name.clone(),
+                    sim.display_name_handle(e.id).map(str::to_owned),
+                ),
+            )
+        })
+        .collect())
 }
 
 fn speaker_label(

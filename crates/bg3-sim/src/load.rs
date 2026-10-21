@@ -32,6 +32,8 @@ use crate::tags::{TagDef, TagDefs};
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
     #[error(transparent)]
+    Loca(#[from] bg3_loca::Error),
+    #[error(transparent)]
     Vfs(#[from] bg3_vfs::Error),
     #[error("{path}: {source}")]
     Lsf {
@@ -480,6 +482,7 @@ impl GameData {
     /// module's character-creation and startup levels, where a new game begins).
     pub fn load(vfs: &Vfs, stats: &bg3_stats::Stats, levels: &[&str]) -> Result<Self, LoadError> {
         let mut data = Self {
+            loca: crate::names::load_localization(vfs, "English")?,
             flags: load_flags(vfs)?,
             tags: load_tags(vfs)?,
             statuses: StatusDefs::from_stats(stats),

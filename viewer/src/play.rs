@@ -52,6 +52,7 @@ enum Cmd {
 
 /// What the game thread reports after a tick.
 struct Frame {
+    names: HashMap<Guid, String>,
     presences: Option<Vec<Presence>>,
     notifications: Vec<Notification>,
     combat: CombatOut,
@@ -59,6 +60,7 @@ struct Frame {
 
 /// The state right after the new game started.
 pub struct Started {
+    pub names: HashMap<Guid, String>,
     pub avatar: Guid,
     pub avatar_template: Guid,
     pub level: String,
@@ -186,6 +188,7 @@ fn game_thread(
         .map(|p| (p.id, p.name.clone()))
         .collect();
     let _ = start_tx.send(Ok(Started {
+        names: display_names(&game.sim),
         avatar: started.avatar,
         avatar_template: opts.avatar_template,
         level: started.level,
@@ -205,6 +208,7 @@ fn game_thread(
                 let presences = (now != last).then(|| now.clone());
                 last = now;
                 let frame = Frame {
+                    names: display_names(&game.sim),
                     presences,
                     notifications: std::mem::take(&mut pending),
                     combat,
@@ -357,6 +361,7 @@ pub(crate) fn receive(
 ) {
     let rx = link.rx.lock().expect("frame channel");
     while let Ok(frame) = rx.try_recv() {
+        dialogs.names.extend(frame.names);
         if let Some(p) = frame.presences {
             state.by_id = p.into_iter().map(|p| (p.id, p)).collect();
         }
@@ -788,25 +793,15 @@ fn refresh_panel(
     });
 }
 
-/// Display names for speakers: the level's and globals' characters and items (loca
-/// `DisplayName`, else the object name without `S_`), the avatar as "You".
-pub fn speaker_names(
-    vfs: &bg3_vfs::Vfs,
-    level: &str,
-    loca: &Loca,
-    avatar: Guid,
-) -> HashMap<Guid, String> {
-    let mut out: HashMap<Guid, String> = crate::dialog::level_characters(vfs, level)
-        .into_iter()
-        .map(|(id, (name, display))| {
-            let label = display
-                .as_deref()
-                .and_then(|h| loca.text(h))
-                .map(crate::dialog::clean_markup)
-                .unwrap_or_else(|| name.trim_start_matches("S_").to_owned());
-            (bg3_sim::dialog::from_lsf(&id), label)
+/// Resolve from the live sim, including runtime story/character-creation name handles.
+fn display_names(sim: &bg3_sim::Sim) -> HashMap<Guid, String> {
+    sim.entities
+        .iter()
+        .map(|e| {
+            let name = sim
+                .display_name(e.id)
+                .unwrap_or_else(|| e.name.trim_start_matches("S_").to_owned());
+            (e.id, crate::dialog::clean_markup(&name))
         })
-        .collect();
-    out.insert(avatar, "You".to_owned());
-    out
+        .collect()
 }

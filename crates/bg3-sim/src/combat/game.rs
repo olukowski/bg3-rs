@@ -140,7 +140,10 @@ impl Game {
             let action = match self.sim.ai_turn(who) {
                 Ok(a) => a,
                 Err(e) => {
-                    let n = self.sim.render(who);
+                    let n = self
+                        .sim
+                        .display_name(who)
+                        .unwrap_or_else(|| self.sim.render(who));
                     self.sim
                         .combat_event(CombatEvent::Log(format!("{n}: AI action failed: {e}")));
                     AiAction::Nothing

@@ -451,16 +451,7 @@ pub(crate) fn query(
             if e.kind == EntityKind::Character && !sim.stage.live {
                 return None;
             }
-            let data = &sim.data.story.objects;
-            let name = data
-                .get(&id)
-                .and_then(|d| d.display_name.as_ref())
-                .or_else(|| {
-                    sim.data
-                        .template_chain(e.template)
-                        .iter()
-                        .find_map(|t| data.get(&t.id)?.display_name.as_ref())
-                })?;
+            let name = sim.display_name_handle(id)?;
             Some(ctx.string(name))
         }
         // bg3: esv::OsirisCharacterFunctions::CharacterGetOwner (4.1.1.7631656)

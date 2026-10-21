@@ -332,11 +332,17 @@ impl Sim {
                 let text = match r {
                     RollEvent::Attack(a) => format!(
                         "{} attacks {}: {a}",
-                        self.render(g(self, a.attacker)),
-                        self.render(g(self, a.target))
+                        self.display_name(g(self, a.attacker))
+                            .unwrap_or_else(|| self.render(g(self, a.attacker))),
+                        self.display_name(g(self, a.target))
+                            .unwrap_or_else(|| self.render(g(self, a.target)))
                     ),
                     RollEvent::SavingThrow(s) => {
-                        format!("{}: {s}", self.render(g(self, s.entity)))
+                        format!(
+                            "{}: {s}",
+                            self.display_name(g(self, s.entity))
+                                .unwrap_or_else(|| self.render(g(self, s.entity)))
+                        )
                     }
                     RollEvent::Die { die, value, dc } => {
                         format!("d{} = {value} vs {dc}", die.faces())

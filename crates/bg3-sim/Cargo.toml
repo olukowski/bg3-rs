@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 bg3-dialog.workspace = true
 bg3-lsf.workspace = true
+bg3-loca.workspace = true
 bg3-osiris.workspace = true
 bg3-rules.workspace = true
 bg3-stats.workspace = true
