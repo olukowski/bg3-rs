@@ -2143,6 +2143,7 @@ name = "bg3x"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bg3-dialog",
  "bg3-gr2",
  "bg3-install",
  "bg3-loca",

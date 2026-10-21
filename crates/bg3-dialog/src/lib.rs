@@ -13,8 +13,12 @@ pub mod world;
 
 pub use bg3_lsf::Guid;
 pub use model::{
-    Dialog, DialogOptions, Flag, FlagGroup, FlagKind, Node, NodeId, NodeKind, Roll, Speaker,
-    TaggedText, TextLine,
+    Dialog, DialogOptions, DialogRef, Flag, FlagGroup, FlagKind, Node, NodeId, NodeKind, Roll,
+    Speaker, TaggedText, TextLine,
+};
+pub use runner::{Choice, DialogEvent, DialogRunner, FlagSlot, Line, StartParams, Step};
+pub use world::{
+    ActorId, DialogWorld, FlagChange, FlagType, MemoryWorld, RollOutcome, RollRequest,
 };
 
 #[derive(Debug, thiserror::Error)]

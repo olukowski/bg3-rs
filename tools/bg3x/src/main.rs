@@ -1,5 +1,6 @@
 //! `bg3x` — inspect a Baldur's Gate 3 install. Output stays local; see ADR 0001.
 
+mod dialog;
 mod materials;
 
 use std::path::PathBuf;
@@ -117,6 +118,30 @@ enum Command {
         #[arg(long)]
         kinds: bool,
     },
+    /// Print a compiled dialog (`Story/DialogsBinary`) as a tree with its text resolved from
+    /// loca, or walk it interactively. NAME is the file stem (e.g. `TUT_Start_Brinepool`) or an
+    /// Osiris DIALOGRESOURCE (`Name_<uuid>`). Output is from your install; don't commit it.
+    Dialog {
+        name: String,
+        /// Walk the dialog with the runner: pick choices by number, flags kept in memory.
+        #[arg(long)]
+        walk: bool,
+        /// List dialog resources whose name contains NAME instead.
+        #[arg(long)]
+        list: bool,
+        /// Localization folder to read text from.
+        #[arg(short, long, default_value = "English")]
+        language: String,
+        /// With --walk: choices to take, 1-based (e.g. `2,1,1`); then interactive.
+        #[arg(long, value_delimiter = ',')]
+        choices: Vec<usize>,
+        /// With --walk: roll outcomes, `s`/`f` (e.g. `s,f`); then interactive.
+        #[arg(long, value_delimiter = ',')]
+        rolls: Vec<String>,
+        /// With --walk: print the Osiris events the dialog raises.
+        #[arg(long)]
+        events: bool,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -162,6 +187,23 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Verify { pak } => verify(pak),
+        Command::Dialog {
+            name,
+            walk,
+            list,
+            language,
+            choices,
+            rolls,
+            events,
+        } => dialog::run(dialog::Options {
+            name,
+            walk,
+            list,
+            language,
+            choices,
+            rolls: rolls.iter().map(|r| r.starts_with('s')).collect(),
+            events,
+        }),
         Command::Dups => dups(),
         Command::Gr2 {
             pak,

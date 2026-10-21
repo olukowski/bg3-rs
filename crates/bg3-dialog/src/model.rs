@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use bg3_lsf::{Guid, Node as LsfNode, Resource, Value};
 
+use crate::library::DialogResource;
 use crate::{Error, Result};
 
 /// Index of a node in [`Dialog::nodes`].
@@ -34,7 +35,34 @@ pub struct Dialog {
     pub roots: Vec<NodeId>,
     /// All nodes, in file order.
     pub nodes: Vec<Node>,
+    /// The dialog resource this was loaded for (set by [`DialogLibrary`](crate::library::DialogLibrary)).
+    pub resource: Option<DialogResource>,
     by_uuid: HashMap<Guid, NodeId>,
+}
+
+/// How the game names a dialog in events: its resource id and name (Osiris prints
+/// `Name_id`). Dialogs loaded without a resource use their own UUID and an empty name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DialogRef {
+    pub id: Guid,
+    pub name: String,
+}
+
+impl DialogRef {
+    /// The Osiris `DIALOGRESOURCE` string (`Name_id`), or the bare id without a name.
+    pub fn osiris_name(&self) -> String {
+        if self.name.is_empty() {
+            self.id.to_string()
+        } else {
+            format!("{}_{}", self.name, self.id)
+        }
+    }
+}
+
+impl std::fmt::Display for DialogRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.osiris_name())
+    }
 }
 
 /// Dialog-level switches (attributes of the `dialog` node). Absent attributes are `false`.
@@ -421,6 +449,32 @@ impl Dialog {
     /// Parses compiled dialog bytes (LSF, or LSX/LSJ with the same layout).
     pub fn parse(data: &[u8]) -> Result<Self> {
         Self::from_resource(&bg3_lsf::parse(data)?)
+    }
+
+    /// The resource id and name used for this dialog in events.
+    pub fn reference(&self) -> DialogRef {
+        match &self.resource {
+            Some(r) => DialogRef {
+                id: r.id,
+                name: r.name.clone(),
+            },
+            None => DialogRef {
+                id: self.uuid,
+                name: String::new(),
+            },
+        }
+    }
+
+    /// Whether the dialog plays without player input and is reported as
+    /// `AutomatedDialogStarted`: `automated`, `isBehaviour` or `isWorld` on the resource (or,
+    /// without one, on the dialog itself).
+    // bg3: LSDialogs::DialogInstance::DialogInstance(unsigned int, DialogResource const*),
+    //      esv::StoryDialogEventManager::OnDialogStarted (4.1.1.7631656)
+    pub fn is_automated(&self) -> bool {
+        match &self.resource {
+            Some(r) => r.reported_as_automated(),
+            None => self.options.automated || self.options.is_behaviour || self.options.is_world,
+        }
     }
 
     /// The node with the given UUID.
