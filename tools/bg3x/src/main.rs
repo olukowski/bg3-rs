@@ -75,6 +75,14 @@ enum Command {
         #[arg(short, long)]
         summary: bool,
     },
+    /// Summarise a GR2 model file (meshes, skeletons, models). `--tree` dumps the raw object tree.
+    Gr2 {
+        /// Pak name or path (`-` searches all paks).
+        pak: String,
+        path: String,
+        #[arg(long)]
+        tree: bool,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -121,6 +129,7 @@ fn main() -> Result<()> {
         }
         Command::Verify { pak } => verify(pak),
         Command::Dups => dups(),
+        Command::Gr2 { pak, path, tree } => gr2(&read_file(&pak, &path)?, tree),
         Command::Story {
             pak,
             path,
@@ -356,6 +365,61 @@ fn story(pak: &str, path: &str, goal: Option<&str>, summary: bool) -> Result<()>
         out.write_all(story.dump_goal(g).as_bytes())?;
     } else {
         write!(out, "{story}")?;
+    }
+    Ok(())
+}
+
+fn gr2(data: &[u8], tree: bool) -> Result<()> {
+    let file = bg3_gr2::Gr2File::parse(data)?;
+    if tree {
+        let types = bg3_gr2::Types::new(&file);
+        let mut out = String::new();
+        types.root()?.to_value(8, 4).write_tree(&mut out, 0);
+        print!("{out}");
+        return Ok(());
+    }
+    let h = &file.header;
+    let codecs: std::collections::BTreeSet<_> = h.sections.iter().map(|s| s.compression).collect();
+    println!(
+        "format {:?} rev {} sections {} ({codecs:?})",
+        h.format,
+        h.revision,
+        h.sections.len()
+    );
+    let scene = bg3_gr2::Scene::from_file(&file)?;
+    println!("from {:?}", scene.from_file_name);
+    for s in &scene.skeletons {
+        println!("skeleton {:?}: {} bones", s.name, s.bones.len());
+    }
+    for (i, m) in scene.meshes.iter().enumerate() {
+        let fmt: Vec<String> = m
+            .format
+            .iter()
+            .map(|c| format!("{}:{:?}x{}", c.name, c.kind, c.count))
+            .collect();
+        println!(
+            "mesh {i} {:?}: {} verts, {} tris ({:?}), {} groups, {} bone bindings, lod {:?}",
+            m.name,
+            m.vertex_count(),
+            m.triangle_count(),
+            m.index_width,
+            m.groups.len(),
+            m.bone_bindings.len(),
+            m.properties.as_ref().and_then(|p| p.lod)
+        );
+        println!("    {}", fmt.join(" "));
+    }
+    for m in &scene.models {
+        println!(
+            "model {:?}: skeleton {:?}, meshes {:?}",
+            m.name, m.skeleton, m.meshes
+        );
+    }
+    if scene.animation_count > 0 {
+        println!(
+            "{} animations, {} track groups (not decoded)",
+            scene.animation_count, scene.track_group_count
+        );
     }
     Ok(())
 }
