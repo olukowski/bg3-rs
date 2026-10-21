@@ -12,6 +12,7 @@
 //! slots a PBR renderer understands.
 
 pub mod bc;
+pub mod character;
 pub mod convert;
 pub mod dds;
 pub mod graph;

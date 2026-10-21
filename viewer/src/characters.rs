@@ -180,6 +180,8 @@ pub struct PreparedPart {
     pub attach_joint: Option<usize>,
     /// Transform relative to the attachment joint.
     pub local: Transform,
+    /// Material overrides, vertex colours and cut support (`char_materials.rs`).
+    pub look: crate::char_materials::PartLook,
 }
 
 pub struct PreparedCharacter {
@@ -195,6 +197,8 @@ pub struct PreparedCharacter {
     /// `MovementSpeedRun` (m/s) and `MovementStepUpHeight` (m) from the template chain.
     pub run_speed: f32,
     pub step_height: f32,
+    /// Body-region bytes cut from vertex-colour-masked meshes (`ResolvedCharacter::body_masks`).
+    pub cut_bytes: Vec<u8>,
 }
 
 /// Every character of the level that could be resolved and converted.
@@ -273,7 +277,7 @@ impl LevelCharacters {
         let results: Vec<_> = resolved
             .par_iter()
             .map(|(t, c, items, run)| {
-                let mut p = prepare(vfs, &cache, *t, c, items);
+                let mut p = prepare(vfs, &cache, *t, c, items, &level.banks.material_presets);
                 if let Ok(p) = &mut p {
                     p.run = run
                         .as_ref()
@@ -436,7 +440,9 @@ fn prepare(
     transform: bg3_world::Transform,
     c: &ResolvedCharacter,
     items: &[EquippedItem],
+    presets: &HashMap<String, bg3_world::characters::MaterialOverrides>,
 ) -> Result<PreparedCharacter, String> {
+    let looks = crate::char_materials::LookOverrides::new(c, items, presets);
     let skel_path = c
         .skeleton
         .as_ref()
@@ -491,6 +497,7 @@ fn prepare(
                 material_id: obj.material_id.clone(),
                 attach_joint,
                 local: Transform::default(),
+                look: looks.part(&part.visual, mesh),
             });
         }
     }
@@ -529,6 +536,7 @@ fn prepare(
             .props
             .movement_step_up_height
             .unwrap_or(DEFAULT_MOVEMENT_STEP_UP_HEIGHT),
+        cut_bytes: c.body_masks.iter().filter_map(|m| m.value).collect(),
     })
 }
 
@@ -583,6 +591,7 @@ fn rigid_equipment_parts(
                     material_id: obj.material_id.clone(),
                     attach_joint: Some(joint),
                     local,
+                    look: Default::default(),
                 });
             }
         }
@@ -767,6 +776,7 @@ impl CharacterAnimator {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_characters(
     mut commands: Commands,
     mut characters: ResMut<LevelCharacters>,
@@ -774,6 +784,8 @@ pub fn spawn_characters(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+    templates: Option<Res<crate::char_materials::CharacterTemplates>>,
+    mut char_materials: ResMut<Assets<crate::char_materials::CharacterMaterial>>,
 ) {
     let fallback = materials.add(Color::srgb(0.75, 0.6, 0.55));
     let mut ibm_cache: HashMap<usize, Handle<SkinnedMeshInverseBindposes>> = HashMap::new();
@@ -815,22 +827,22 @@ pub fn spawn_characters(
                 ))
             })
             .clone();
-        for part in c.parts {
-            let material = match part
-                .material_id
-                .as_ref()
-                .map(|m| level_materials.by_id.get(m))
-            {
-                Some(Some(Some(m))) => m.clone(),
-                Some(Some(None)) => continue, // helper material the game doesn't draw
-                _ => fallback.clone(),
+        for mut part in c.parts {
+            let Some(material) = crate::char_materials::part_material(
+                &mut part,
+                &c.cut_bytes,
+                templates.as_deref(),
+                &mut char_materials,
+                &level_materials,
+                &fallback,
+            ) else {
+                continue; // helper material the game doesn't draw
             };
             let skinned = part.mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX).is_some();
             let mesh = meshes.add(part.mesh);
             if skinned {
-                commands.spawn((
+                let mut e = commands.spawn((
                     Mesh3d(mesh),
-                    MeshMaterial3d(material),
                     SkinnedMesh {
                         inverse_bindposes: ibm.clone(),
                         joints: joints.clone(),
@@ -838,17 +850,14 @@ pub fn spawn_characters(
                     Transform::default(),
                     ChildOf(root),
                 ));
+                material.insert(&mut e);
             } else {
                 let parent = part
                     .attach_joint
                     .and_then(|j| joints.get(j).copied())
                     .unwrap_or(root);
-                commands.spawn((
-                    Mesh3d(mesh),
-                    MeshMaterial3d(material),
-                    part.local,
-                    ChildOf(parent),
-                ));
+                let mut e = commands.spawn((Mesh3d(mesh), part.local, ChildOf(parent)));
+                material.insert(&mut e);
             }
         }
         commands.entity(root).insert(CharacterRoot {

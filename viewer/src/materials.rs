@@ -31,7 +31,7 @@ fn vt_first_level() -> usize {
 
 /// How a texture is used, which decides its conversion and colour space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Usage {
+pub(crate) enum Usage {
     /// DDS colour data; sRGB per the texture resource's `SRGB` flag.
     Color { srgb: bool },
     /// DDS normal map.
@@ -40,6 +40,9 @@ enum Usage {
     Physical,
     /// Layer of a virtual texture (0 albedo, 1 normal, 2 physical); the key is the VT ID.
     VirtualLayer(usize),
+    /// Layer of a virtual texture as stored (no channel re-packing), for character shaders
+    /// that read the channels themselves (`char_materials.rs`).
+    VirtualLayerRaw(usize),
 }
 
 /// Everything needed to build one `StandardMaterial`, with texture slots as indices into
@@ -56,6 +59,8 @@ struct Plan {
 #[derive(Resource)]
 pub struct PreparedMaterials {
     plans: HashMap<String, Plan>,
+    /// Materials of character shader graphs, drawn with `char_materials::CharacterMaterial`.
+    char_plans: HashMap<String, crate::char_materials::CharPlan>,
     images: Vec<Option<Image>>,
 }
 
@@ -67,13 +72,13 @@ pub struct LevelMaterials {
 
 /// Deduplicated list of textures to load.
 #[derive(Default)]
-struct TextureKeys {
+pub(crate) struct TextureKeys {
     keys: Vec<(String, Usage)>,
     index: HashMap<(String, Usage), usize>,
 }
 
 impl TextureKeys {
-    fn add(&mut self, key: String, usage: Usage) -> usize {
+    pub(crate) fn add(&mut self, key: String, usage: Usage) -> usize {
         let key = (key, usage);
         if let Some(&i) = self.index.get(&key) {
             return i;
@@ -84,7 +89,7 @@ impl TextureKeys {
     }
 
     /// A `TextureBank` texture.
-    fn texture(
+    pub(crate) fn texture(
         &mut self,
         banks: &ResourceBanks,
         id: &str,
@@ -123,6 +128,7 @@ impl PreparedMaterials {
 
         let mut keys = TextureKeys::default();
         let mut plans = HashMap::new();
+        let mut char_plans = HashMap::new();
         for (id, mat) in &materials {
             let path = mat.source_file.as_deref().unwrap_or_default();
             let material = resolve(path, graphs.get(path), &mat.params);
@@ -149,6 +155,9 @@ impl PreparedMaterials {
             };
             let emissive = tex(Slot::Emissive)
                 .and_then(|t| keys.texture(banks, &t, |s| Usage::Color { srgb: s }));
+            if let Some(cp) = crate::char_materials::plan(path, &material, banks, &mut keys) {
+                char_plans.insert((*id).to_owned(), cp);
+            }
             plans.insert(
                 (*id).to_owned(),
                 Plan {
@@ -181,7 +190,8 @@ impl PreparedMaterials {
             .filter_map(|i| i.data.as_ref().map(Vec::len))
             .sum();
         let count = |f: fn(&Usage) -> bool| keys.keys.iter().filter(|(_, u)| f(u)).count();
-        let virtual_layers = count(|u| matches!(u, Usage::VirtualLayer(_)));
+        let virtual_layers =
+            count(|u| matches!(u, Usage::VirtualLayer(_) | Usage::VirtualLayerRaw(_)));
         let missing_vt = plans
             .values()
             .filter(|p| p.material.needs_virtual_texture() && p.base.is_none())
@@ -200,6 +210,7 @@ impl PreparedMaterials {
         );
         Self {
             plans,
+            char_plans,
             images: decoded,
         }
     }
@@ -214,27 +225,7 @@ fn load_texture(
 ) -> anyhow::Result<Image> {
     let (texture, srgb) = match usage {
         Usage::VirtualLayer(layer) => {
-            let res = banks
-                .virtual_textures
-                .get(key)
-                .ok_or_else(|| anyhow::anyhow!("not in VirtualTextureBank"))?;
-            let mips = vts.extract_mips(res, layer, vt_first_level(), bg3_vt::OutputFormat::Bc)?;
-            let first = mips.first().ok_or_else(|| anyhow::anyhow!("no mips"))?;
-            let format = match first.format {
-                bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc1) => DdsFormat::Bc1,
-                bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc3) => DdsFormat::Bc3,
-                bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc4) => DdsFormat::Bc4,
-                bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc5) => DdsFormat::Bc5,
-                bg3_vt::ImageFormat::Rgba8 => anyhow::bail!("expected BC tiles"),
-            };
-            let srgb = first.srgb;
-            let t = Texture {
-                format: TexelFormat::Bc(format),
-                width: first.width,
-                height: first.height,
-                mip_count: mips.len() as u32,
-                data: mips.iter().flat_map(|m| &m.data).copied().collect(),
-            };
+            let (t, srgb) = vt_layer(vts, banks, key, layer)?;
             // Same channel layouts as the DDS maps (see docs/research/materials.md).
             match layer {
                 1 => (convert::normal_texture(t)?, false),
@@ -242,6 +233,7 @@ fn load_texture(
                 _ => (t, srgb),
             }
         }
+        Usage::VirtualLayerRaw(layer) => vt_layer(vts, banks, key, layer)?,
         Usage::Normal => (convert::normal_map(&vfs.read(key)?)?, false),
         Usage::Physical => (convert::physical_map(&vfs.read(key)?)?, false),
         Usage::Color { srgb } => {
@@ -257,6 +249,36 @@ fn load_texture(
         }
     };
     to_image(texture, srgb)
+}
+
+/// One layer of a virtual texture as BC blocks, with its colour space.
+fn vt_layer(
+    vts: &bg3_vt::VirtualTextures,
+    banks: &ResourceBanks,
+    key: &str,
+    layer: usize,
+) -> anyhow::Result<(Texture, bool)> {
+    let res = banks
+        .virtual_textures
+        .get(key)
+        .ok_or_else(|| anyhow::anyhow!("not in VirtualTextureBank"))?;
+    let mips = vts.extract_mips(res, layer, vt_first_level(), bg3_vt::OutputFormat::Bc)?;
+    let first = mips.first().ok_or_else(|| anyhow::anyhow!("no mips"))?;
+    let format = match first.format {
+        bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc1) => DdsFormat::Bc1,
+        bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc3) => DdsFormat::Bc3,
+        bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc4) => DdsFormat::Bc4,
+        bg3_vt::ImageFormat::Bc(bg3_vt::BcFormat::Bc5) => DdsFormat::Bc5,
+        bg3_vt::ImageFormat::Rgba8 => anyhow::bail!("expected BC tiles"),
+    };
+    let t = Texture {
+        format: TexelFormat::Bc(format),
+        width: first.width,
+        height: first.height,
+        mip_count: mips.len() as u32,
+        data: mips.iter().flat_map(|m| &m.data).copied().collect(),
+    };
+    Ok((t, first.srgb))
 }
 
 fn to_image(t: Texture, srgb: bool) -> anyhow::Result<Image> {
@@ -364,6 +386,8 @@ pub fn upload(
         .collect();
     let get = |i: Option<usize>| i.and_then(|i| handles[i].clone());
     let mut out = LevelMaterials::default();
+    let char_plans = std::mem::take(&mut prepared.char_plans);
+    let mut char_templates = crate::char_materials::CharacterTemplates::default();
     for (id, plan) in std::mem::take(&mut prepared.plans) {
         let m = &plan.material;
         if m.invisible {
@@ -413,9 +437,13 @@ pub fn upload(
             },
             ..default()
         };
+        if let Some(cp) = char_plans.get(&id) {
+            char_templates.add(&id, cp, &material, &handles);
+        }
         out.by_id.insert(id, Some(materials.add(material)));
     }
     commands.insert_resource(out);
+    commands.insert_resource(char_templates);
 }
 
 #[cfg(test)]

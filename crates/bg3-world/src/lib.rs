@@ -3,6 +3,7 @@
 //! Pure data, no rendering. See `docs/research/level-structure.md` for the reference chain
 //! level object → root template → visual resource → GR2 + materials.
 
+pub mod appearance;
 pub mod banks;
 pub mod characters;
 pub mod level;

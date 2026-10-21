@@ -96,7 +96,8 @@ pub struct MaterialOverrides {
 }
 
 impl MaterialOverrides {
-    fn read(n: &Node) -> Self {
+    /// Read a `MaterialOverrides` node (also the `Presets` node of a `MaterialPresetBank`).
+    pub(crate) fn read(n: &Node) -> Self {
         let mut out = Self {
             material_resource: str_attr(n, "MaterialResource"),
             ..Default::default()

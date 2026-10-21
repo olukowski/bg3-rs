@@ -89,6 +89,9 @@ pub struct ResourceBanks {
     /// Character visuals, skeletons, animations and animation sets.
     pub characters: crate::characters::CharacterBanks,
     pub equipment: crate::characters::EquipmentSettings,
+    /// `MaterialPresetBank` resources (their `Presets` node): colour/skin/hair/eye presets
+    /// that character visuals and items reference (see `appearance.rs`).
+    pub material_presets: HashMap<String, crate::characters::MaterialOverrides>,
     /// Bank region (`EffectBank`, `SkeletonBank`, …) of every resource ID, including the typed ones.
     pub kinds: HashMap<String, String>,
     /// Bank files that failed to parse (path, error).
@@ -105,6 +108,7 @@ struct BankFile {
     skeletons: Vec<SkeletonResource>,
     animations: Vec<AnimationResource>,
     animation_sets: Vec<AnimationSetResource>,
+    material_presets: Vec<(String, crate::characters::MaterialOverrides)>,
 }
 
 impl ResourceBanks {
@@ -182,6 +186,7 @@ impl ResourceBanks {
         for r in file.animation_sets {
             c.animation_sets.insert(r.id.clone(), r);
         }
+        self.material_presets.extend(file.material_presets);
     }
 }
 
@@ -285,6 +290,15 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
     let animation_sets = resources(res, "AnimationSetBank")
         .map(AnimationSetResource::read)
         .collect();
+    let material_presets = resources(res, "MaterialPresetBank")
+        .filter_map(|n| {
+            let presets = n.children.iter().find(|c| c.name == "Presets")?;
+            Some((
+                str_attr(n, "ID")?,
+                crate::characters::MaterialOverrides::read(presets),
+            ))
+        })
+        .collect();
     let kinds = res
         .regions
         .iter()
@@ -303,5 +317,6 @@ fn read_bank_file(res: &bg3_lsf::Resource) -> BankFile {
         skeletons,
         animations,
         animation_sets,
+        material_presets,
     }
 }

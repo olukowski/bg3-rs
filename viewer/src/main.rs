@@ -4,6 +4,7 @@
 //! (`materials.rs`); objects without a mesh (effects, …) are shown as small boxes.
 
 mod cc_ui;
+mod char_materials;
 mod characters;
 mod combat_ui;
 mod dialog;
@@ -224,6 +225,7 @@ fn main() -> Result<()> {
     }))
     .add_plugins(fly_camera::FlyCameraPlugin)
     .add_plugins(characters::CharactersPlugin)
+    .add_plugins(char_materials::CharacterMaterialsPlugin)
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)
     .insert_resource(meshes)
