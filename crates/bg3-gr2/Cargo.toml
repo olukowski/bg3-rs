@@ -3,6 +3,7 @@ name = "bg3-gr2"
 description = "Reader for Granny 3D (.GR2) files as shipped with Baldur's Gate 3"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]

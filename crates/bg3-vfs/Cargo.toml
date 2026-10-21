@@ -3,6 +3,7 @@ name = "bg3-vfs"
 description = "Unified read-only view over all Baldur's Gate 3 paks"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]

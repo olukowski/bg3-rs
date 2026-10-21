@@ -3,6 +3,7 @@ name = "bg3-stats"
 description = "Parser for Baldur's Gate 3 stats text files (Stats/Generated/*.txt) with inheritance resolution"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]

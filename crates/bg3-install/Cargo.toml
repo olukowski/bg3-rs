@@ -3,6 +3,7 @@ name = "bg3-install"
 description = "Locate a Baldur's Gate 3 install and describe its layout"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]
