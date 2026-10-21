@@ -1,7 +1,10 @@
-//! `bg3-viewer` — fly through BG3 levels. Currently a scaffold: window, fly camera, and the
-//! mounted VFS as a resource. Level and mesh loading land once `bg3-lsf` and `bg3-gr2` exist.
+//! `bg3-viewer` — fly through BG3 levels.
+//!
+//! Current state: places every level object at its transform as a placeholder box (meshes land
+//! with `bg3-gr2`).
 
 mod fly_camera;
+mod level;
 
 use anyhow::Result;
 use bevy::prelude::*;
@@ -12,8 +15,9 @@ use clap::Parser;
 #[derive(Parser)]
 #[command(about)]
 struct Args {
-    /// Level to load, e.g. `TUT_Avernus_C` (not implemented yet).
-    level: Option<String>,
+    /// Level to load.
+    #[arg(default_value = "TUT_Avernus_C")]
+    level: String,
 }
 
 /// The game's files, mounted read-only.
@@ -35,44 +39,35 @@ fn main() -> Result<()> {
     }
     let vfs = Vfs::from_install(&install)?;
     eprintln!("mounted {} files from BG3 {}", vfs.len(), install.version);
-    if let Some(level) = &args.level {
-        eprintln!("level loading not implemented yet ({level})");
-    }
+    let level = level::LoadedLevel::load(&vfs, &args.level)?;
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "bg3-viewer".into(),
+                title: format!("bg3-viewer — {}", args.level),
                 ..default()
             }),
             ..default()
         }))
         .add_plugins(fly_camera::FlyCameraPlugin)
         .insert_resource(GameData { install, vfs })
-        .add_systems(Startup, setup)
+        .insert_resource(level)
+        .add_systems(Startup, (setup, level::spawn_level))
         .run();
     Ok(())
 }
 
-fn setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 8.0, 16.0).looking_at(Vec3::ZERO, Vec3::Y),
-        fly_camera::FlyCamera::default(),
-    ));
+fn setup(mut commands: Commands) {
     commands.spawn((
         DirectionalLight {
-            shadow_maps_enabled: true,
+            shadow_maps_enabled: false,
+            illuminance: 8000.0,
             ..default()
         },
         Transform::from_xyz(4.0, 10.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
-    commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(50.0, 50.0))),
-        MeshMaterial3d(materials.add(Color::srgb(0.3, 0.32, 0.3))),
-    ));
+    commands.insert_resource(GlobalAmbientLight {
+        brightness: 400.0,
+        ..default()
+    });
 }

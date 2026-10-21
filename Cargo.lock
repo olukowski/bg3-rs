@@ -2073,6 +2073,7 @@ dependencies = [
  "bevy",
  "bg3-install",
  "bg3-vfs",
+ "bg3-world",
  "clap",
 ]
 
