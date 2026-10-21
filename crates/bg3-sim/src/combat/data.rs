@@ -221,6 +221,8 @@ pub struct ObjectCombat {
     /// `SkillList/Skill@Skill`.
     pub skills: Vec<String>,
     pub combat_group: Option<String>,
+    /// `Archetype`: the AI archetype (`Public/<Module>/AI/Archetypes/<name>.txt`).
+    pub archetype: Option<String>,
 }
 
 /// Everything combat reads from the install.
@@ -261,6 +263,8 @@ pub struct CombatData {
     pub progressions: HashMap<Guid, Vec<ProgressionDef>>,
     /// Spell lists (`Lists/SpellLists.lsx`) by `UUID`.
     pub spell_lists: HashMap<Guid, Vec<String>>,
+    /// AI archetypes (`Public/<Module>/AI/Archetypes`, Balanced difficulty).
+    pub ai: super::ai::archetype::Archetypes,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -373,6 +377,7 @@ impl CombatData {
             race_tables: HashMap::new(),
             progressions: HashMap::new(),
             spell_lists: HashMap::new(),
+            ai: Default::default(),
         }
     }
 
@@ -558,6 +563,11 @@ impl CombatData {
         d.resource_groups = load_resource_groups(vfs, &d.resources)?;
         d.helper_scripts = bg3_rules::install::helper_scripts(vfs, BASE_LOAD_ORDER);
         load_classes(vfs, &mut d)?;
+        d.ai = super::ai::archetype::Archetypes::load(
+            vfs,
+            BASE_LOAD_ORDER,
+            super::ai::archetype::DEFAULT_LETHALITY,
+        );
         for m in BASE_LOAD_ORDER {
             let path = format!("Public/{m}/RootTemplates/_merged.lsf");
             if vfs.exists(&path) {
@@ -866,6 +876,7 @@ fn read_combat_objects(
             spell_set: s(n, "SpellSet"),
             skills,
             combat_group: s(n, "CombatGroupID"),
+            archetype: s(n, "Archetype").filter(|a| !a.is_empty()),
         };
         if c != ObjectCombat::default() {
             out.insert(id, c);

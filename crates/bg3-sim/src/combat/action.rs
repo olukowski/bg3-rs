@@ -116,7 +116,7 @@ impl Sim {
     }
 
     /// A condition engine with the install's helper scripts loaded.
-    fn condition_engine(&mut self) -> ConditionEngine {
+    pub(super) fn condition_engine(&mut self) -> ConditionEngine {
         let mut engine = ConditionEngine::new();
         engine.base_spell_dc = self.data.combat.base_spell_dc;
         let data = self.data.clone();

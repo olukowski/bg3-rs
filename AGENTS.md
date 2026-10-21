@@ -84,9 +84,10 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   (stats expression languages, see `docs/formats/stats-expressions.md`),
   `nav [LEVEL] [--regions] [--subgrids] [--at x,y,z] [--path=x,y,z --path=x,y,z]` (AI grid summary,
   tile probe and path finding, see `docs/formats/navcloud.md`),
-  `combat [LEVEL] --party A,B [--target X] [--seed N] [--events] [--nav]` (a fight on bg3-sim with the
-  story, every side on the approximate AI; `--nav` follows the AI grid and reports endpoint
-  standability and path length; prints the combat log, see `docs/research/combat.md`).
+  `combat [LEVEL] --party A,B [--target X] [--seed N] [--events] [--nav] [--ai-debug]` (a fight on
+  bg3-sim with the story, every side on the scoring AI; `--nav` follows the AI grid and reports
+  endpoint standability and path length; `--ai-debug` prints each AI decision's best candidates
+  with score breakdowns; prints the combat log, see `docs/research/combat.md`, `docs/research/ai.md`).
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
   level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),

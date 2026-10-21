@@ -140,6 +140,16 @@ impl Game {
     /// Play a whole fight with every side on the (approximate) AI, the party included, until
     /// it ends or `max_turns` turns were taken. Returns the turns played.
     pub fn combat_auto(&mut self, combat: Guid, max_turns: usize) -> Vec<(Guid, AiAction)> {
+        self.combat_auto_traced(combat, max_turns, &mut |_, _| {})
+    }
+
+    /// [`Game::combat_auto`] with every AI decision's plan shown to `on_plan`.
+    pub fn combat_auto_traced(
+        &mut self,
+        combat: Guid,
+        max_turns: usize,
+        on_plan: &mut dyn FnMut(&crate::Sim, &super::ai::AiPlan),
+    ) -> Vec<(Guid, AiAction)> {
         let mut out = Vec::new();
         for _ in 0..max_turns {
             let Some(c) = self.sim.combat_by_id(combat).filter(|c| !c.finished) else {
@@ -151,7 +161,7 @@ impl Game {
             else {
                 break;
             };
-            let action = match self.sim.ai_turn(who) {
+            let action = match self.sim.ai_turn_traced(who, on_plan) {
                 Ok(a) => a,
                 Err(e) => {
                     let n = self
