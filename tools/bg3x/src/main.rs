@@ -2,6 +2,7 @@
 
 mod dialog;
 mod materials;
+mod sim;
 
 use std::path::PathBuf;
 
@@ -142,6 +143,35 @@ enum Command {
         #[arg(long)]
         events: bool,
     },
+    /// Replay a libOsiris runtime log with bg3-sim answering engine queries and raising engine
+    /// events (see docs/research/osiris-engine-api.md); prints sim vs fallback rates.
+    SimReplay {
+        /// The log (default: .cache/traces/full-nautiloid.log).
+        trace: Option<PathBuf>,
+        #[arg(long, default_value = "GustavX")]
+        pak: String,
+        #[arg(long, default_value = "Mods/GustavX/Story/story.div.osi")]
+        path: String,
+        /// Drive the story with the logged answers and only grade the sim's.
+        #[arg(long)]
+        check: bool,
+        /// Run both modes (check, then sim).
+        #[arg(long)]
+        both: bool,
+        /// Levels whose objects to load; the first is loaded at the start (default: the
+        /// module's character-creation and startup levels).
+        #[arg(long, value_delimiter = ',')]
+        levels: Vec<String>,
+        /// Also write the VM's own log, in libOsiris' format, to this file.
+        #[arg(long)]
+        vm_log: Option<PathBuf>,
+        /// Write every disagreement / missing / extra event to this file (`.cache/` only).
+        #[arg(long)]
+        dump: Option<PathBuf>,
+        /// Print the inventory of engine calls/queries/events in the log (Markdown) instead.
+        #[arg(long)]
+        inventory: bool,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -225,6 +255,27 @@ fn main() -> Result<()> {
             vm_log,
             kinds,
         } => osiris_replay(trace, &pak, &path, vm_log, kinds),
+        Command::SimReplay {
+            trace,
+            pak,
+            path,
+            check,
+            both,
+            levels,
+            vm_log,
+            dump,
+            inventory,
+        } => sim::run(sim::Args {
+            trace,
+            pak,
+            path,
+            check,
+            both,
+            levels,
+            vm_log,
+            dump,
+            inventory,
+        }),
         Command::Materials { level, verbose } => materials::survey(&level, verbose),
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),

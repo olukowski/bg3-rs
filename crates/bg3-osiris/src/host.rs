@@ -38,6 +38,16 @@ impl HostCtx<'_> {
     pub fn display(&self, v: &Value) -> String {
         display(self.strings, v)
     }
+
+    /// The value as libOsiris' runtime log prints it.
+    pub fn log_value(&self, v: &Value) -> crate::trace::LogValue {
+        crate::vm::log_value_ctx(self, v)
+    }
+
+    /// Name of a type id (`CHARACTER`, `GUIDSTRING`, …).
+    pub fn type_name(&self, ty: TypeId) -> Option<&str> {
+        self.prog.type_names.get(ty as usize).map(String::as_str)
+    }
 }
 
 pub(crate) fn make_string(strings: &mut StringTable, ty: TypeId, root: Root, s: &str) -> Value {

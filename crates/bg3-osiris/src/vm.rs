@@ -281,6 +281,11 @@ impl Vm {
         Some(self.prog.node(self.prog.functions[f].node).is_some())
     }
 
+    /// Name of a type id (`CHARACTER`, `GUIDSTRING`, …).
+    pub fn type_name(&self, ty: TypeId) -> Option<&str> {
+        self.prog.type_names.get(ty as usize).map(String::as_str)
+    }
+
     /// Declared parameter types of a function.
     pub fn function_params(&self, name: &str, arity: usize) -> Option<Vec<TypeId>> {
         let f = self.prog.function(name, arity)?;

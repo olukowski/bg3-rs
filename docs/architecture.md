@@ -5,7 +5,7 @@
 ```
  game / viewer (Bevy)      bg3-viewer          (planned: bg3-game, UI, audio, animation plugins)
                                 │
- simulation (headless)     bg3-osiris · bg3-dialog · bg3-stats · bg3-world        (planned: bg3-sim, bg3-rules, nav)
+ simulation (headless)     bg3-osiris · bg3-sim · bg3-dialog · bg3-stats · bg3-world   (planned: bg3-rules, nav)
                                 │
  file formats (no Bevy)    bg3-pak · bg3-vfs · bg3-lsf · bg3-gr2 · bg3-vt · bg3-loca · bg3-story · bg3-material
                                 │
@@ -42,6 +42,7 @@
 | `bg3-story` | Compiled Osiris story loader and pseudo-source dump | done |
 | `bg3-osiris` | Osiris VM, plus trace parser and replay | matches the real game on the recorded opening |
 | `bg3-dialog` | Dialog model, resources, headless runner; game state via the `DialogWorld` trait | reproduces the recorded Nautiloid dialogs |
+| `bg3-sim` | Headless world state and the engine side of Osiris: entities, flags, tags, statuses, timers; `Host` impl; trace validation (`sim-replay`) | answers 87% of the opening's engine queries, all graded answers equal the game's |
 | `bg3-gr2` | Granny GR2 reader with BitKnit2 decompression | meshes, skeletons and animations (all 228,541 decode) |
 | `bg3-vt` | Granite virtual textures | done |
 | `bg3-material` | Shader-graph parameters, material instances, texture slot/channel mapping | first approximation |
@@ -49,6 +50,6 @@
 | `bg3x` | Command-line inspector over all of the above | |
 | `bg3-viewer` | Bevy level viewer | |
 
-Planned: `bg3-sim` (headless world simulation and the engine side of Osiris), `bg3-rules` (stats
-expressions, rolls, combat), navigation, dialogue, animation, and UI. See the
+Planned: `bg3-rules` (stats expressions, rolls, combat), navigation, dialogue, animation, and
+UI. See the
 [roadmap](roadmap.md).

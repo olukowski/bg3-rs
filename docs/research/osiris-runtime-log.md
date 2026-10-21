@@ -160,6 +160,10 @@ normalised key that drops type prefixes; a second pass compares the full text in
 prefixes. Results: first divergence with context, match rates per category (in-order, LCS per
 segment), per-database fact histories, unanswered queries.
 
+`bg3_sim::replay::sim_replay` (`bg3x sim-replay`) runs the same log with `bg3-sim` answering
+the queries it implements and raising the events it should, and grades it against the log; see
+[osiris-engine-api.md](osiris-engine-api.md).
+
 Limits of the method: queries without parameters print no result line (their answer is taken
 from the absence of `Query failed`); diagnostics and database dumps are not compared; a trace
 that starts mid-game (after a save load) has no InitGame segment and would need the save's
