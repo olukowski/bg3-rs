@@ -8,12 +8,15 @@
 //! `LashesAlphaIntensity`, hair presets set the skin's `Eyebrow_Color`). Only `Enabled`
 //! entries count. See `docs/research/character-shaders.md`.
 //!
-//! Layering, lowest first (**assumption** where marked, inferred from the data):
-//! 1. graph defaults, 2. material instance (`Enabled` values) — both in `bg3-material`;
-//! 3. presets without `ForcePresetValues` (**assumption**), 4. the visual's own parameters,
-//! 5. presets with `ForcePresetValues` (**assumption**: "force" lets a preset beat 4).
+//! Layering, lowest first: 1. graph defaults, 2. material instance (`Enabled` values) — both
+//! in `bg3-material`; 3. the presets, in list order; 4. the visual's own parameters.
+//! Established from the disassembly of `ls::VisualSetSlots::InitVisualSlots` (presets are
+//! applied with `ApplyMaterialPresetsResources`, then `ApplyCustomPresets` applies the own
+//! list). What `ForcePresetValues` changes was not found there and is not modelled.
+//! Typing (scalar/vector) is the material's business: see `bg3_material::character::ParamSet`.
 //!
-//! bg3: ecl::visual::ApplyMaterialPreset (4.1.1.7631656) — name only; not read.
+//! bg3: ls::VisualSetSlots::InitVisualSlots, ls::VisualSetSlots::ApplyMaterialPresetsResources,
+//! ls::VisualSetSlots::ApplyCustomPresets (4.1.1.7631656)
 
 use std::collections::HashMap;
 
@@ -46,26 +49,19 @@ fn collect(
     depth: usize,
     out: &mut Vec<ParamAssignment>,
 ) {
-    let preset_refs = || {
-        ov.presets
+    if depth < MAX_PRESET_DEPTH {
+        let refs = ov
+            .presets
             .iter()
-            .map(|p| (p.preset.as_str(), p.force))
-            .chain(ov.color_preset.as_deref().map(|p| (p, true)))
-            .filter(|(id, _)| !crate::characters::is_null_guid(id))
-    };
-    let apply_presets = |force: bool, out: &mut Vec<ParamAssignment>| {
-        if depth >= MAX_PRESET_DEPTH {
-            return;
-        }
-        for (id, f) in preset_refs() {
-            if f == force
-                && let Some(p) = presets.get(id)
-            {
+            .map(|p| p.preset.as_str())
+            .chain(ov.color_preset.as_deref())
+            .filter(|id| !crate::characters::is_null_guid(id));
+        for id in refs {
+            if let Some(p) = presets.get(id) {
                 collect(p, presets, depth + 1, out);
             }
         }
-    };
-    apply_presets(false, out);
+    }
     out.extend(
         ov.params
             .iter()
@@ -75,7 +71,6 @@ fn collect(
                 value: p.value.clone(),
             }),
     );
-    apply_presets(true, out);
 }
 
 #[cfg(test)]
@@ -132,8 +127,8 @@ mod tests {
                 .find(|x| x.parameter == n)
                 .map(|x| x.value[0])
         };
-        assert_eq!(last("A"), Some(2.0), "own params beat unforced presets");
-        assert_eq!(last("B"), Some(3.0), "forced presets beat own params");
+        assert_eq!(last("A"), Some(2.0), "own params beat presets");
+        assert_eq!(last("B"), Some(2.0), "also forced ones");
         assert_eq!(last("C"), None, "disabled entries are ignored");
     }
 

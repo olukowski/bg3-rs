@@ -58,12 +58,12 @@ with the sparse-template rule in `lighting.md`).
 - `ShowEquipmentVisuals`: false on the NPC presets seen; with it false, the clothing is already in
   the slots.
 - `MaterialOverrides`: per-character skin/hair/eye colours (`HemoglobinAmount`, `MelaninColor`,
-  `Eyes_IrisColour`, `Cloth_Primary`, …) with an `Enabled` flag, plus `MaterialPresets`. Read, not
-  yet applied (needs the character shaders).
+  `Eyes_IrisColour`, `Cloth_Primary`, …) with an `Enabled` flag, plus `MaterialPresets`.
+  Applied by the character shaders; layering and scope in `character-shaders.md`.
 
 Clothing meshes are drawn on top of the body. Wearable visuals name the partial body cuts in
-`VertexColorMaskSlots`; resolution now exposes these requests (see Equipment below). Applying
-them to the body shader is separate work.
+`VertexColorMaskSlots`; resolution exposes these requests (see Equipment below) and the viewer
+applies them as the game's vertex shaders do (`character-shaders.md`, "Body cut masks").
 
 ### Skeleton and skinning
 
@@ -74,8 +74,11 @@ the bind pose: `rest_world · InverseWorldTransform = I` for every bone of every
 Mesh GR2s carry their own skeletons, and their `BoneBindings` name bones that the base skeleton
 lacks: face bones (`brow_l_01`, `adams_apple`), hair sockets (`Socket_Hair_*`), wing, tentacle and
 hair-strand bones (59–153 per character). The viewer extends the base skeleton with each missing
-bone from the mesh's skeleton, parented by name to the nearest ancestor the base skeleton has.
-Body animations don't drive these bones, so they keep their rest pose relative to the parent
+bone from the mesh's skeleton, parented by name to the nearest ancestor the base skeleton has,
+and placed by the bone's inverse bind relative to that parent (`rest_world · IBM = I`), not by
+the foreign rig's local rest: the rigs differ (Lae'zel's hair rig has `Head_M` 9 cm above her
+body rig's), and the local rest buried her hair inside her head. **Assumption:** the engine
+keeps attached meshes in their authored bind pose. Body animations don't drive these bones, so they keep their rest pose relative to the parent
 (the game presumably drives them with facial animation, physics and cloth).
 
 Vertex `BoneIndices` index the mesh's `BoneBindings`, so they are remapped by name to joint
@@ -306,8 +309,9 @@ These are identifiers, not a guessed bitmask or whole-body hide flag.
 parts, each with its name and optional byte value. Unknown names stay visible in the
 API as `None`. This is the shader integration hook: cut only matching vertex-colour
 regions of compatible underlying meshes. No whole naked-body deletion is substituted
-for partial cuts. Exact channel/comparison and interactions between layered garments
-remain **unverified**; this change does not implement mask shading.
+for partial cuts. The channel (vertex colour green, byte → texel of a 16×16 mask) and the
+comparison are established in `character-shaders.md`; which of a character's visuals share
+the mask remains an **assumption** (all supporting ones).
 
 `VisualAttachmentMappings.lsf` is a separate visual-ID → list-of-visual-IDs table:
 `VisualSetSlotsSystem/AttachmentsMappings/Object/@MapKey` → child `MapValue/@Object`.
@@ -388,9 +392,7 @@ captured, and no shader files were edited.
 
 ## Open
 
-- Character shaders: skin (`CHAR_Skin_*`, melanin/hemoglobin model), hair, eyes, `VertCut`
-  masking, material overrides and presets. The viewer's `StandardMaterial` approximation shows
-  some skin parts in the graph's default (red) texture.
+- Character shaders: what remains open is listed in `character-shaders.md`.
 - Subset selection, sheathing, helmet hair, camp-outfit switching and automatic visual attachments.
 - Facial animation and physics/cloth for the extra mesh bones.
 - Initial death/lying poses for scenery corpses (combat deaths now animate).

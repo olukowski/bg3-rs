@@ -66,6 +66,8 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `cat|lsx|gr2 <pak|-> <path>` (`-` = search all paks via the VFS), `extract`, `verify`, `dups`,
   `find <value> [-p prefix]` (searches all resources for an attribute value), `loca <handle>`,
   `stat <name>`, `story [--goal NAME | -s]`, `materials [LEVEL] [-v]` (material/texture survey of a level),
+  `metallib [LIB] [-f substr] [--extract FN -o OUT]` (macOS Metal shader library functions as
+  LLVM bitcode for `llvm-dis`; see `docs/research/character-shaders.md`; output stays in `.cache/`),
   `osiris-replay [TRACE] [--vm-log OUT] [--kinds]` (replay a libOsiris runtime log through the VM,
   see `docs/research/osiris-runtime-log.md`), `dialog <name> [--walk] [--choices 1,2] [--rolls s,f]
   [--events] [--sim [--speakers A,B] [--seed N]] | --list <substr>` (dialog tree with loca text,
@@ -93,6 +95,8 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),
   `--terrain-only` hides objects, `--light-scale` tunes local-light brightness.
   `--dialog <name>` runs a dialog in an on-screen panel (number keys pick options).
+  `--no-follow` keeps the camera at `--camera` during combat (close-up shots);
+  `BG3_STANDARD_CHARACTERS=1` draws characters without the character shaders (A/B checks).
   `--play --cc` opens a character creation screen first (Start re-runs the viewer with
   `--character <spec>`; default character: the trace's deep gnome cleric).
   `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled

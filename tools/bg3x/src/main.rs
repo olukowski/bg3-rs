@@ -4,6 +4,7 @@ mod cc;
 mod combat;
 mod dialog;
 mod materials;
+mod metallib;
 mod nav;
 mod play;
 mod rules;
@@ -50,6 +51,22 @@ enum Command {
     Cat { pak: String, path: String },
     /// Dump an LSF/LSFX/LSX/LSJ resource as LSX. PATH is looked up across all paks if PAK is `-`.
     Lsx { pak: String, path: String },
+    /// List the functions of a macOS Metal shader library (`Data/Shaders/Metal/<LIB>`), or
+    /// extract one function's bitcode (AIR; read it with `llvm-dis`). Output is game content:
+    /// keep it in `.cache/`.
+    Metallib {
+        #[arg(default_value = "Materials.metallib")]
+        lib: String,
+        /// Only list functions whose name contains this substring.
+        #[arg(short, long)]
+        filter: Option<String>,
+        /// Extract this function (e.g. `Shared_Characters_CHAR_Skin_Body_ST_DEF_fragmentMain`).
+        #[arg(long, requires = "out")]
+        extract: Option<String>,
+        /// Output file for `--extract`.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Look up a localization handle (`h…` or `h…;version`) in a language pak.
     Loca {
         handle: String,
@@ -464,6 +481,12 @@ fn main() -> Result<()> {
             subgrids,
             regions,
         }),
+        Command::Metallib {
+            lib,
+            filter,
+            extract,
+            out,
+        } => metallib::run(&lib, filter.as_deref(), extract.as_deref().zip(out)),
         Command::Lsx { pak, path } => {
             use std::io::Write;
             let data = read_file(&pak, &path)?;

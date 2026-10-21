@@ -124,6 +124,9 @@ mip 1; 785 MiB in ~200 ms at mip 0.
 
 ## Open
 
+Character graphs (skin, hair, eyes, clothing palettes, vertex-colour cuts) have their own
+material: see `character-shaders.md`.
+
 - Detail maps (`ENV_DetailMap*`: `MicroDetailMap`, tiling, strengths), SSS, translucency, glow
   animation, `Reflectance`, vertex-colour masks, world-position offset — would need a custom Bevy
   material/shader.

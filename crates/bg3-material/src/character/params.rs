@@ -23,20 +23,28 @@ impl ParamSet {
         Self { values }
     }
 
-    /// Set a parameter, but only one the material declares: character overrides name
-    /// parameters of all their materials at once (`MelaninColor` means nothing to an eye).
-    /// Returns whether it applied.
+    /// Set a parameter, but only one the material declares with a matching type: character
+    /// overrides name parameters of all their materials at once (`MelaninColor` means nothing
+    /// to an eye). Scalars only set scalars; a 3-vector also sets a 4-vector parameter of that
+    /// name (w = 1) and a 4-vector a 3-vector one (xyz). Returns whether it applied.
+    ///
+    /// bg3: ls::VisualSetSlots::ApplyMaterialPresetsResources, which calls
+    /// ls::AppliedMaterial::TryOverride{Scalar,Vector2,Vector3,Vector4}Parameter (typed by
+    /// size) and for 3/4-vectors both vector variants (4.1.1.7631656, disassembly).
     pub fn set_declared(&mut self, name: &str, value: &[f32]) -> bool {
-        match self.values.get_mut(name) {
-            Some(v) if !value.is_empty() => {
-                // Keep the declared arity: a Vector3 override of a Vector4 parameter keeps w.
-                for (dst, src) in v.iter_mut().zip(value) {
-                    *dst = *src;
-                }
-                true
+        let Some(v) = self.values.get_mut(name) else {
+            return false;
+        };
+        match (value.len(), v.len()) {
+            (a, b) if a == b => v.copy_from_slice(value),
+            (3, 4) => {
+                v[..3].copy_from_slice(value);
+                v[3] = 1.0;
             }
-            _ => false,
+            (4, 3) => v.copy_from_slice(&value[..3]),
+            _ => return false,
         }
+        true
     }
 
     pub fn set(&mut self, name: &str, value: Vec<f32>) {
@@ -83,9 +91,11 @@ mod tests {
         p.set("TattooIntensity", vec![0.0; 4]);
         assert!(p.set_declared("MelaninAmount", &[0.2]));
         assert!(!p.set_declared("Eyes_IrisColour", &[1.0, 0.0, 0.0]));
+        // A scalar doesn't set a vector of the same name.
+        assert!(!p.set_declared("TattooIntensity", &[1.0]));
         assert!(p.set_declared("TattooIntensity", &[1.0, 0.5, 0.25]));
         assert_eq!(p.scalar("MelaninAmount", 0.0), 0.2);
-        assert_eq!(p.vec4("TattooIntensity", [9.0; 4]), [1.0, 0.5, 0.25, 0.0]);
+        assert_eq!(p.vec4("TattooIntensity", [9.0; 4]), [1.0, 0.5, 0.25, 1.0]);
         assert_eq!(p.scalar("Missing", 7.0), 7.0);
         assert!(!p.has("Eyes_IrisColour"));
     }
