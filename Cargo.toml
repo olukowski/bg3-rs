@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 bg3-install = { path = "crates/bg3-install" }
 bg3-pak = { path = "crates/bg3-pak" }
+bg3-vfs = { path = "crates/bg3-vfs" }
 
 anyhow = "1"
 clap = { version = "4.6", features = ["derive"] }

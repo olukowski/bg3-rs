@@ -71,6 +71,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "bg3-gr2"
+version = "0.0.0"
+dependencies = [
+ "bg3-install",
+ "bg3-pak",
+ "thiserror",
+]
+
+[[package]]
 name = "bg3-install"
 version = "0.0.0"
 dependencies = [
@@ -88,6 +97,15 @@ dependencies = [
  "memmap2",
  "thiserror",
  "zstd",
+]
+
+[[package]]
+name = "bg3-vfs"
+version = "0.0.0"
+dependencies = [
+ "bg3-install",
+ "bg3-pak",
+ "thiserror",
 ]
 
 [[package]]

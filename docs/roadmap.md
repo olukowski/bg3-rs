@@ -13,7 +13,7 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 ## M1 — Read everything
 - [x] `bg3-pak` + `bg3x list/extract/cat/verify` (verify against all paks in the install)
 - [ ] `bg3-lsf` (LSF/LSX), `bg3-loca`
-- [ ] `bg3-vfs` with original load order
+- [x] `bg3-vfs` (case-insensitive, last-mount-wins; original precedence rule still TODO — see docs/research/vfs-load-order.md)
 - [ ] Format write-ups in `docs/formats/`
 
 ## M2 — See a level

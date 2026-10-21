@@ -37,6 +37,8 @@ enum Command {
     Cat { pak: String, path: String },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
+    /// Report archive paths that occur in more than one pak, and whether their contents differ.
+    Dups,
 }
 
 fn main() -> Result<()> {
@@ -78,6 +80,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Verify { pak } => verify(pak),
+        Command::Dups => dups(),
     }
 }
 
@@ -135,6 +138,49 @@ fn verify(only: Option<String>) -> Result<()> {
     if failures > 0 {
         bail!("{failures} entries failed");
     }
+    Ok(())
+}
+
+fn dups() -> Result<()> {
+    use std::collections::BTreeMap;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let paks: Vec<Package> = Install::locate()?
+        .paks()?
+        .iter()
+        .map(Package::open)
+        .collect::<Result<_, _>>()?;
+    let mut by_name: BTreeMap<&str, Vec<(usize, &bg3_pak::Entry)>> = BTreeMap::new();
+    for (i, pak) in paks.iter().enumerate() {
+        for e in pak.entries() {
+            by_name.entry(&e.name).or_default().push((i, e));
+        }
+    }
+    let (mut same, mut differ) = (0, 0);
+    for (name, hits) in by_name.iter().filter(|(_, hits)| hits.len() > 1) {
+        let mut hashes = Vec::new();
+        for &(i, e) in hits {
+            let mut h = DefaultHasher::new();
+            paks[i].read(e)?.hash(&mut h);
+            hashes.push(h.finish());
+        }
+        let identical = hashes.windows(2).all(|w| w[0] == w[1]);
+        if identical {
+            same += 1;
+        } else {
+            differ += 1;
+        }
+        let owners: Vec<_> = hits
+            .iter()
+            .map(|&(i, _)| paks[i].path().file_stem().unwrap().to_string_lossy())
+            .collect();
+        println!(
+            "{}\t{}\t{name}",
+            if identical { "same" } else { "DIFF" },
+            owners.join(",")
+        );
+    }
+    eprintln!("{same} identical duplicates, {differ} with differing contents");
     Ok(())
 }
 
