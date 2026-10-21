@@ -29,5 +29,7 @@ Not yet confirmed by RE: the engine's projection/view matrix construction (`ls::
 | Tangent `(x, y, z, w)` | `→ (x, y, −z, −w)` (the mirror flips the bitangent) |
 | Triangle winding | reversed (swap two indices per triangle) |
 | Scale | unchanged |
+| Bone local transform / animation sample | as position + rotation above |
+| Inverse bind matrix | `M · IBM · M`, `M = diag(1, 1, −1)` (see `characters.md`) |
 
 The viewer's `--camera` / `--look-at` take BG3 coordinates.

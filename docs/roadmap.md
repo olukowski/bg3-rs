@@ -17,7 +17,7 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [ ] Format write-ups in `docs/formats/`
 
 ## M2 — See a level
-- [x] `bg3-gr2`: all 285,055 GR2 files parse (BitKnit2, reflection, meshes, skeletons); animations not decoded yet
+- [x] `bg3-gr2`: all 285,055 GR2 files parse (BitKnit2, reflection, meshes, skeletons) and all 228,541 animations in Models/English_Animations decode
 - [x] `bg3-world`: resource banks, root templates, level objects (all Nautiloid scenery resolves to GR2 or effect)
 - [x] Terrain: `.patch` heightfields, holes, layer weights, brushes (`docs/research/terrain.md`)
 - [x] Lights: placed + combined lights via template chains, level sun/sky/exposure (`docs/research/lighting.md`); units approximate
@@ -41,7 +41,8 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [ ] Dialog trees (`.lsf` dialogs) with flags/checks
 
 ## M5 — First playable slice
-- [ ] Characters, skinning, animation; movement & navcloud
+- [x] Characters: visuals, skinning, idle animation, weapons in hand (docs/research/characters.md)
+- [ ] Character shaders, armour equipment visuals, subsets/sheathing, death poses; movement & navcloud
 - [ ] Minimal UI; dialogue; the Nautiloid end to end
 
 ## Later / side projects

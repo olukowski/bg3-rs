@@ -37,6 +37,7 @@ still open.
 | [vfs-load-order.md](research/vfs-load-order.md) | How paks overlap and override each other |
 | [coordinate-space.md](research/coordinate-space.md) | Why BG3's world is left-handed, and how we convert it |
 | [level-structure.md](research/level-structure.md) | Level object → template → visual → mesh + material |
+| [characters.md](research/characters.md) | Character visuals, skeletons, skinning, idle animation, equipment |
 | [materials.md](research/materials.md) | Shader graphs, material instances, texture channel layouts |
 | [terrain.md](research/terrain.md) | Terrain patches, holes and layer blending |
 | [lighting.md](research/lighting.md) | Placed lights, level lighting and atmosphere |
