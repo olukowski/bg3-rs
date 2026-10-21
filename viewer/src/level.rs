@@ -54,15 +54,9 @@ fn tint(key: &str) -> Color {
     Color::hsl((v % 360) as f32, 0.25, 0.55)
 }
 
-/// Convert a BG3 transform to Bevy. Both are Y-up; handedness is still to be verified.
+/// Convert a BG3 transform to Bevy space.
 pub fn to_bevy(t: &bg3_world::Transform) -> Transform {
-    let [x, y, z] = t.position;
-    let [qx, qy, qz, qw] = t.rotation;
-    Transform {
-        translation: Vec3::new(x, y, z),
-        rotation: Quat::from_xyzw(qx, qy, qz, qw).normalize(),
-        scale: Vec3::splat(t.scale),
-    }
+    crate::space::transform(t)
 }
 
 pub fn spawn_level(

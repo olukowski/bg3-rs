@@ -82,6 +82,9 @@ enum Command {
         path: String,
         #[arg(long)]
         tree: bool,
+        /// Print the mean position of the vertices dominated by each bone binding.
+        #[arg(long)]
+        bones: bool,
     },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
@@ -129,7 +132,12 @@ fn main() -> Result<()> {
         }
         Command::Verify { pak } => verify(pak),
         Command::Dups => dups(),
-        Command::Gr2 { pak, path, tree } => gr2(&read_file(&pak, &path)?, tree),
+        Command::Gr2 {
+            pak,
+            path,
+            tree,
+            bones,
+        } => gr2(&read_file(&pak, &path)?, tree, bones),
         Command::Story {
             pak,
             path,
@@ -369,7 +377,7 @@ fn story(pak: &str, path: &str, goal: Option<&str>, summary: bool) -> Result<()>
     Ok(())
 }
 
-fn gr2(data: &[u8], tree: bool) -> Result<()> {
+fn gr2(data: &[u8], tree: bool, bones: bool) -> Result<()> {
     let file = bg3_gr2::Gr2File::parse(data)?;
     if tree {
         let types = bg3_gr2::Types::new(&file);
@@ -414,6 +422,34 @@ fn gr2(data: &[u8], tree: bool) -> Result<()> {
             "model {:?}: skeleton {:?}, meshes {:?}",
             m.name, m.skeleton, m.meshes
         );
+    }
+    if bones {
+        for m in &scene.meshes {
+            let mut sums = vec![([0f64; 3], 0usize); m.bone_bindings.len()];
+            for (pos, (idx, w)) in m
+                .positions
+                .iter()
+                .zip(m.bone_indices.iter().zip(&m.bone_weights))
+            {
+                let dominant = (0..4).max_by(|&a, &b| w[a].total_cmp(&w[b])).unwrap();
+                if let Some((sum, n)) = sums.get_mut(idx[dominant] as usize) {
+                    for k in 0..3 {
+                        sum[k] += pos[k] as f64;
+                    }
+                    *n += 1;
+                }
+            }
+            println!("mesh {:?}:", m.name);
+            for (b, (sum, n)) in m.bone_bindings.iter().zip(sums) {
+                if n > 0 {
+                    let c = sum.map(|v| v / n as f64);
+                    println!(
+                        "  {:<28} {n:>6} verts  mean ({:7.3}, {:7.3}, {:7.3})",
+                        b.bone_name, c[0], c[1], c[2]
+                    );
+                }
+            }
+        }
     }
     if scene.animation_count > 0 {
         println!(

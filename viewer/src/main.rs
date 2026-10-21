@@ -6,6 +6,7 @@
 mod fly_camera;
 mod level;
 mod meshes;
+mod space;
 
 use anyhow::Result;
 use bevy::prelude::*;
@@ -19,10 +20,10 @@ struct Args {
     /// Level to load.
     #[arg(default_value = "TUT_Avernus_C")]
     level: String,
-    /// Camera position `x,y,z` (default: above the level centre).
+    /// Camera position `x,y,z` in BG3 world coordinates (default: above the level centre).
     #[arg(long, value_parser = parse_vec3, allow_hyphen_values = true)]
     camera: Option<Vec3>,
-    /// Camera target `x,y,z`.
+    /// Camera target `x,y,z` in BG3 world coordinates.
     #[arg(long, value_parser = parse_vec3, allow_hyphen_values = true)]
     look_at: Option<Vec3>,
     /// Save a screenshot to this path after a few frames, then exit.
@@ -95,8 +96,12 @@ fn main() -> Result<()> {
     .insert_resource(level)
     .insert_resource(meshes)
     .insert_resource(CameraStart {
-        position: args.camera,
-        look_at: args.look_at,
+        position: args
+            .camera
+            .map(|v| Vec3::from_array(space::vec3(v.to_array()))),
+        look_at: args
+            .look_at
+            .map(|v| Vec3::from_array(space::vec3(v.to_array()))),
     })
     .add_systems(Startup, (setup, level::spawn_level));
     if let Some(path) = args.shot {

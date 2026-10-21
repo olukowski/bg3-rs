@@ -9,6 +9,7 @@ use bg3_vfs::Vfs;
 use rayon::prelude::*;
 
 use crate::level::LoadedLevel;
+use crate::space;
 
 /// Converted LOD0 meshes per visual resource ID.
 #[derive(Resource, Default)]
@@ -78,14 +79,22 @@ pub fn to_bevy_mesh(m: &bg3_gr2::Mesh) -> Mesh {
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
+    let positions: Vec<[f32; 3]> = m.positions.iter().map(|&p| space::vec3(p)).collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     if m.normals.len() == m.positions.len() {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone());
+        let normals: Vec<[f32; 3]> = m.normals.iter().map(|&n| space::vec3(n)).collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    }
+    if m.tangents.len() == m.positions.len() {
+        let tangents: Vec<[f32; 4]> = m.tangents.iter().map(|&t| space::tangent(t)).collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     }
     if let Some(uv) = m.uvs.first().filter(|uv| uv.len() == m.positions.len()) {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv.clone());
     }
-    mesh.insert_indices(Indices::U32(m.indices.clone()));
+    let mut indices = m.indices.clone();
+    space::flip_winding(&mut indices);
+    mesh.insert_indices(Indices::U32(indices));
     if m.normals.len() != m.positions.len() {
         mesh.compute_flat_normals();
     }

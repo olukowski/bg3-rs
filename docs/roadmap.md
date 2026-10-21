@@ -22,7 +22,7 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 - [ ] Terrain, lights, level templates
 - [x] `bg3-viewer`: fly-cam through the Nautiloid with real LOD0 meshes (placeholder per-material colours)
 - [ ] Materials: DDS textures, virtual textures (Granite), shader-graph parameters
-- [ ] Verify handedness and orientation against the original game
+- [x] Handedness: BG3 is left-handed Y-up; viewer mirrors Z (docs/research/coordinate-space.md). Still worth confirming with an in-game screenshot.
 
 ## M3 — Rules core (headless)
 - [x] `bg3-stats` parsing + `using` resolution (all 157 files)
