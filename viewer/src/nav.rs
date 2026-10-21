@@ -385,7 +385,12 @@ fn follow_path(
 }
 
 /// Run while moving, idle while standing.
-fn swap_animation(mut q: Query<(&Controlled, &CharacterRoot, &mut CharacterAnimator)>) {
+fn swap_animation(
+    mut q: Query<
+        (&Controlled, &CharacterRoot, &mut CharacterAnimator),
+        Without<crate::combat_ui::CombatWalk>,
+    >,
+) {
     for (c, root, mut anim) in &mut q {
         let want = if c.moving { &root.run } else { &root.idle };
         let Some((clip, bindings)) = want else {

@@ -16,6 +16,7 @@ bg3-loca.workspace = true
 bg3-lsf.workspace = true
 bg3-material.workspace = true
 bg3-nav.workspace = true
+bg3-rules.workspace = true
 bg3-sim.workspace = true
 bg3-stats.workspace = true
 bg3-vt.workspace = true

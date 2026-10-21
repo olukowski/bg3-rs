@@ -23,6 +23,10 @@ use crate::sim::NULL_OBJECT;
 pub const TRACE_AVATAR_TEMPLATE: &str = "f660278d-6b97-4bfd-850d-66d40fd89d78";
 /// The root template of the trace's guardian (`CompanionSelectedForUser`).
 pub const TRACE_GUARDIAN_TEMPLATE: &str = "c40a12ef-20f6-4c49-b287-8dc85eb75689";
+/// The class of the avatar in the reference combat trace (`ClassDescriptions.lsx` `Cleric`;
+/// the trace's cleric has 8 + 1 = 9 hit points at level 1, see `docs/research/combat.md`).
+/// Character creation is skipped, so the placeholder avatar gets this class.
+pub const TRACE_AVATAR_CLASS: &str = "114e7aee-d1d4-4371-8d90-8a2080592faf";
 /// Placeholder UUIDs of the created avatar and guardian (the engine makes random ones).
 pub const AVATAR_ID: &str = "a7a7a7a7-0000-4000-8000-000000000001";
 pub const GUARDIAN_ID: &str = "a7a7a7a7-0000-4000-8000-000000000002";
@@ -35,6 +39,8 @@ const NO_USER: i32 = -65536;
 pub struct NewGame {
     pub avatar_template: Guid,
     pub guardian_template: Guid,
+    /// The avatar's class (`ClassDescriptions.lsx` UUID); its race is the template's.
+    pub avatar_class: Option<Guid>,
     /// Triggers of the startup level ([`crate::presentation::load_triggers`]); the party is
     /// placed at its start trigger (`TriggerType` `TriggerStart`).
     pub startup_triggers: Vec<TriggerDef>,
@@ -45,6 +51,7 @@ impl Default for NewGame {
         Self {
             avatar_template: Guid::parse(TRACE_AVATAR_TEMPLATE).expect("uuid"),
             guardian_template: Guid::parse(TRACE_GUARDIAN_TEMPLATE).expect("uuid"),
+            avatar_class: Guid::parse(TRACE_AVATAR_CLASS),
             startup_triggers: Vec::new(),
         }
     }
@@ -111,6 +118,28 @@ pub fn new_game(game: &mut Game, opts: &NewGame) -> Started {
             vec![g(who.clone()), g(template.to_string()), s(&cc)],
         );
     }
+    // The character-creation choices combat needs: the race (from the template) and class.
+    let race = game
+        .sim
+        .data
+        .template_chain(Some(opts.avatar_template))
+        .iter()
+        .find_map(|t| t.race);
+    // A subrace (deep gnome) also gets its parent race's progression.
+    let parent = race.and_then(|r| game.sim.data.races.get(&r)?.parent);
+    let (race, subrace) = match parent {
+        Some(p) => (Some(p), race),
+        None => (race, None),
+    };
+    game.sim.combat.created_origins.insert(
+        avatar_id,
+        crate::combat::data::OriginDef {
+            class: opts.avatar_class,
+            race,
+            subrace,
+            ..Default::default()
+        },
+    );
     deliver(game, "LevelLoaded", vec![s(&cc)]);
     deliver(game, "CharacterCreationStarted", vec![]);
     deliver(game, "LevelGameplayStarted", vec![s(&cc), SimValue::Int(0)]);

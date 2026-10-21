@@ -4,6 +4,7 @@
 //! (`materials.rs`); objects without a mesh (effects, …) are shown as small boxes.
 
 mod characters;
+mod combat_ui;
 mod dialog;
 mod fly_camera;
 mod level;
@@ -64,13 +65,21 @@ struct Args {
     #[arg(long)]
     play: bool,
     /// With `--play`: once no dialog runs, talk to the character whose name contains this
-    /// (as if clicked), for screenshots.
+    /// (as if clicked), or else use the item with use actions named like it (e.g.
+    /// `Brinepool`), for screenshots.
     #[arg(long)]
     talk: Option<String>,
     /// With `--shot`: take it after this many seconds instead of after 60 frames (the game
     /// keeps running meanwhile).
     #[arg(long)]
     shot_after: Option<f32>,
+    /// With `--play`: jump to the deck fight's set-up (Lae'zel recruited, the party placed in
+    /// the imp room) instead of walking there; the fight starts when the imps notice you.
+    #[arg(long)]
+    combat_test: bool,
+    /// With `--play`: the AI plays the party's turns too (for demos and screenshots).
+    #[arg(long)]
+    combat_autoplay: bool,
 }
 
 fn parse_vec3(s: &str) -> Result<Vec3, String> {
@@ -129,10 +138,21 @@ fn main() -> Result<()> {
     for (id, err) in meshes.failed.iter().take(5) {
         eprintln!("  {id}: {err}");
     }
+    let navigation = match nav::Navigation::load(&vfs, &args.level) {
+        Ok(n) => Some(n),
+        Err(e) => {
+            eprintln!("nav: no AI grid ({e}); click-to-move disabled");
+            None
+        }
+    };
+
     // `--play`: the game runs on its own thread; the level shows what it says.
     let play = if args.play {
-        let (link, started) =
-            play::SimLink::start(std::sync::Arc::new(Vfs::from_install(&install)?))?;
+        let (link, started) = play::SimLink::start(
+            std::sync::Arc::new(Vfs::from_install(&install)?),
+            args.combat_test,
+            navigation.as_ref().map(|n| n.grid.clone()),
+        )?;
         if started.level != args.level {
             eprintln!(
                 "warning: the game started in {}, showing {}",
@@ -167,14 +187,6 @@ fn main() -> Result<()> {
             .filter_map(|(_, m)| m.as_deref())
             .chain(characters.material_ids()),
     );
-
-    let navigation = match nav::Navigation::load(&vfs, &args.level) {
-        Ok(n) => Some(n),
-        Err(e) => {
-            eprintln!("nav: no AI grid ({e}); click-to-move disabled");
-            None
-        }
-    };
 
     let dialog = match &args.dialog {
         Some(name) => Some(dialog::DialogPlugin::load(&install, name, &args.level)?),
@@ -233,7 +245,10 @@ fn main() -> Result<()> {
         });
     }
     if let Some((link, started)) = play {
-        let loca = dialog::load_loca(&app.world().resource::<GameData>().vfs, "English")?;
+        let loca = std::sync::Arc::new(dialog::load_loca(
+            &app.world().resource::<GameData>().vfs,
+            "English",
+        )?);
         let names = play::speaker_names(
             &app.world().resource::<GameData>().vfs,
             &args.level,
@@ -242,9 +257,14 @@ fn main() -> Result<()> {
         );
         app.add_plugins(play::PlayPlugin {
             link: std::sync::Mutex::new(Some(link)),
-            loca: std::sync::Mutex::new(Some(loca)),
-            names,
+            loca: loca.clone(),
+            names: names.clone(),
             talk: args.talk.clone(),
+        });
+        app.add_plugins(combat_ui::CombatPlugin {
+            loca,
+            names,
+            autoplay: args.combat_autoplay,
         });
     }
     if let Some(dialog) = dialog {

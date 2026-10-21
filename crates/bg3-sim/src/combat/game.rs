@@ -103,7 +103,16 @@ impl Game {
     /// [`crate::Sim::start_combat_on_sight`]), then let the story react. Call once per frame
     /// in a live game.
     pub fn start_combat_on_sight(&mut self) -> Option<Guid> {
-        let r = self.sim.start_combat_on_sight();
+        self.start_combat_on_sight_with(|_, _| true)
+    }
+
+    /// [`Game::start_combat_on_sight`] with a line-of-sight test (see
+    /// [`crate::Sim::start_combat_on_sight_with`]).
+    pub fn start_combat_on_sight_with(
+        &mut self,
+        can_see: impl FnMut([f32; 3], [f32; 3]) -> bool,
+    ) -> Option<Guid> {
+        let r = self.sim.start_combat_on_sight_with(can_see);
         if r.is_some() {
             self.deliver();
         }

@@ -25,6 +25,7 @@ use bg3_loca::Loca;
 use bg3_sim::{Guid, Notification, Presence};
 
 use crate::characters::CharacterRoot;
+use crate::combat_ui::{CombatCmd, CombatInbox, CombatOut, CombatOutbox, CombatThread, CombatWalk};
 use crate::level::ObjectId;
 use crate::nav::Controlled;
 use crate::space;
@@ -44,12 +45,16 @@ enum Cmd {
     Choose(u32, usize),
     SetPosition(Guid, [f32; 3]),
     Talk(Guid),
+    /// The avatar uses an item (a click on it).
+    UseItem(Guid),
+    Combat(CombatCmd),
 }
 
 /// What the game thread reports after a tick.
 struct Frame {
     presences: Option<Vec<Presence>>,
     notifications: Vec<Notification>,
+    combat: CombatOut,
 }
 
 /// The state right after the new game started.
@@ -58,6 +63,8 @@ pub struct Started {
     pub avatar_template: Guid,
     pub level: String,
     pub presences: Vec<Presence>,
+    /// Items with use actions (`Sim::item_use_actions`): clicking them uses them.
+    pub usable_items: Vec<(Guid, String)>,
 }
 
 /// The connection to the game thread.
@@ -66,18 +73,26 @@ pub struct SimLink {
     tx: Sender<Cmd>,
     rx: std::sync::Mutex<Receiver<Frame>>,
     pub avatar: Guid,
+    usable_items: HashMap<Guid, String>,
 }
 
 impl SimLink {
     /// Load the game on its thread and start a new campaign; returns once it has started.
-    pub fn start(vfs: Arc<bg3_vfs::Vfs>) -> Result<(Self, Started)> {
+    ///
+    /// With `combat_test`, the party is placed for the deck fight right away
+    /// ([`crate::combat_ui::setup_test_fight`]).
+    pub fn start(
+        vfs: Arc<bg3_vfs::Vfs>,
+        combat_test: bool,
+        grid: Option<Arc<bg3_nav::NavGrid>>,
+    ) -> Result<(Self, Started)> {
         let (cmd_tx, cmd_rx) = channel::<Cmd>();
         let (frame_tx, frame_rx) = channel::<Frame>();
         let (start_tx, start_rx) = channel::<Result<Started, String>>();
         std::thread::Builder::new()
             .name("bg3-game".into())
             .stack_size(1 << 30)
-            .spawn(move || game_thread(vfs, start_tx, cmd_rx, frame_tx))?;
+            .spawn(move || game_thread(vfs, combat_test, grid, start_tx, cmd_rx, frame_tx))?;
         let started = start_rx
             .recv()
             .map_err(|_| anyhow!("game thread died"))?
@@ -87,6 +102,7 @@ impl SimLink {
                 tx: cmd_tx,
                 rx: std::sync::Mutex::new(frame_rx),
                 avatar: started.avatar,
+                usable_items: started.usable_items.iter().cloned().collect(),
             },
             started,
         ))
@@ -97,8 +113,38 @@ impl SimLink {
     }
 }
 
+/// The sim's presences plus the origin characters (`Origins.lsx`) it doesn't place in the
+/// level yet, off stage: companions the story brings in later (Lae'zel on the lower deck)
+/// then already have a model to show.
+fn presences(game: &bg3_sim::Game) -> Vec<Presence> {
+    let mut out = game.sim.presences();
+    for id in game.sim.data.combat.origins.keys() {
+        if out.iter().any(|p| p.id == *id) {
+            continue;
+        }
+        let Some(e) = game.sim.entity(*id) else {
+            continue;
+        };
+        out.push(Presence {
+            id: *id,
+            name: e.name.clone(),
+            kind: e.kind,
+            template: e.template,
+            level: e.level.clone(),
+            position: e.position,
+            on_stage: false,
+            visible: false,
+            dead: false,
+            moving: false,
+        });
+    }
+    out
+}
+
 fn game_thread(
     vfs: Arc<bg3_vfs::Vfs>,
+    combat_test: bool,
+    grid: Option<Arc<bg3_nav::NavGrid>>,
     start_tx: Sender<Result<Started, String>>,
     rx: Receiver<Cmd>,
     tx: Sender<Frame>,
@@ -119,26 +165,43 @@ fn game_thread(
         started.level,
         opts.startup_triggers.len()
     );
-    let mut last = game.sim.presences();
+    if combat_test {
+        crate::combat_ui::setup_test_fight(&mut game, started.avatar);
+    }
+    let mut last = presences(&game);
+    let usable_items: Vec<(Guid, String)> = last
+        .iter()
+        .filter(|p| p.kind == bg3_sim::EntityKind::Item)
+        .filter(|p| {
+            game.sim
+                .item_use_actions(p.id)
+                .is_some_and(|a| !a.is_empty())
+        })
+        .map(|p| (p.id, p.name.clone()))
+        .collect();
     let _ = start_tx.send(Ok(Started {
         avatar: started.avatar,
         avatar_template: opts.avatar_template,
         level: started.level,
         presences: last.clone(),
+        usable_items,
     }));
     let avatar = started.avatar;
     let mut pending = game.take_notifications();
+    let mut combat = CombatThread::new(grid);
     for cmd in rx {
         match cmd {
             Cmd::Tick(dt) => {
                 game.tick_live(dt);
+                let combat = combat.tick(&mut game);
                 pending.extend(game.take_notifications());
-                let now = game.sim.presences();
+                let now = presences(&game);
                 let presences = (now != last).then(|| now.clone());
                 last = now;
                 let frame = Frame {
                     presences,
                     notifications: std::mem::take(&mut pending),
+                    combat,
                 };
                 if tx.send(frame).is_err() {
                     break;
@@ -161,6 +224,11 @@ fn game_thread(
                 eprintln!("play: {} asks to talk", game.sim.render(target));
                 game.sim.request_dialog_with(target, avatar);
             }
+            Cmd::UseItem(item) => {
+                let ok = game.use_item(avatar, item);
+                eprintln!("play: use {} -> {ok}", game.sim.render(item));
+            }
+            Cmd::Combat(c) => combat.apply(&mut game, c),
         }
     }
     let mut missing: Vec<_> = game.sim.stage.missing.iter().collect();
@@ -179,10 +247,10 @@ fn game_thread(
 
 /// The latest presentation state, by object.
 #[derive(Resource, Default)]
-struct SimState {
+pub(crate) struct SimState {
     by_id: HashMap<Guid, Presence>,
     /// Where the controlled avatar was last reported to the sim.
-    sent: Option<[f32; 3]>,
+    pub(crate) sent: Option<[f32; 3]>,
 }
 
 /// One dialog the panel follows.
@@ -202,8 +270,8 @@ struct DialogView {
 
 /// Dialogs in progress and what the panel shows.
 #[derive(Resource)]
-struct Dialogs {
-    loca: Loca,
+pub(crate) struct Dialogs {
+    loca: Arc<Loca>,
     /// Display names by object.
     names: HashMap<Guid, String>,
     views: HashMap<u32, DialogView>,
@@ -213,11 +281,11 @@ struct Dialogs {
 }
 
 #[derive(Component)]
-struct PlayPanel;
+pub(crate) struct PlayPanel;
 
 pub struct PlayPlugin {
     pub link: std::sync::Mutex<Option<SimLink>>,
-    pub loca: std::sync::Mutex<Option<Loca>>,
+    pub loca: Arc<Loca>,
     pub names: HashMap<Guid, String>,
     /// Talk to this character (name substring) once no dialog runs (`--talk`).
     pub talk: Option<String>,
@@ -229,7 +297,7 @@ struct TalkOnStart(Option<String>);
 impl Plugin for PlayPlugin {
     fn build(&self, app: &mut App) {
         let link = self.link.lock().unwrap().take().expect("one build");
-        let loca = self.loca.lock().unwrap().take().unwrap_or_default();
+        let loca = self.loca.clone();
         app.insert_resource(link)
             .insert_resource(SimState::default())
             .insert_resource(Dialogs {
@@ -249,6 +317,7 @@ impl Plugin for PlayPlugin {
                     (sync_characters, sync_items, dialog_input, refresh_panel),
                     talk_click.before(crate::nav::click_to_move),
                     write_back,
+                    send_combat,
                     send_tick,
                 )
                     .chain(),
@@ -264,11 +333,22 @@ fn to_bg3(v: Vec3) -> [f32; 3] {
     space::vec3(v.to_array())
 }
 
+fn send_combat(link: Res<SimLink>, mut outbox: ResMut<CombatOutbox>) {
+    for c in outbox.0.drain(..) {
+        link.send(Cmd::Combat(c));
+    }
+}
+
 fn send_tick(time: Res<Time>, link: Res<SimLink>) {
     link.send(Cmd::Tick(time.delta_secs_f64()));
 }
 
-fn receive(link: Res<SimLink>, mut state: ResMut<SimState>, mut dialogs: ResMut<Dialogs>) {
+pub(crate) fn receive(
+    link: Res<SimLink>,
+    mut state: ResMut<SimState>,
+    mut dialogs: ResMut<Dialogs>,
+    mut combat: ResMut<CombatInbox>,
+) {
     let rx = link.rx.lock().expect("frame channel");
     while let Ok(frame) = rx.try_recv() {
         if let Some(p) = frame.presences {
@@ -276,6 +356,9 @@ fn receive(link: Res<SimLink>, mut state: ResMut<SimState>, mut dialogs: ResMut<
         }
         for n in frame.notifications {
             dialogs.apply(n);
+        }
+        if !frame.combat.is_empty() {
+            combat.0.push(frame.combat);
         }
     }
 }
@@ -369,15 +452,19 @@ impl Dialogs {
 
 /// Characters follow the sim: visibility (on stage, visible), position (teleports and
 /// scripted moves; the controlled avatar only when the sim moved it itself).
-fn sync_characters(
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_characters(
     time: Res<Time>,
     mut state: ResMut<SimState>,
-    mut roots: Query<(
-        &CharacterRoot,
-        &mut Transform,
-        &mut Visibility,
-        Option<&mut Controlled>,
-    )>,
+    mut roots: Query<
+        (
+            &CharacterRoot,
+            &mut Transform,
+            &mut Visibility,
+            Option<&mut Controlled>,
+        ),
+        Without<CombatWalk>,
+    >,
 ) {
     let dt = time.delta_secs();
     for (root, mut t, mut vis, controlled) in &mut roots {
@@ -448,10 +535,11 @@ fn sync_items(state: Res<SimState>, mut items: Query<(&ObjectId, &mut Visibility
 }
 
 /// The avatar's position goes back to the sim when the player moved it.
+#[allow(clippy::type_complexity)]
 fn write_back(
     link: Res<SimLink>,
     mut state: ResMut<SimState>,
-    controlled: Query<(&CharacterRoot, &Transform), With<Controlled>>,
+    controlled: Query<(&CharacterRoot, &Transform), (With<Controlled>, Without<CombatWalk>)>,
 ) {
     for (root, t) in &controlled {
         let Some(id) = Guid::parse(&root.id) else {
@@ -472,14 +560,16 @@ fn write_back(
     }
 }
 
-/// A left click on a character (other than the avatar) asks to talk to it; the click doesn't
-/// reach click-to-move.
-fn talk_click(
+/// A left click on a character (other than the avatar) asks to talk to it; one on an item
+/// with use actions uses it (`Game::use_item`, e.g. the Brinepool starts its dialog). The
+/// click doesn't reach click-to-move.
+pub(crate) fn talk_click(
     mut buttons: ResMut<ButtonInput<MouseButton>>,
     link: Res<SimLink>,
     windows: Query<&Window>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     roots: Query<(&CharacterRoot, &GlobalTransform, &InheritedVisibility)>,
+    items: Query<(&ObjectId, &GlobalTransform, &InheritedVisibility)>,
 ) {
     if !buttons.just_pressed(MouseButton::Left) {
         return;
@@ -490,7 +580,16 @@ fn talk_click(
     let Some((camera, cam_t)) = cameras.iter().next() else {
         return;
     };
-    let mut best: Option<(f32, Guid, &str)> = None;
+    let mut best: Option<(f32, Cmd, &str)> = None;
+    let mut consider = |at: Vec3, cmd: Cmd, name: &'static str| {
+        let Ok(screen) = camera.world_to_viewport(cam_t, at) else {
+            return;
+        };
+        let d = screen.distance(cursor);
+        if d < PICK_RADIUS_PX && best.as_ref().is_none_or(|b| d < b.0) {
+            best = Some((d, cmd, name));
+        }
+    };
     for (root, t, vis) in &roots {
         let Some(id) = Guid::parse(&root.id) else {
             continue;
@@ -498,18 +597,24 @@ fn talk_click(
         if id == link.avatar || !vis.get() {
             continue;
         }
-        let chest = t.translation() + Vec3::Y * 1.2;
-        let Ok(screen) = camera.world_to_viewport(cam_t, chest) else {
+        consider(t.translation() + Vec3::Y * 1.2, Cmd::Talk(id), "talk to");
+    }
+    for (obj, t, vis) in &items {
+        let Some(id) = Guid::parse(&obj.0).filter(|g| link.usable_items.contains_key(g)) else {
             continue;
         };
-        let d = screen.distance(cursor);
-        if d < PICK_RADIUS_PX && best.is_none_or(|b| d < b.0) {
-            best = Some((d, id, &root.name));
+        if !vis.get() {
+            continue;
         }
+        consider(t.translation() + Vec3::Y * 0.5, Cmd::UseItem(id), "use");
     }
-    if let Some((_, id, name)) = best {
-        eprintln!("play: talk to {name}");
-        link.send(Cmd::Talk(id));
+    if let Some((_, cmd, what)) = best {
+        let id = match &cmd {
+            Cmd::Talk(id) | Cmd::UseItem(id) => id.to_string(),
+            _ => String::new(),
+        };
+        eprintln!("play: {what} {id}");
+        link.send(cmd);
         buttons.clear_just_pressed(MouseButton::Left);
     }
 }
@@ -535,7 +640,18 @@ fn talk_on_start(
             eprintln!("play: talk to {}", r.name);
             link.send(Cmd::Talk(id));
         }
-        None => eprintln!("play: no character named like {name}"),
+        None => match link
+            .usable_items
+            .iter()
+            .find(|(_, n)| n.to_lowercase().contains(&name))
+        {
+            // Or an item with use actions (as if clicked).
+            Some((&id, n)) => {
+                eprintln!("play: use {n}");
+                link.send(Cmd::UseItem(id));
+            }
+            None => eprintln!("play: no character or usable item named like {name}"),
+        },
     }
 }
 

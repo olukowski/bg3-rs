@@ -308,6 +308,13 @@ pub fn parse_costs(v: &str) -> Vec<(String, f32)> {
         .filter_map(|e| {
             let mut it = e.trim().split(':');
             let name = it.next()?.trim();
+            // `SpellSlotsGroup:count:?:level` is paid from the spell slots (*approximate*:
+            // slot levels and the warlock's pact slots are not told apart).
+            let name = if name == "SpellSlotsGroup" {
+                "SpellSlot"
+            } else {
+                name
+            };
             let amount: f32 = it.next()?.trim().parse().ok()?;
             (!name.is_empty()).then(|| (name.to_owned(), amount))
         })
@@ -487,6 +494,8 @@ impl CombatData {
                         "SpellProperties",
                         "DamageType",
                         "SpellSchool",
+                        // Loca handle `h…;version`, for the front end.
+                        "DisplayName",
                     ];
                     self.spells.insert(
                         o.name.clone(),

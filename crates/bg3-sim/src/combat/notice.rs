@@ -58,6 +58,15 @@ impl Sim {
     /// it (or that it notices), if any (*approximate*, see the module docs). Returns the
     /// combat GUID. A live front end calls this once per frame.
     pub fn start_combat_on_sight(&mut self) -> Option<Guid> {
+        self.start_combat_on_sight_with(|_, _| true)
+    }
+
+    /// [`Sim::start_combat_on_sight`] with a line-of-sight test between two positions (the
+    /// sim has no level geometry; a front end with the AI grid can supply one).
+    pub fn start_combat_on_sight_with(
+        &mut self,
+        mut can_see: impl FnMut([f32; 3], [f32; 3]) -> bool,
+    ) -> Option<Guid> {
         let party = self.party.clone();
         let mut best: Option<(f32, Guid, Guid)> = None;
         for p in party {
@@ -82,7 +91,8 @@ impl Sim {
                 if d > self.sight(h).max(self.sight(p)) || !self.is_hostile(h, p) {
                     continue;
                 }
-                if self.can_notice(h) {
+                let hp = self.entity(h).map_or(pp, |e| e.position);
+                if self.can_notice(h) && can_see(pp, hp) {
                     best = Some((d, h, p));
                 }
             }

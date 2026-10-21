@@ -290,6 +290,9 @@ pub struct CombatState {
     pub(crate) events: Vec<CombatEvent>,
     /// Objects the story took off stage (`SetOnStage(x, 0)`); they don't join fights.
     pub off_stage: std::collections::HashSet<Guid>,
+    /// Race and class of characters made at runtime (the created avatar), which `Origins.lsx`
+    /// does not have; see [`Sim::origin_def`].
+    pub created_origins: HashMap<Guid, data::OriginDef>,
 }
 
 /// `ActionResource(Name, amount, level)` boosts of a progression (unconditional, fixed
@@ -356,6 +359,15 @@ impl Sim {
             }
         }
         out
+    }
+
+    /// Race and class of an origin character (`Origins.lsx`) or of a character made at
+    /// runtime ([`CombatState::created_origins`]).
+    pub fn origin_def(&self, id: Guid) -> Option<&data::OriginDef> {
+        self.combat
+            .created_origins
+            .get(&id)
+            .or_else(|| self.data.combat.origins.get(&id))
     }
 
     /// Build a character's combat state from the data (`None` for non-characters and
@@ -463,7 +475,7 @@ impl Sim {
         // spell grants (`AddSpells(list)` selectors). *Approximate*: choices (`SelectSpells`,
         // …), passives and other boosts are not modelled.
         let mut resources = resources;
-        if let Some(origin) = d.origins.get(&id) {
+        if let Some(origin) = self.origin_def(id) {
             for t in d.origin_tables(origin) {
                 for p in d.progressions.get(&t).into_iter().flatten() {
                     if p.level > sheet.level {
@@ -542,10 +554,10 @@ impl Sim {
     /// the maximum and fills the character up.
     // *Approximate*: no class progressions, boosts or the created avatar's own class.
     pub fn update_class_hp(&mut self, id: Guid) {
-        let d = &self.data.combat;
-        let Some(class) = d.origins.get(&id).and_then(|o| o.class) else {
+        let Some(class) = self.origin_def(id).and_then(|o| o.class) else {
             return;
         };
+        let d = &self.data.combat;
         let Some(sheet) = self.entities.get(id).and_then(|e| e.sheet.as_ref()) else {
             return;
         };
