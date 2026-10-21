@@ -47,7 +47,9 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 
 ## M5 — First playable slice
 - [x] Characters: visuals, skinning, idle animation, weapons in hand (docs/research/characters.md)
-- [ ] Character shaders, armour equipment visuals, subsets/sheathing, death poses; movement & navcloud
+- [x] Navigation: AI grid + nav cloud parsing, path finding (`bg3-nav`), viewer `--nav` overlay and click-to-move at template run speed (docs/formats/navcloud.md)
+- [ ] Navigation fidelity: bidirectional search, game smoothing passes, height-cost tunables, legacy grid versions, layers/portals/climbing, doors; compare with traced paths
+- [ ] Character shaders, armour equipment visuals, subsets/sheathing, death poses; locomotion start/stop blending
 - [ ] Minimal UI; dialogue; the Nautiloid end to end
 
 ## Later / side projects

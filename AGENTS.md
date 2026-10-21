@@ -72,12 +72,17 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   game text, keep it local), `sim-replay [TRACE] [--check|--both] [--inventory] [--dump OUT]`
   (the same with `bg3-sim` as the engine, see `docs/research/osiris-engine-api.md`),
   `rules eval "<expr>" --kind condition|functor|roll|expr`, `rules cast <spell>`, `rules survey`
-  (stats expression languages, see `docs/formats/stats-expressions.md`).
+  (stats expression languages, see `docs/formats/stats-expressions.md`),
+  `nav [LEVEL] [--regions] [--subgrids] [--at x,y,z] [--path=x,y,z --path=x,y,z]` (AI grid summary,
+  tile probe and path finding, see `docs/formats/navcloud.md`).
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
   level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),
   `--terrain-only` hides objects, `--light-scale` tunes local-light brightness.
   `--dialog <name>` runs a dialog in an on-screen panel (number keys pick options).
+  `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled
+  character (`--player <name>`, default nearest the camera target), `--walk-to x,y,z` on start.
+  Use `--release` for the viewer: debug builds trip a Bevy `debug_assert` on mipmapped textures.
 - Scratch output goes in `.cache/` only.
 - Thin arm64 slices for REA/Ghidra (it can't open the universal binary):
   `lipo -thin arm64 -output .cache/bin/bg3-arm64 "<app>/Contents/MacOS/Baldur's Gate 3"`.

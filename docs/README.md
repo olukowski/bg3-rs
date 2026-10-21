@@ -27,6 +27,7 @@ How the game's files are laid out, written in our own words: [formats/](formats/
 | [stats-expressions.md](formats/stats-expressions.md) | The languages inside stats fields (functors, conditions, formulas, boosts), Thoth `.khn` scripts, and D&D rolls |
 | [osiris-story.md](formats/osiris-story.md) | Compiled Osiris quest scripts (`story.div.osi`) |
 | [dialog.md](formats/dialog.md) | Dialogs: node types, flags, speakers, and the runtime rules for walking them |
+| [navcloud.md](formats/navcloud.md) | Navigation data (AI grid, nav cloud) and how the game finds walking paths |
 
 ## Research notes
 
