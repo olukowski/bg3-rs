@@ -1,0 +1,18 @@
+[package]
+name = "bg3-dialog"
+description = "Loader and headless runner for Baldur's Gate 3 dialogs (compiled DialogsBinary resources)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bg3-lsf.workspace = true
+bg3-vfs.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bg3-install.workspace = true
+
+[lints]
+workspace = true

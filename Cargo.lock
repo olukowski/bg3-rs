@@ -1986,6 +1986,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bg3-dialog"
+version = "0.0.0"
+dependencies = [
+ "bg3-install",
+ "bg3-lsf",
+ "bg3-vfs",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bg3-gr2"
 version = "0.0.0"
 dependencies = [
