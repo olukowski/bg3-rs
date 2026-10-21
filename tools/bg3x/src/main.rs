@@ -54,6 +54,12 @@ enum Command {
         #[arg(long)]
         own: bool,
     },
+    /// Find resources (LSF/LSX/LSJ) under PREFIX with an attribute whose value equals VALUE.
+    Find {
+        value: String,
+        #[arg(short, long, default_value = "")]
+        prefix: String,
+    },
     /// Decompress every entry of every pak (or one pak) and check sizes.
     Verify { pak: Option<String> },
     /// Report archive paths that occur in more than one pak, and whether their contents differ.
@@ -100,6 +106,7 @@ fn main() -> Result<()> {
         }
         Command::Verify { pak } => verify(pak),
         Command::Dups => dups(),
+        Command::Find { value, prefix } => find(&value, &prefix),
         Command::Loca { handle, language } => loca(&handle, &language),
         Command::Stat { name, honour, own } => stat(&name, honour, own),
         Command::Lsx { pak, path } => {
@@ -275,6 +282,42 @@ fn stat(name: &str, honour: bool, own: bool) -> Result<()> {
     eprintln!("// defined at {} ({})", obj.source, obj.source.module);
     for prev in &obj.previous {
         eprintln!("// replaces {} ({})", prev, prev.module);
+    }
+    Ok(())
+}
+
+fn find(value: &str, prefix: &str) -> Result<()> {
+    fn walk(node: &bg3_lsf::Node, path: &mut Vec<String>, value: &str, hits: &mut Vec<String>) {
+        path.push(node.name.clone());
+        for attr in &node.attributes {
+            if attr.value.to_string() == value {
+                hits.push(format!("{} @{}", path.join("/"), attr.name));
+            }
+        }
+        for child in &node.children {
+            walk(child, path, value, hits);
+        }
+        path.pop();
+    }
+
+    let vfs = bg3_vfs::Vfs::from_install(&Install::locate()?)?;
+    let resource_ext = [".lsf", ".lsx", ".lsj", ".lsfx"];
+    for file in vfs.files_under(prefix) {
+        let name = file.entry.name.to_ascii_lowercase();
+        if !resource_ext.iter().any(|e| name.ends_with(e)) {
+            continue;
+        }
+        let Ok(res) = bg3_lsf::parse(&file.read()?) else {
+            eprintln!("skipping unparsable {}", file.entry.name);
+            continue;
+        };
+        let mut hits = Vec::new();
+        for region in &res.regions {
+            walk(&region.node, &mut Vec::new(), value, &mut hits);
+        }
+        for hit in hits {
+            println!("{}: {hit}", file.entry.name);
+        }
     }
     Ok(())
 }
