@@ -29,7 +29,8 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
 
 ## M3 — Rules core (headless)
 - [x] `bg3-stats` parsing + `using` resolution (all 157 files)
-- [ ] Functor/condition expression parsing
+- [x] Functor/condition/boost/formula parsing, Thoth (`.khn`) parser + interpreter, condition evaluation (`bg3-rules`, docs/formats/stats-expressions.md)
+- [ ] Validate roll streams and roll outcomes against traces of the original
 - [ ] Rolls, boosts, statuses, action resources — validated against traces from the original
 - [ ] Turn-based combat loop for a scripted encounter
 
