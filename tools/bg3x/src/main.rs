@@ -342,11 +342,7 @@ fn dups() -> Result<()> {
     use std::collections::BTreeMap;
     use std::hash::{DefaultHasher, Hash, Hasher};
 
-    let paks: Vec<Package> = Install::locate()?
-        .paks()?
-        .iter()
-        .map(Package::open)
-        .collect::<Result<_, _>>()?;
+    let paks: Vec<Package> = bg3_vfs::open_paks(&Install::locate()?)?;
     let mut by_name: BTreeMap<&str, Vec<(usize, &bg3_pak::Entry)>> = BTreeMap::new();
     for (i, pak) in paks.iter().enumerate() {
         for e in pak.entries() {
@@ -414,11 +410,7 @@ fn loca(handle: &str, language: &str) -> Result<()> {
 fn stat(name: &str, honour: bool, own: bool) -> Result<()> {
     use bg3_stats::install::{BASE_LOAD_ORDER, HONOUR_MODULES, load};
 
-    let paks: Vec<Package> = Install::locate()?
-        .paks()?
-        .iter()
-        .map(Package::open)
-        .collect::<Result<_, _>>()?;
+    let paks: Vec<Package> = bg3_vfs::open_paks(&Install::locate()?)?;
     let mut order = BASE_LOAD_ORDER.to_vec();
     if honour {
         order.extend_from_slice(HONOUR_MODULES);

@@ -58,6 +58,24 @@ impl std::fmt::Debug for Vfs {
     }
 }
 
+/// Open every primary pak of the install in **mount order** (see [`sort_by_priority`]).
+/// Use this whenever a later pak should override an earlier one.
+pub fn open_paks(install: &Install) -> Result<Vec<Package>> {
+    let mut packages = install
+        .paks()?
+        .into_iter()
+        .map(Package::open)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    sort_by_priority(&mut packages);
+    Ok(packages)
+}
+
+/// Order packages so that higher header priority mounts later (and therefore wins).
+/// The sort is stable, keeping the caller's order among equal priorities.
+pub fn sort_by_priority(packages: &mut [Package]) {
+    packages.sort_by_key(|p| p.header().priority);
+}
+
 /// Normalise an archive path for lookup: `/` separators, lowercase.
 pub fn normalize(path: &str) -> String {
     path.replace('\\', "/").to_ascii_lowercase()
@@ -69,10 +87,15 @@ impl Vfs {
     }
 
     /// Mount every primary pak in the install in [`Install::paks`] order.
+    ///
+    /// Paks are mounted in ascending header `priority` (stable within equal priority), so a
+    /// higher-priority pak overrides lower ones. The Windows build relies on this for its hotfix
+    /// paks (`Patch8_HotFix9` = 1, `Patch8_HotFix10` = 3, `PhysXOverlay` = 100); the macOS build
+    /// ships every pak at priority 0.
     pub fn from_install(install: &Install) -> Result<Self> {
         let mut vfs = Self::new();
-        for path in install.paks()? {
-            vfs.mount(path)?;
+        for package in open_paks(install)? {
+            vfs.mount_package(package);
         }
         Ok(vfs)
     }

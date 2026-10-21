@@ -36,6 +36,8 @@ fn file_order_key(path: &str) -> (bool, String) {
 
 /// Every stats text file of the given modules in `paks`, in load order. When the same path is in
 /// several paks, the later pak wins.
+/// `paks` must be in mount order (later paks override earlier ones), e.g. from
+/// [`bg3_vfs::open_paks`].
 pub fn collect_files<'a>(
     paks: &'a [Package],
     load_order: &[&str],

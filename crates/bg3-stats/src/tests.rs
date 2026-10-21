@@ -296,12 +296,7 @@ fn load_all_install_stats() {
         eprintln!("BG3 install not found; skipping");
         return;
     };
-    let paks: Vec<_> = install
-        .paks()
-        .unwrap()
-        .iter()
-        .map(|p| bg3_pak::Package::open(p).unwrap())
-        .collect();
+    let paks = bg3_vfs::open_paks(&install).unwrap();
     let mut order = install::BASE_LOAD_ORDER.to_vec();
     order.extend_from_slice(install::HONOUR_MODULES);
     let unlisted = install::unlisted_modules(&paks, &order);
