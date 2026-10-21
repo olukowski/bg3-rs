@@ -336,6 +336,24 @@ pub struct CharacterBanks {
     pub animation_sets: HashMap<String, AnimationSetResource>,
 }
 
+impl CharacterBanks {
+    /// The character override precedes the visual's shared waterfall. Within each set use
+    /// the requested subset, its fallback links, then the default subset, just as for idle.
+    // bg3: ls::AnimationSetSystem::Update (4.1.1.7631656)
+    /// Order is inferred from resources; not verified against the engine implementation.
+    pub fn animation_in_sets(
+        &self,
+        sets: &[String],
+        subset: &str,
+        simple_name: &str,
+    ) -> Option<&AnimationResource> {
+        sets.iter()
+            .filter_map(|id| self.animation_sets.get(id))
+            .find_map(|set| set.find(subset, simple_name))
+            .and_then(|id| self.animations.get(id))
+    }
+}
+
 /// The animation-type ("simple name") GUID the character blueprint asks for when standing
 /// still out of combat: the default of the `IDLE_DesiredStillShortName` variable in
 /// `Public/Shared/Assets/Blueprints/Characters_Common.lsbs`. Read at runtime with
@@ -355,6 +373,59 @@ pub const WALK_PEACE: &str = "0532ad73-988e-4b70-bb96-434bb2532bad";
 
 /// Blueprint variable holding the idle animation type.
 pub const IDLE_BLUEPRINT_VARIABLE: &str = "IDLE_DesiredStillShortName";
+
+/// Named combat clips used by the viewer. Selection is a presentation approximation, not
+/// the original animation blueprint's weapon/spell/direction state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CombatAnimation {
+    Melee,
+    Ranged,
+    Cast,
+    Hit,
+    Death,
+    Dead,
+    Downed,
+}
+
+impl CombatAnimation {
+    pub const ALL: [Self; 7] = [
+        Self::Melee,
+        Self::Ranged,
+        Self::Cast,
+        Self::Hit,
+        Self::Death,
+        Self::Dead,
+        Self::Downed,
+    ];
+
+    /// Identifiers observed in Shared/Animation/ShortNames.lsx and the HUM_M/IMP banks.
+    pub fn simple_name(self) -> &'static str {
+        match self {
+            Self::Melee => "CMBT_Melee_RHand_01_Attack",
+            Self::Ranged => "CMBT_Range_RHand_01_Attack",
+            Self::Cast => "SPL_Somatic_Target_01_Cast",
+            Self::Hit => "REAC_Hit_F_Combat_01",
+            Self::Death => "DIE_Physical_Stationary_Front_01",
+            Self::Dead => "DIE_Generic_Deathpose_01",
+            Self::Downed => "STAT_Downed_Peace_01_Loop",
+        }
+    }
+}
+
+/// Read the install's simple-name → GUID table, without embedding extracted tables.
+pub fn animation_simple_names(vfs: &bg3_vfs::Vfs) -> HashMap<String, String> {
+    crate::parse(vfs, "Public/Shared/Animation/ShortNames.lsx")
+        .map(|r| read_simple_names(&r))
+        .unwrap_or_default()
+}
+
+fn read_simple_names(res: &bg3_lsf::Resource) -> HashMap<String, String> {
+    res.region("ShortNames")
+        .into_iter()
+        .flat_map(|root| root.children_named("ShortName"))
+        .filter_map(|n| Some((str_attr(n, "Name")?, str_attr(n, "UUID")?)))
+        .collect()
+}
 
 /// The idle animation type from the character blueprint, or [`IDLE_STILL_PEACE`].
 pub fn idle_simple_name(vfs: &bg3_vfs::Vfs) -> String {
@@ -532,11 +603,9 @@ impl ResolvedCharacter {
     /// Look up an animation type in the character's animation sets (default subset), in the
     /// same order as the idle.
     pub fn animation(&self, banks: &ResourceBanks, simple_name: &str) -> Option<AnimationResource> {
-        self.animation_sets
-            .iter()
-            .filter_map(|s| banks.characters.animation_sets.get(s))
-            .find_map(|set| set.find("", simple_name))
-            .and_then(|id| banks.characters.animations.get(id))
+        banks
+            .characters
+            .animation_in_sets(&self.animation_sets, "", simple_name)
             .cloned()
     }
 }
@@ -594,11 +663,9 @@ pub fn resolve_character(
     if let Some(b) = base {
         animation_sets.extend(b.animation_waterfall.iter().cloned());
     }
-    let idle = animation_sets
-        .iter()
-        .filter_map(|s| banks.characters.animation_sets.get(s))
-        .find_map(|set| set.find("", idle_simple_name))
-        .and_then(|id| banks.characters.animations.get(id))
+    let idle = banks
+        .characters
+        .animation_in_sets(&animation_sets, "", idle_simple_name)
         .cloned();
 
     Ok(ResolvedCharacter {
@@ -672,6 +739,78 @@ mod tests {
     }
 
     #[test]
+    fn animation_waterfall_prefers_override_and_falls_back_to_shared_set() {
+        let mut banks = CharacterBanks::default();
+        banks.animation_sets.insert(
+            "own".into(),
+            set(vec![subset("", "", vec![anim("melee", "own_melee")])]),
+        );
+        banks.animation_sets.insert(
+            "shared".into(),
+            set(vec![subset(
+                "",
+                "",
+                vec![anim("melee", "shared_melee"), anim("death", "shared_death")],
+            )]),
+        );
+        for id in ["own_melee", "shared_melee", "shared_death"] {
+            banks.animations.insert(
+                id.into(),
+                AnimationResource {
+                    id: id.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let chain = vec!["missing_set".into(), "own".into(), "shared".into()];
+        assert_eq!(
+            banks.animation_in_sets(&chain, "", "melee").unwrap().id,
+            "own_melee"
+        );
+        assert_eq!(
+            banks.animation_in_sets(&chain, "", "death").unwrap().id,
+            "shared_death"
+        );
+        assert!(banks.animation_in_sets(&chain, "", "ranged").is_none());
+    }
+
+    #[test]
+    fn subset_cycle_and_missing_link_still_reach_default() {
+        let s = set(vec![
+            subset("a", "b", vec![]),
+            subset("b", "a", vec![]),
+            subset("broken", "absent", vec![]),
+            subset("", "", vec![anim("hit", "default_hit")]),
+        ]);
+        assert_eq!(s.find("a", "hit"), Some("default_hit"));
+        assert_eq!(s.find("broken", "hit"), Some("default_hit"));
+        assert_eq!(s.find("a", "missing"), None);
+    }
+
+    #[test]
+    fn simple_names_are_read_from_resource_not_a_compiled_guid_table() {
+        let resource = bg3_lsf::Resource {
+            metadata: Default::default(),
+            regions: vec![bg3_lsf::Region {
+                name: "ShortNames".into(),
+                node: Node::new("root")
+                    .with_child(
+                        Node::new("ShortName")
+                            .with_attr("Name", fs("test_attack"))
+                            .with_attr("UUID", fs("test-guid")),
+                    )
+                    .with_child(Node::new("ShortName").with_attr("Name", fs("incomplete"))),
+            }],
+        };
+        let names = read_simple_names(&resource);
+        assert_eq!(
+            names.get("test_attack").map(String::as_str),
+            Some("test-guid")
+        );
+        assert!(!names.contains_key("incomplete"));
+    }
+
+    #[test]
     fn character_visual_reads_slots_and_overrides() {
         let n = Node::new("Resource")
             .with_attr("BaseVisual", fs("base"))
@@ -742,6 +881,12 @@ mod tests {
         let banks = ResourceBanks::load(&vfs).unwrap();
         let blueprint = crate::parse(&vfs, CHARACTER_BLUEPRINT).unwrap();
         let idle = blueprint_variable_default(&blueprint, IDLE_BLUEPRINT_VARIABLE).unwrap();
+        let simple_names = animation_simple_names(&vfs);
+        assert!(
+            CombatAnimation::ALL
+                .iter()
+                .all(|k| simple_names.contains_key(k.simple_name()))
+        );
         assert_eq!(idle, IDLE_STILL_PEACE);
 
         let chars: Vec<_> = level
@@ -760,6 +905,16 @@ mod tests {
             match resolve_character(o, &templates, &banks, &idle) {
                 Ok(c) => {
                     resolved += 1;
+                    if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
+                        for kind in CombatAnimation::ALL {
+                            let clip = c.animation(&banks, &simple_names[kind.simple_name()]);
+                            eprintln!(
+                                "combat clip {} {kind:?}: {}",
+                                c.name,
+                                clip.as_ref().map_or("MISSING", |a| a.name.as_str())
+                            );
+                        }
+                    }
                     let skel_ok = c
                         .skeleton
                         .as_ref()

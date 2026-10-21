@@ -22,8 +22,9 @@ use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::prelude::*;
 use bg3_vfs::Vfs;
 use bg3_world::characters::{
-    DEFAULT_MOVEMENT_SPEED_RUN, DEFAULT_MOVEMENT_STEP_UP_HEIGHT, EquippedItem, RUN_PEACE,
-    ResolvedCharacter, idle_simple_name, resolve_character, resolve_equipment,
+    CombatAnimation, DEFAULT_MOVEMENT_SPEED_RUN, DEFAULT_MOVEMENT_STEP_UP_HEIGHT, EquippedItem,
+    RUN_PEACE, ResolvedCharacter, animation_simple_names, idle_simple_name, resolve_character,
+    resolve_equipment,
 };
 use rayon::prelude::*;
 
@@ -190,6 +191,7 @@ pub struct PreparedCharacter {
     pub animation: Option<Arc<PreparedAnimation>>,
     /// Forward run loop, for characters that walk (`nav.rs`).
     pub run: Option<Arc<PreparedAnimation>>,
+    pub combat: HashMap<CombatAnimation, Arc<PreparedAnimation>>,
     /// `MovementSpeedRun` (m/s) and `MovementStepUpHeight` (m) from the template chain.
     pub run_speed: f32,
     pub step_height: f32,
@@ -212,6 +214,7 @@ impl LevelCharacters {
     ) -> Self {
         let started = std::time::Instant::now();
         let idle = idle_simple_name(vfs);
+        let simple_names = animation_simple_names(vfs);
         let stats = bg3_stats::install::load(vfs.packages(), bg3_vfs::modules::BASE_LOAD_ORDER)
             .map_err(|e| eprintln!("characters: no stats ({e}), skipping equipment"))
             .ok();
@@ -242,6 +245,27 @@ impl LevelCharacters {
                         .as_ref()
                         .and_then(|a| a.source_file.as_deref())
                         .and_then(|f| cache.animation(vfs, f));
+                }
+                if let Ok(p) = &mut p {
+                    for kind in CombatAnimation::ALL {
+                        let clip = simple_names
+                            .get(kind.simple_name())
+                            .and_then(|id| c.animation(&level.banks, id))
+                            .and_then(|a| a.source_file)
+                            .and_then(|path| cache.animation(vfs, &path));
+                        if let Some(clip) = clip {
+                            p.combat.insert(kind, clip);
+                        }
+                    }
+                    if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
+                        for kind in CombatAnimation::ALL {
+                            eprintln!(
+                                "combat clip {} {kind:?}: {}",
+                                c.name,
+                                p.combat.get(&kind).map_or("MISSING", |a| a.name.as_str())
+                            );
+                        }
+                    }
                 }
                 (c.name.clone(), p)
             })
@@ -456,6 +480,7 @@ fn prepare(
         parts,
         animation,
         run: None,
+        combat: HashMap::new(),
         run_speed: c
             .props
             .movement_speed_run
@@ -579,6 +604,7 @@ pub struct CharacterRoot {
     /// Idle and run clips with their joint bindings, for swapping into [`CharacterAnimator`].
     pub idle: Option<BoundClip>,
     pub run: Option<BoundClip>,
+    pub combat: HashMap<CombatAnimation, BoundClip>,
 }
 
 /// Joint entities of a spawned character, plus its animation state.
@@ -589,6 +615,91 @@ pub struct CharacterAnimator {
     /// `(joint index, track index)`.
     pub bindings: Vec<(usize, usize)>,
     pub time: f32,
+    playback: Playback,
+    /// Death/downed poses must not be replaced by navigation or a late hit event.
+    pub incapacitated: bool,
+    rest: Vec<Transform>,
+}
+
+enum Playback {
+    Loop,
+    Once { then: Option<BoundClip> },
+    Hold,
+}
+
+/// Advance without wrapping one-shots back to their first frame.
+fn advance_clip(time: f32, dt: f32, duration: f32, looping: bool) -> (f32, bool) {
+    let end = duration.max(0.0);
+    let next = time + dt.max(0.0);
+    if looping && end > 0.0 {
+        (next % end, false)
+    } else {
+        (next.min(end), next >= end)
+    }
+}
+
+impl CharacterAnimator {
+    fn select(&mut self, clip: &BoundClip, playback: Playback) {
+        self.animation = clip.0.clone();
+        self.bindings.clone_from(&clip.1);
+        self.time = 0.0;
+        self.playback = playback;
+    }
+
+    pub fn locomotion(&mut self, clip: &Option<BoundClip>) {
+        if self.incapacitated || !matches!(self.playback, Playback::Loop) {
+            return;
+        }
+        if let Some(clip) = clip
+            && !Arc::ptr_eq(&self.animation, &clip.0)
+        {
+            self.select(clip, Playback::Loop);
+        }
+    }
+
+    pub fn once(&mut self, clip: &BoundClip, then: Option<BoundClip>) -> f32 {
+        self.select(clip, Playback::Once { then });
+        clip.0.duration.max(0.0)
+    }
+
+    pub fn downed(&mut self, clip: &BoundClip) {
+        self.select(clip, Playback::Loop);
+        self.incapacitated = true;
+    }
+
+    pub fn freeze(&mut self) {
+        self.incapacitated = true;
+        self.playback = Playback::Hold;
+    }
+
+    pub fn revive(&mut self, idle: &Option<BoundClip>) {
+        self.incapacitated = false;
+        if let Some(clip) = idle {
+            self.select(clip, Playback::Loop);
+        }
+    }
+
+    fn advance(&mut self, dt: f32) {
+        if matches!(self.playback, Playback::Hold) {
+            return;
+        }
+        let remaining = (self.time + dt - self.animation.duration).max(0.0);
+        let (t, ended) = advance_clip(
+            self.time,
+            dt,
+            self.animation.duration,
+            matches!(self.playback, Playback::Loop),
+        );
+        self.time = t;
+        if ended {
+            let old = std::mem::replace(&mut self.playback, Playback::Hold);
+            if let Playback::Once { then: Some(clip) } = old {
+                // Carry the unused time into the return loop, independent of frame rate.
+                self.select(&clip, Playback::Loop);
+                self.time = advance_clip(0.0, remaining, clip.0.duration, true).0;
+            }
+        }
+    }
 }
 
 pub fn spawn_characters(
@@ -684,13 +795,25 @@ pub fn spawn_characters(
                 let b = a.bind(&c.skeleton);
                 (a, b)
             }),
+            combat: c
+                .combat
+                .iter()
+                .map(|(&kind, a)| (kind, (a.clone(), a.bind(&c.skeleton))))
+                .collect(),
             run: c.run.clone().map(|a| {
                 let b = a.bind(&c.skeleton);
                 (a, b)
             }),
         });
+        let has_idle = c.animation.is_some();
         let animation = c
             .animation
+            .or(c.run)
+            .or_else(|| {
+                CombatAnimation::ALL
+                    .iter()
+                    .find_map(|k| c.combat.get(k).cloned())
+            })
             .filter(|_| std::env::var_os("BG3_NO_ANIM").is_none());
         if let Some(animation) = animation {
             let bindings = animation.bind(&c.skeleton);
@@ -698,9 +821,20 @@ pub fn spawn_characters(
             rng_phase = (rng_phase + 0.37) % 1.0;
             commands.entity(root).insert(CharacterAnimator {
                 joints,
-                time: rng_phase * animation.duration,
+                time: if has_idle {
+                    rng_phase * animation.duration
+                } else {
+                    0.0
+                },
                 animation,
                 bindings,
+                playback: if has_idle {
+                    Playback::Loop
+                } else {
+                    Playback::Hold
+                },
+                incapacitated: false,
+                rest: c.skeleton.joints.iter().map(|j| j.rest).collect(),
             });
         }
     }
@@ -713,11 +847,21 @@ pub fn animate_characters(
 ) {
     let dt = time.delta_secs();
     for mut a in &mut animators {
+        a.advance(dt);
         let duration = a.animation.duration.max(1e-3);
-        a.time = (a.time + dt) % duration;
+        // Reset unbound bones when clips have different track coverage.
+        for (&joint, rest) in a.joints.iter().zip(&a.rest) {
+            if let Ok(mut tr) = transforms.get_mut(joint) {
+                *tr = *rest;
+            }
+        }
         let t = a.time;
         for &(joint, track) in &a.bindings {
-            let sample = a.animation.tracks[track].sample_looped(t, duration);
+            let sample = if matches!(a.playback, Playback::Loop) {
+                a.animation.tracks[track].sample_looped(t, duration)
+            } else {
+                a.animation.tracks[track].sample(t)
+            };
             if let Ok(mut tr) = transforms.get_mut(a.joints[joint]) {
                 *tr = granny_transform(&sample);
             }
@@ -737,6 +881,79 @@ impl Plugin for CharactersPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn clip(name: &str, duration: f32) -> BoundClip {
+        (
+            Arc::new(PreparedAnimation {
+                name: name.into(),
+                duration,
+                tracks: vec![],
+            }),
+            vec![],
+        )
+    }
+
+    fn animator(clip: &BoundClip) -> CharacterAnimator {
+        CharacterAnimator {
+            animation: clip.0.clone(),
+            bindings: vec![],
+            joints: vec![],
+            rest: vec![],
+            time: 0.0,
+            playback: Playback::Loop,
+            incapacitated: false,
+        }
+    }
+
+    #[test]
+    fn one_shot_returns_to_idle_and_carries_remaining_time() {
+        let idle = clip("idle", 2.0);
+        let attack = clip("attack", 0.7);
+        let mut a = animator(&idle);
+        a.once(&attack, Some(idle.clone()));
+        a.locomotion(&Some(idle.clone())); // navigation cannot cancel the attack
+        a.advance(0.5);
+        assert_eq!(a.animation.name, "attack");
+        assert_eq!(a.time, 0.5);
+        a.advance(0.3);
+        assert_eq!(a.animation.name, "idle");
+        assert!((a.time - 0.1).abs() < 1e-5);
+        a.advance(4.0);
+        assert!((a.time - 0.1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn death_holds_final_frame_and_downed_survives_locomotion_until_revived() {
+        let idle = clip("idle", 2.0);
+        let death = clip("death", 1.0);
+        let mut a = animator(&idle);
+        a.incapacitated = true;
+        a.once(&death, None);
+        a.advance(1.0);
+        a.advance(50.0);
+        a.locomotion(&Some(idle.clone()));
+        assert_eq!(a.animation.name, "death");
+        assert_eq!(a.time, 1.0);
+        a.downed(&clip("downed", 3.0));
+        a.advance(4.5);
+        a.locomotion(&Some(idle.clone()));
+        assert_eq!(a.animation.name, "downed");
+        assert_eq!(a.time, 1.5);
+        a.revive(&Some(idle));
+        assert!(!a.incapacitated);
+        assert_eq!(a.animation.name, "idle");
+    }
+
+    #[test]
+    fn zero_duration_and_overshoot_do_not_wrap_a_one_shot() {
+        assert_eq!(advance_clip(0.0, 1.0, 0.0, false), (0.0, true));
+        assert_eq!(advance_clip(0.5, 8.0, 1.0, false), (1.0, true));
+        let mut a = animator(&clip("zero", 0.0));
+        a.once(&clip("zero", 0.0), None);
+        a.advance(1.0);
+        assert_eq!(a.time, 0.0);
+        assert!(matches!(a.playback, Playback::Hold));
+    }
 
     fn bone(name: &str, parent: Option<usize>, pos: [f32; 3], rot: [f32; 4]) -> bg3_gr2::Bone {
         bg3_gr2::Bone {

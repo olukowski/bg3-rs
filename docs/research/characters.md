@@ -1,4 +1,4 @@
-# Characters: visuals, skeleton, idle animation, equipment
+# Characters: visuals, skeleton, animation, equipment
 
 Status: traced with `bg3x lsx` / `bg3x find` and implemented as pure data in
 `crates/bg3-world/src/characters.rs`, rendered by `viewer/src/characters.rs`. All **54** Nautiloid
@@ -108,9 +108,121 @@ right hand, and an unrotated human faces BG3 −Z.
 - The clip is the first animation in the AnimationBank's GR2; tracks bind to bones by name and
   hold parent-local transforms. Played looping from a per-character phase offset.
 
-Unresolved: dead characters (`DeadTrall`, `*_Dead_*`, corpses) play the standing idle. Their
+Unresolved: initially dead scenery characters (`DeadTrall`, `*_Dead_*`, corpses) play the
+standing idle. Their
 pose presumably comes from `DefaultState` (11 on dead thralls), Osiris, or lying/death animations
 (`Public/Engine/Assets/Characters/_Anims/Engine_Default_Lying*.bin`).
+
+### Combat clips and playback
+
+The viewer reads `Public/Shared/Animation/ShortNames.lsx` at startup: each `ShortName` has a
+`Name` and `UUID`. `CombatAnimation::simple_name()` names the requested type; the UUID comes
+from the install, not an embedded extracted table. `ResolvedCharacter::animation()` uses
+exactly the idle/run chain: the effective character/template `AnimationSetResourceID` first,
+then its base visual's shared `AnimationWaterfall` in file order. Each set checks the default
+subset. `AnimationSetResource::find()` also supports explicit subsets and their
+`FallBackSubSet` links, ending at the default subset, but the viewer does not yet select
+weapon subsets. A missing type falls through to the next set; a type absent from the whole
+chain stays unavailable. No additional rig fallback is invented outside the waterfall. The order remains a
+**data-inferred assumption**, not engine-verified behaviour. Related original symbol:
+`ls::AnimationSetSystem::Update` (4.1.1.7631656).
+
+Survey commands (output must stay in `.cache/`): `bg3x find IMP_Rig` found no exact attribute
+value, because that name is part of GR2 paths, not the resource name. `bg3x find IMP_Base -p
+Public/Shared/Content/Assets/Characters/Creatures/Imp` locates the resource. Inspect with
+`bg3x lsx - Public/Shared/Content/Assets/Characters/Creatures/Imp/[PAK]_Body/_merged.lsf`,
+likewise `.../Humans/[PAK]_Male_Body/_merged.lsf`, and the ShortNames resource above.
+The imp skeleton/set resources are named `IMP_Base`; their animation tracks use `IMP_Rig`.
+
+Requested simple names and observed default-subset mappings in reference build 4.1.1.7631656
+(human timings below are HUM_M):
+
+- Melee: `CMBT_Melee_RHand_01_Attack`, mapping to the corresponding
+  `HUM_M_Rig_DFLT_…` (0.433 s) and `IMP_Rig_DFLT_…` (0.667 s) clips.
+- Ranged: `CMBT_Range_RHand_01_Attack`, mapping to
+  `HUM_M_Rig_1HS_CMBT_Range_RHand_01_Attack` (1.033 s). **Missing in the imp default subset**;
+  its crossbow subset (`32bbe70b-…`) has `IMP_Rig_XB_CMBT_Range_RHand_01_Attack` (0.667 s).
+  We deliberately retain the existing default-subset policy; an imp ranged attack uses
+  the 0.7 s fallback pause.
+- Cast: `SPL_Somatic_Target_01_Cast`, mapping to the corresponding human DFLT clip (1.5 s)
+  and `IMP_Rig_DFLT_SPL_Somatic_WeaponAttack_01_Cast` (1.167 s).
+- Hit: `REAC_Hit_F_Combat_01`, mapping to the corresponding human DFLT clip (1.633 s)
+  and `IMP_Rig_DFLT_REAC_Hit_F_01` (1.233 s).
+- Death: `DIE_Physical_Stationary_Front_01`, mapping to the corresponding human DFLT clip
+  (2.0 s) and `IMP_Rig_DFLT_DIE_Physical_Stationary_F_01` (2.167 s).
+- Dead pose: `DIE_Generic_Deathpose_01`, mapping to corresponding human and imp DFLT clips
+  (0.467 s / 0.167 s). This is a short pose, not a fall animation.
+- Downed loop: `STAT_Downed_Peace_01_Loop`, mapping to the corresponding human DFLT clip
+  (15.958 s) and `IMP_Rig_DFLT_STAT_Weakened_Combat_01_Loop` (4.233 s).
+  The imp mapping is the install's choice, even though its name says weakened.
+
+The female human base visual lists its female sets first, then the male shared sets. Its
+melee/cast/hit/death/dead/downed clips resolve to HUM_F tracks; ranged falls through to the
+HUM_M ranged clip above. The ignored Nautiloid resolution test confirms all seven requested
+types resolve on the ordinary human characters and the imp ranged type remains missing.
+The separate crippled rig (`S_FirstFight_Imp_Melee_01`, `IMP_Crippled_Rig`) resolves melee,
+death and the shared dead pose, but not ranged, cast, hit or downed. It is not silently
+substituted with the regular imp rig. Viewer loading confirmed these results after GR2
+decoding too (`BG3_CHAR_DEBUG=1`); Lae’zel resolves Gith melee, female human cast/hit/death/
+downed, and the shared male human ranged clip.
+
+Playback is a **viewer approximation**. The game thread classifies `SpellCast` from the
+install's spell flags: `IsSpell` uses cast; otherwise `IsMelee` uses melee, and a projectile
+with `IsAttack` uses ranged. Others use cast. Attack and cast clips play once, then return
+to idle; damage plays a hit reaction. Death plays once with non-looping sampling and holds
+the final frame, so it cannot interpolate across the loop seam or restart the fall. Only
+missing death clips use the old transform topple. Downed characters use the downed loop
+(or the dead pose if only that resolves); healing returns them to idle. Locomotion cannot
+replace one-shots or incapacitated poses. Bones not driven by a new clip reset to rest.
+
+AI results already contain the completed move and its subsequent events. The viewer queues
+the walk followed by those events; each attack/hit/death waits for its decoded GR2 duration
+before presenting the next event or requesting another AI turn. Missing attacks retain the
+0.7 s pause. Logs follow presentation order, although HP/action availability snapshots still
+represent the current simulation state. This is not the game's animation-event synchronization:
+no weapon-aware subsets, preparation/recovery chain, blending, directional reactions, or
+spell-specific animation blueprint selection is implemented. Initial scenery corpses still
+need their `DefaultState` interpreted.
+
+The combat camera pans for 0.5 s when a presented turn starts (also when an AI actor in a
+shared turn begins its move). It preserves orientation and distance to the actor-height
+look-at plane, then follows that actor's movement. WASD/QE or right-mouse look cancels that turn's pan; the next turn enables
+another pan. `F` toggles following. This is viewer camera policy, not a port of the original
+camera controller; out-of-combat fly-camera behaviour is unchanged.
+
+Synthetic tests cover set override precedence, shared-default fallback, missing types,
+subset cycles/broken links, and runtime name decoding. Viewer timing tests cover one-shot
+completion with frame overshoot, return to idle, held death frames, downed loops, revival,
+and zero-duration clips; camera tests cover pan endpoints and turn reset after interruption.
+The ignored `nautiloid_characters_resolve` test checks the names against the install and
+prints each character's resolved clips with `BG3_CHAR_DEBUG=1`.
+
+#### Verification (2026-10-21)
+
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo test --workspace` all exited 0 (292 tests including doctests passed; 40 ignored).
+The ignored `nautiloid_characters_resolve` install test also exited 0. No runtime trace of the
+original game's animation controller was captured; this verifies resolution and our playback,
+not 1:1 clip selection or transition timing.
+
+Captured and inspected with `--play --combat-test --combat-autoplay --shot … --shot-after N`:
+
+- `.cache/shots/combat-follow-3s.png`: avatar melee pose, avatar near the centre.
+- `.cache/shots/combat-follow-6s.png`: camera centred on Lae’zel after her ranged attack.
+- `.cache/shots/combat-follow-9s.png`: camera has moved to the next acting imp.
+- `.cache/shots/combat-follow-12s.png`: imp attacking the avatar, wings raised.
+- `.cache/shots/combat-hit-5s.png`, `combat-death-6s.png`, `combat-death-7s.png` in the same
+  directory: alternate angle showing the first imp recoil, start its death fall, then lie down.
+  These add `--camera=-53,10,-410 --look-at=-46,4,-403` (BG3 coordinates).
+- `.cache/shots/combat-next-turn-8s.png`: death playback has completed and the camera
+  centres on the next imp; the corpse has left the frame.
+
+Per-shot logs remain beside the PNGs and record the played clips and decoded durations.
+The camera does not avoid geometry: a much higher/wider trial placement was occluded by the
+ship. Cast/downed clip resolution and playback timing are covered by the install/unit checks;
+the short autoplay runs did not exercise those states visually. `F` and manual cancellation
+have logic tests, but were not driven by automated GUI input. Existing skin/material and
+level-rendering limitations remain visible in the shots.
 
 ### Equipment
 
@@ -135,6 +247,6 @@ equipment visuals (`EquipmentRace`, `Mods/Shared/EquipmentSettings/*.lsx`,
   some skin parts in the graph's default (red) texture.
 - Subset selection, sheathing, and the armour equipment-visual chain.
 - Facial animation and physics/cloth for the extra mesh bones.
-- Death/lying poses for dead characters.
+- Initial death/lying poses for scenery corpses (combat deaths now animate).
 - Confirm the waterfall/override order and the fallback rule against the original
   (`ls::AnimationSetComponent` and related symbols).
