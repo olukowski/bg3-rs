@@ -32,6 +32,9 @@ Rules:
 - If something is a *table* rather than *logic*, prefer moving it to tier 2 over hand-copying values.
   Small, unavoidable constants (e.g. a single threshold) may be written inline with a citation.
 - Verification of behaviour should, where feasible, be against tier 3 traces or real save files.
+- **Screenshots of our own renderer** may be committed for documentation (`docs/media/`), as long as
+  they are few, small (compressed JPEG, ≲ 500 KB each) and clearly our output. Screenshots of the
+  original game, textures, models, audio, extracted files, loca text and traces stay forbidden.
 
 ## Consequences
 
@@ -41,9 +44,15 @@ Rules:
 - Tier 2 extraction is tied to the binary layout of a specific build; we pin a reference build
   (4.1.1.7631656, macOS) and treat other builds as best-effort.
 
+## Resolved
+
+- **License (2026-10-21):** our own code is dual-licensed MIT OR Apache-2.0, like the Rust/Bevy
+  ecosystem. This also lets reusable crates (format readers, a future XAML→Bevy UI layer) be published
+  standalone.
+- **Screenshots (2026-10-21):** allowed under the rule above.
+
 ## Open questions
 
-- License of our own code (GPL-3.0 like nv-rs vs MIT/Apache-2.0 like the Bevy ecosystem). Standalone
-  reusable crates (e.g. a XAML→Bevy UI layer) likely want MIT/Apache regardless.
-- Windows support: the Windows `bg3.exe` is not the RE reference; data formats are shared, so this
-  mostly affects tier 2/3 tooling.
+- Windows/Linux: the data formats are shared and runtime support is cross-platform (see
+  `docs/platforms.md`). The Windows `bg3.exe` is not the RE reference, so tier 2/3 tooling stays
+  macOS-first.
