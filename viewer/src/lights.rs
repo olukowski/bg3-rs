@@ -6,7 +6,7 @@ use anyhow::Result;
 use bevy::camera::Exposure;
 use bevy::prelude::*;
 use bg3_vfs::Vfs;
-use bg3_world::lights::{decode_gamma, kelvin_to_rgb, load_level_lights};
+use bg3_world::lights::{LightingSources, decode_gamma, kelvin_to_rgb, load_level_lights};
 use bg3_world::{LevelLighting, Light, LightKind, RootTemplates};
 
 use crate::space;
@@ -22,6 +22,10 @@ pub struct LevelLights {
     pub lights: Vec<Light>,
     pub lighting: LevelLighting,
     pub scale: f32,
+    /// What `lighting` is resolved from, to follow the camera between triggers.
+    sources: LightingSources,
+    /// The lighting and atmosphere triggers in effect (see [`LightingSources::zones_at`]).
+    zones: [Option<usize>; 2],
 }
 
 impl LevelLights {
@@ -33,7 +37,9 @@ impl LevelLights {
         at: Option<[f32; 3]>,
     ) -> Result<Self> {
         let lights = load_level_lights(vfs, level, templates)?;
-        let lighting = LevelLighting::load_at(vfs, level, at)?;
+        let sources = LightingSources::load(vfs, level)?;
+        let zones = sources.zones_at(at);
+        let lighting = sources.resolve(zones);
         let count = |k: fn(&LightKind) -> bool| lights.iter().filter(|l| k(&l.kind)).count();
         eprintln!(
             "lights: {} ({} point, {} spot, {} directional); lighting {:?}, atmosphere {:?} (triggers {:?}), exposure {:?}",
@@ -50,6 +56,8 @@ impl LevelLights {
             lights,
             lighting,
             scale,
+            sources,
+            zones,
         })
     }
 
@@ -382,5 +390,62 @@ pub fn apply_exposure(
                 ev100: lights.ev100(),
             });
         }
+    }
+}
+
+/// The engine picks the lighting and atmosphere triggers at the camera's eye position as the
+/// camera moves (`docs/research/lighting.md`). Follow the camera for the atmosphere (exposure
+/// and grading, read by the post passes every frame); a different lighting trigger would need
+/// the sun, probes and fog respawned, which is not implemented, so the lighting chosen at start
+/// stays. The switch is immediate (`FadeTime` blending is not implemented).
+// bg3: ecl::CameraSystem::CheckTriggers (4.1.1.7631656)
+pub fn follow_camera_triggers(
+    mut lights: ResMut<LevelLights>,
+    mut cameras: Query<
+        (
+            &GlobalTransform,
+            Option<&mut crate::post::GamePost>,
+            &mut Exposure,
+        ),
+        With<crate::fly_camera::FlyCamera>,
+    >,
+    windows: Query<&Window>,
+    mut warned: Local<bool>,
+) {
+    let Some((transform, post, mut exposure)) = cameras.iter_mut().next() else {
+        return;
+    };
+    let eye = space::vec3(transform.translation().to_array());
+    let zones = lights.sources.zones_at(Some(eye));
+    let name = |z: Option<usize>| z.map(|i| lights.sources.zones[i].name.clone());
+    if zones[0] != lights.zones[0] && !*warned {
+        *warned = true;
+        eprintln!(
+            "lighting: camera in lighting trigger {:?}, keeping {:?} (switching lighting at runtime is not implemented)",
+            name(zones[0]),
+            name(lights.zones[0]),
+        );
+    }
+    if zones[1] == lights.zones[1] {
+        return;
+    }
+    let lighting = lights.sources.resolve([lights.zones[0], zones[1]]);
+    eprintln!(
+        "atmosphere: camera at {eye:?} in {:?}: {:?}, exposure {:?}",
+        name(zones[1]),
+        lighting.atmosphere_name,
+        lighting.exposure,
+    );
+    lights.zones[1] = zones[1];
+    lights.lighting = lighting;
+    match post {
+        Some(mut post) => {
+            let screen = windows
+                .iter()
+                .next()
+                .map_or(UVec2::new(1280, 720), |w| w.physical_size());
+            post.uniform = lights.post_uniform(screen);
+        }
+        None => exposure.ev100 = lights.ev100(),
     }
 }

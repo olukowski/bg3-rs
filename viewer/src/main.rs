@@ -216,13 +216,21 @@ fn main() -> Result<()> {
     });
     // The play camera starts behind the avatar (BG3 space) unless placed explicitly.
     let avatar_at = avatar_position.filter(|_| args.frame.is_none());
-    // Lighting and atmosphere triggers choose the level-wide lighting where the player is.
+    let camera_start = args
+        .camera
+        .or(avatar_at.map(|p| p + Vec3::new(-5.0, 6.0, 4.0)));
+    // Lighting and atmosphere triggers choose the level-wide lighting where the camera is
+    // (`lights::follow_camera_triggers` keeps the atmosphere up to date as it moves). Without
+    // a start position yet (`--frame` places the camera later), start where the player is.
     let lights = lights::LevelLights::load(
         &vfs,
         &args.level,
         &level.templates,
         args.light_scale,
-        avatar_position.or(args.look_at).map(|v| v.to_array()),
+        camera_start
+            .or(avatar_position)
+            .or(args.look_at)
+            .map(|v| v.to_array()),
     )?;
     let fog = fog::LevelFog::load(
         &vfs,
@@ -286,10 +294,7 @@ fn main() -> Result<()> {
     .insert_resource(characters)
     .insert_resource(level::ShowPlaceholders(args.placeholders))
     .insert_resource(CameraStart {
-        position: args
-            .camera
-            .or(avatar_at.map(|p| p + Vec3::new(-5.0, 6.0, 4.0)))
-            .map(|v| Vec3::from_array(space::vec3(v.to_array()))),
+        position: camera_start.map(|v| Vec3::from_array(space::vec3(v.to_array()))),
         look_at: args
             .look_at
             .or(avatar_at.map(|p| p + Vec3::Y))
@@ -309,7 +314,8 @@ fn main() -> Result<()> {
     .add_systems(
         PostStartup,
         (lights::apply_exposure, probes::apply_sky, fog::apply_fog),
-    );
+    )
+    .add_systems(Last, lights::follow_camera_triggers);
     if args.terrain_only {
         app.add_systems(PostStartup, terrain::hide_objects);
     }

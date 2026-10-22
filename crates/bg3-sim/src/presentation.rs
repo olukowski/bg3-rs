@@ -16,8 +16,8 @@
 //!   ([`Sim::update_stage`]).
 //!
 //! Inferred (marked *inferred* where used) from the trace `full-nautiloid.log` and the data,
-//! not read in the binary: the event formats and orders below, the trigger shape conventions
-//! and which triggers report to whom.
+//! not read in the binary: the event formats and orders below and which triggers report to
+//! whom. The trigger shapes and hit test are the engine's (`bg3_world::trigger`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -37,22 +37,9 @@ use crate::sim::{NULL_OBJECT, Sim};
 const RUN_SPEED: f32 = bg3_world::characters::DEFAULT_MOVEMENT_SPEED_RUN;
 const WALK_SPEED: f32 = bg3_world::characters::DEFAULT_MOVEMENT_SPEED_WALK;
 
-/// The volume of a trigger, in its local frame (origin at the trigger's position).
-#[derive(Clone, Debug, PartialEq)]
-pub enum TriggerShape {
-    /// `PhysicsType` 1: `Radius`.
-    Sphere { radius: f32 },
-    /// `PhysicsType` 2: `Extents`, the half sizes of a box centred on the position
-    /// (*inferred*: with full sizes, the avatar standing at the start point would not be in
-    /// `S_TUT_SaveTrigger_Start` and `S_TUT_MovementTutorialArea_001`, which the trace reports
-    /// it entering; see the install test `start_point_is_in_the_traced_triggers`).
-    Box { extents: [f32; 3] },
-    /// `PhysicsType` 3: a prism over the `Points` polygon (local x, z), `Height` up from the
-    /// position (*inferred*).
-    Polygon { points: Vec<[f32; 2]>, height: f32 },
-    /// No volume (points, splines, …).
-    None,
-}
+/// The volume of a trigger: the shape shared with the lighting/atmosphere triggers, so both
+/// use the engine's one hit test (`bg3_world::trigger`).
+pub use bg3_world::trigger::TriggerShape;
 
 /// A placed trigger.
 #[derive(Clone, Debug)]
@@ -71,23 +58,9 @@ pub struct TriggerDef {
 
 impl TriggerDef {
     /// Is `p` (world space) inside the volume?
+    // bg3: ls::trigger::HitTest (4.1.1.7631656)
     pub fn contains(&self, p: [f32; 3]) -> bool {
-        let d = [
-            p[0] - self.position[0],
-            p[1] - self.position[1],
-            p[2] - self.position[2],
-        ];
-        let [x, y, z] = rotate_inverse(self.rotation, d);
-        match &self.shape {
-            TriggerShape::Sphere { radius } => x * x + y * y + z * z <= radius * radius,
-            TriggerShape::Box { extents } => {
-                x.abs() <= extents[0] && y.abs() <= extents[1] && z.abs() <= extents[2]
-            }
-            TriggerShape::Polygon { points, height } => {
-                (0.0..=*height).contains(&y) && point_in_polygon(points, x, z)
-            }
-            TriggerShape::None => false,
-        }
+        self.shape.contains(self.position, self.rotation, p)
     }
 
     /// Does the trigger report every character (not only registered ones)? Room triggers do:
@@ -98,41 +71,6 @@ impl TriggerDef {
     pub fn reports_everyone(&self) -> bool {
         self.trigger_type == "RoomTrigger"
     }
-}
-
-/// Rotate `v` by the inverse of the unit quaternion `q` (`x y z w`).
-fn rotate_inverse(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
-    let (qx, qy, qz, qw) = (-q[0], -q[1], -q[2], q[3]);
-    // v' = v + 2w(q × v) + 2 q × (q × v)
-    let c1 = [
-        qy * v[2] - qz * v[1],
-        qz * v[0] - qx * v[2],
-        qx * v[1] - qy * v[0],
-    ];
-    let c2 = [
-        qy * c1[2] - qz * c1[1],
-        qz * c1[0] - qx * c1[2],
-        qx * c1[1] - qy * c1[0],
-    ];
-    [
-        v[0] + 2.0 * (qw * c1[0] + c2[0]),
-        v[1] + 2.0 * (qw * c1[1] + c2[1]),
-        v[2] + 2.0 * (qw * c1[2] + c2[2]),
-    ]
-}
-
-/// Even-odd rule.
-fn point_in_polygon(points: &[[f32; 2]], x: f32, z: f32) -> bool {
-    let mut inside = false;
-    let n = points.len();
-    for i in 0..n {
-        let [xi, zi] = points[i];
-        let [xj, zj] = points[(i + n - 1) % n];
-        if (zi > z) != (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi {
-            inside = !inside;
-        }
-    }
-    inside
 }
 
 /// Trigger-related fields of a root template (and its parent for inheritance).
@@ -255,24 +193,17 @@ fn placed_trigger(
         .find_map(|t| t.trigger_type.clone())
         .unwrap_or_default();
     let physics = chain.iter().find_map(|t| t.physics_type).unwrap_or(0);
-    let shape = match physics {
-        1 => TriggerShape::Sphere {
-            radius: pick(|t| t.radius).unwrap_or(1.0),
-        },
-        2 => TriggerShape::Box {
-            extents: chain.iter().find_map(|t| t.extents).unwrap_or([1.0; 3]),
-        },
-        3 => TriggerShape::Polygon {
-            points: n
-                .children_named("Points")
-                .filter_map(|p| vec_attr(p, "Object"))
-                .filter(|v| v.len() == 2)
-                .map(|v| [v[0], v[1]])
-                .collect(),
-            height: pick(|t| t.height).unwrap_or(0.0),
-        },
-        _ => TriggerShape::None,
-    };
+    let shape = TriggerShape::from_physics(
+        physics,
+        pick(|t| t.radius),
+        chain.iter().find_map(|t| t.extents),
+        pick(|t| t.height),
+        n.children_named("Points")
+            .filter_map(|p| vec_attr(p, "Object"))
+            .filter(|v| v.len() == 2)
+            .map(|v| [v[0], v[1]])
+            .collect(),
+    );
     let transform = n.child("Transform");
     let position = transform
         .and_then(|t| vec_attr(t, "Position"))

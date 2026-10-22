@@ -458,10 +458,13 @@ include them):
 | `DialogStartRequested(target, player)` | raised for the player's click; the story selects and starts the dialog (`QRY_SelectAndStartDialog`) | `esv::CharacterProtocol::ProcessMsg` → `esv::StoryDialogEventManager::ThrowDialogRequestEvent` (the only caller) |
 
 Trigger shapes (level `Triggers` objects and their root templates, `PhysicsType`): 1 sphere
-(`Radius`), 2 box (`Extents` = half sizes, *inferred*: only then is the start point inside
+(`Radius`), 2 box (`Extents` = half sizes), 3 prism over `Points` (local x/z) between local y 0
+and `Height`. The shapes and the hit test are read from the binary (`ls::trigger::HitTest`,
+used by `esv::trigger::TrackingSystem` as well as the client's lighting/atmosphere selection)
+and live in one place, `bg3_world::trigger`; see `lighting.md` ("Trigger volumes and
+selection"). The half-size boxes also agree with the trace: only then is the start point inside
 `S_TUT_SaveTrigger_Start` and `S_TUT_MovementTutorialArea_001`, which the trace reports the
-avatar entering; test `live_game::start_point_is_in_the_traced_triggers`), 3 prism over `Points`
-(local x/z) up `Height` from the position (*inferred*).
+avatar entering (test `live_game::start_point_is_in_the_traced_triggers`).
 
 What runs: the intro dialog, the automated wake-up line, walking into `S_TUT_Misc_RubbleRoom_001`
 starts the devourer victim's ambient dialog, clicking the victim starts `TUT_Lab_TrappedDevourer`

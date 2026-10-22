@@ -13,6 +13,7 @@ pub mod lights;
 pub mod probes;
 pub mod templates;
 pub mod terrain;
+pub mod trigger;
 pub mod unsheath;
 
 pub use banks::{

@@ -548,17 +548,24 @@ impl ExposureSettings {
     }
 }
 
-impl LevelLighting {
-    /// Read `meta.lsf` (last module wins) and resolve its lighting/atmosphere resources.
-    pub fn load(vfs: &Vfs, level: &str) -> Result<Self> {
-        Self::load_at(vfs, level, None)
-    }
+/// Everything [`LevelLighting`] is resolved from: the level's default resources, the
+/// lighting/atmosphere banks and the level's lighting and atmosphere triggers. Kept so a
+/// front end can re-resolve the lighting as its camera moves between triggers.
+#[derive(Debug, Clone)]
+pub struct LightingSources {
+    lighting_id: Option<String>,
+    atmosphere_id: Option<String>,
+    bounds: Option<([f32; 3], [f32; 3])>,
+    banks: Vec<bg3_lsf::Resource>,
+    /// The level's lighting and atmosphere triggers.
+    pub zones: Vec<crate::atmosphere::ResourceZone>,
+    /// Per zone: its first resource is a lighting (`[0]`) / atmosphere (`[1]`) resource.
+    kinds: Vec<[bool; 2]>,
+}
 
-    /// Like [`load`](Self::load), but if `at` (BG3 world space) is inside a lighting or
-    /// atmosphere trigger, that trigger's resource replaces the level's (the innermost trigger;
-    /// its first resource). Triggers fade between resources as the camera moves; this picks one
-    /// place.
-    pub fn load_at(vfs: &Vfs, level: &str, at: Option<[f32; 3]>) -> Result<Self> {
+impl LightingSources {
+    /// Read `meta.lsf` (last module wins), the banks and the level's triggers.
+    pub fn load(vfs: &Vfs, level: &str) -> Result<Self> {
         let mut meta = None;
         for module in BASE_LOAD_ORDER {
             let path = format!("Mods/{module}/Levels/{level}/meta.lsf");
@@ -567,15 +574,59 @@ impl LevelLighting {
             }
         }
         let data = meta.as_ref().and_then(|m| m.region("LevelData"));
-        let lighting_id = data.and_then(|d| str_attr(d, "LevelLighting"));
-        let atmosphere_id = data.and_then(|d| str_attr(d, "LevelAtmosphere"));
-        let bounds = data
-            .and_then(|d| d.child("LevelBounds"))
-            .and_then(|b| Some((vec_attr::<3>(b, "Min")?, vec_attr::<3>(b, "Max")?)));
-        let mut out = Self {
-            lighting_id,
+        let banks = atmosphere_banks(vfs)?;
+        let zones = crate::atmosphere::load_resource_zones(vfs, level)?;
+        let has = |region: &str, id: &str| {
+            banks.iter().any(|b| {
+                b.region(region).is_some_and(|r| {
+                    r.children_named("Resource")
+                        .any(|x| x.attr_str("ID") == Some(id))
+                })
+            })
+        };
+        let kinds = zones
+            .iter()
+            .map(|z| {
+                let first = z.resources.first().map(String::as_str);
+                ["LightingBank", "AtmosphereBank"].map(|b| first.is_some_and(|r| has(b, r)))
+            })
+            .collect();
+        Ok(Self {
+            lighting_id: data.and_then(|d| str_attr(d, "LevelLighting")),
+            atmosphere_id: data.and_then(|d| str_attr(d, "LevelAtmosphere")),
+            bounds: data
+                .and_then(|d| d.child("LevelBounds"))
+                .and_then(|b| Some((vec_attr::<3>(b, "Min")?, vec_attr::<3>(b, "Max")?))),
+            banks,
+            zones,
+            kinds,
+        })
+    }
+
+    /// The lighting (`[0]`) and atmosphere (`[1]`) triggers in effect with the camera at
+    /// `at` (indices into [`zones`](Self::zones)); `None` where the level's own resource
+    /// applies. The engine tests the camera's eye position, not the player's (both for the
+    /// game camera and for timeline cameras).
+    // bg3: ecl::CameraSystem::CheckTriggers, ecl::TimelineCameraSystem::UpdateCameras (4.1.1.7631656)
+    pub fn zones_at(&self, at: Option<[f32; 3]>) -> [Option<usize>; 2] {
+        let Some(p) = at else {
+            return [None, None];
+        };
+        [0, 1].map(|k| crate::atmosphere::zone_index_at(&self.zones, p, |i, _| self.kinds[i][k]))
+    }
+
+    /// The level lighting with the given triggers' first resources (see
+    /// [`zones_at`](Self::zones_at)).
+    pub fn resolve(&self, zones: [Option<usize>; 2]) -> LevelLighting {
+        let zone = |k: usize| zones[k].map(|i| &self.zones[i]);
+        let mut out = LevelLighting {
+            lighting_id: zone(0)
+                .map(|z| z.resources[0].clone())
+                .or_else(|| self.lighting_id.clone()),
             lighting_name: String::new(),
-            atmosphere_id,
+            atmosphere_id: zone(1)
+                .map(|z| z.resources[0].clone())
+                .or_else(|| self.atmosphere_id.clone()),
             atmosphere_name: String::new(),
             sun: None,
             sky: None,
@@ -585,35 +636,32 @@ impl LevelLighting {
             exposure: None,
             exposure_settings: Vec::new(),
             post: PostProcessing::default(),
-            bounds,
-            zones: [None, None],
+            bounds: self.bounds,
+            zones: [
+                zone(0).map(|z| z.name.clone()),
+                zone(1).map(|z| z.name.clone()),
+            ],
         };
-        let banks = atmosphere_banks(vfs)?;
-        if let Some(p) = at {
-            let zones = crate::atmosphere::load_resource_zones(vfs, level)?;
-            let has = |region: &str, id: &str| {
-                banks.iter().any(|b| {
-                    b.region(region).is_some_and(|r| {
-                        r.children_named("Resource")
-                            .any(|x| x.attr_str("ID") == Some(id))
-                    })
-                })
-            };
-            let lighting = crate::atmosphere::zone_at(&zones, p, |r| has("LightingBank", r));
-            if let Some(z) = lighting {
-                out.lighting_id = Some(z.resources[0].clone());
-                out.zones[0] = Some(z.name.clone());
-            }
-            let atmosphere = crate::atmosphere::zone_at(&zones, p, |r| has("AtmosphereBank", r));
-            if let Some(z) = atmosphere {
-                out.atmosphere_id = Some(z.resources[0].clone());
-                out.zones[1] = Some(z.name.clone());
-            }
-        }
-        for res in &banks {
+        for res in &self.banks {
             out.apply_bank(res);
         }
-        Ok(out)
+        out
+    }
+}
+
+impl LevelLighting {
+    /// Read `meta.lsf` (last module wins) and resolve its lighting/atmosphere resources.
+    pub fn load(vfs: &Vfs, level: &str) -> Result<Self> {
+        Self::load_at(vfs, level, None)
+    }
+
+    /// Like [`load`](Self::load), with the lighting and atmosphere triggers containing the
+    /// camera position `at` (BG3 world space) replacing the level's resources (see
+    /// [`LightingSources::zones_at`]). Triggers fade between resources as the camera moves;
+    /// this picks one place.
+    pub fn load_at(vfs: &Vfs, level: &str, at: Option<[f32; 3]>) -> Result<Self> {
+        let sources = LightingSources::load(vfs, level)?;
+        Ok(sources.resolve(sources.zones_at(at)))
     }
 
     /// Take the lighting and atmosphere resources this level refers to from a bank file.
@@ -927,7 +975,7 @@ mod tests {
         };
         let vfs = Vfs::from_install(&install).unwrap();
         let level = "TUT_Avernus_C";
-        // The deck of the imp fight.
+        // A camera on the deck of the imp fight.
         let at = [-41.0, 4.0, -399.0];
         let lighting = LevelLighting::load_at(&vfs, level, Some(at)).unwrap();
         eprintln!(
@@ -939,7 +987,22 @@ mod tests {
             lighting.post
         );
         assert_eq!(lighting.lighting_name, "LTN_Default_EV10_Avernus_Ext");
-        assert!(lighting.atmosphere_name.starts_with("ATM_Default_EV"));
+        // A camera on the deck is below `…_Interior` (y 14.1–61.8) and outside the
+        // footprint of `…_UnderDeck`: the exterior atmosphere.
+        assert_eq!(lighting.atmosphere_name, "ATM_Default_EV10_Avernus_Ext");
+        assert_eq!(
+            lighting.zones[1].as_deref(),
+            Some("ATM_TUT_Avernus_C_Exterior")
+        );
+        // A camera 12 m above the deck is in both atmosphere prisms; the interior's
+        // smaller horizontal bound wins.
+        let above = LevelLighting::load_at(&vfs, level, Some([-46.6, 15.0, -402.8])).unwrap();
+        assert_eq!(above.atmosphere_name, "ATM_Default_EV08_Avernus_Int");
+        assert_eq!(
+            above.zones[1].as_deref(),
+            Some("ATM_TUT_Avernus_C_Interior")
+        );
+        assert_eq!(above.lighting_name, "LTN_Default_EV10_Avernus_Ext");
         assert!(lighting.exposure_settings.len() >= 2);
         let e = &lighting.exposure_settings[0];
         assert!(e.min < 10.0 && e.max >= e.min);
