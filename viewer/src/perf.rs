@@ -22,7 +22,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bevy::diagnostic::DiagnosticsStore;
+use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
+use bevy::render::render_phase::{BinnedPhaseItem, ViewBinnedRenderPhases};
 use bevy::render::render_resource::PipelineCache;
 use bevy::render::{Render, RenderApp, RenderSystems};
 
@@ -79,6 +81,14 @@ impl Plugin for PerfPlugin {
         let now = Instant::now();
         if self.readout {
             app.add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin);
+        }
+        if self.bench.is_some() {
+            // Bevy throttles an unfocused window to 60 Hz; a benchmark started from a terminal
+            // usually is one.
+            app.insert_resource(bevy::winit::WinitSettings {
+                focused_mode: bevy::winit::UpdateMode::Continuous,
+                unfocused_mode: bevy::winit::UpdateMode::Continuous,
+            });
         }
         app.insert_resource(shared.clone())
             .insert_resource(PerfState {
@@ -400,48 +410,54 @@ fn modified<A: Asset>(events: &mut MessageReader<AssetEvent<A>>) -> u32 {
         .count() as u32
 }
 
-/// `BG3_PERF_PASSES=1`: per binned phase, the views and their batch sets, bins and entities
-/// (every 120 render frames). Each multidrawable batch set costs buffer writes, a bind group
-/// and a bin-unpacking dispatch per view.
+/// `BG3_PERF_PASSES=1`: per binned phase, the views and their multidrawable batch sets (every
+/// 120 render frames), and for the shadow view with the most sets, the sets per pipeline with
+/// the material type and how many material bind groups split them. Each batch set costs buffer
+/// writes, a bind group, a bin-unpacking dispatch and a multi-draw per view and frame.
 fn log_phase_sizes(
-    shadow: Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::pbr::Shadow>>,
-    opaque: Res<
-        bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::Opaque3d>,
-    >,
-    mask: Res<
-        bevy::render::render_phase::ViewBinnedRenderPhases<
-            bevy::core_pipeline::core_3d::AlphaMask3d,
-        >,
-    >,
-    prepass: Res<
-        bevy::render::render_phase::ViewBinnedRenderPhases<
-            bevy::core_pipeline::prepass::Opaque3dPrepass,
-        >,
-    >,
+    shadow: Res<ViewBinnedRenderPhases<bevy::pbr::Shadow>>,
+    opaque: Res<ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::Opaque3d>>,
+    mask: Res<ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::AlphaMask3d>>,
+    prepass: Res<ViewBinnedRenderPhases<bevy::core_pipeline::prepass::Opaque3dPrepass>>,
+    cache: Res<PipelineCache>,
     mut frame: Local<u32>,
 ) {
     *frame += 1;
     if !(*frame).is_multiple_of(120) {
         return;
     }
-    fn sizes<P: bevy::render::render_phase::BinnedPhaseItem>(
-        name: &str,
-        phases: &bevy::render::render_phase::ViewBinnedRenderPhases<P>,
-    ) {
+    fn sizes<P: BinnedPhaseItem>(name: &str, phases: &ViewBinnedRenderPhases<P>) {
         let mut line = format!("phase {name}: {} views;", phases.len());
         for phase in phases.values() {
-            let multi = phase.multidrawable_meshes.len();
-            let _ = write!(
-                line,
-                " [{multi} sets; {} batchable, {} unbatchable]",
-                phase.batchable_meshes.len(),
-                phase.unbatchable_meshes.len()
-            );
+            let _ = write!(line, " {}", phase.multidrawable_meshes.len());
         }
-        eprintln!("{line}");
+        eprintln!("{line} sets");
     }
     sizes("shadow", &shadow);
     sizes("opaque", &opaque);
     sizes("alpha mask", &mask);
     sizes("prepass", &prepass);
+
+    let Some(phase) = shadow.values().max_by_key(|p| p.multidrawable_meshes.len()) else {
+        return;
+    };
+    let mut per_pipeline: HashMap<_, (usize, HashSet<Option<u32>>)> = HashMap::new();
+    for key in phase.multidrawable_meshes.keys() {
+        let entry = per_pipeline.entry(key.pipeline).or_default();
+        entry.0 += 1;
+        entry.1.insert(key.material_bind_group_index);
+    }
+    let mut per_pipeline: Vec<_> = per_pipeline.into_iter().collect();
+    per_pipeline.sort_by_key(|(_, (sets, _))| std::cmp::Reverse(*sets));
+    for (pipeline, (sets, groups)) in per_pipeline {
+        let d = cache.get_render_pipeline_descriptor(pipeline);
+        let material = d.layout.get(3).map_or("-".into(), |l| l.label.to_string());
+        let bindless = d.vertex.shader_defs.iter().any(|d| d == &"BINDLESS".into());
+        eprintln!(
+            "  shadow pipeline {}: {sets} sets, {} material groups, {material}{}",
+            pipeline.id(),
+            groups.len(),
+            if bindless { " (bindless)" } else { "" }
+        );
+    }
 }

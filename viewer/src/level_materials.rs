@@ -14,6 +14,7 @@ use bevy::asset::{embedded_asset, load_embedded_asset};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::render::renderer::RenderDevice;
 use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 use bg3_material::ResolvedMaterial;
@@ -114,18 +115,44 @@ pub struct LevelMaterialsPlugin;
 /// decal module (imported by the level and terrain shaders) loaded.
 #[derive(Resource)]
 #[allow(dead_code)]
-struct GameLightingLibrary(Handle<Shader>, Handle<Shader>);
+struct GameLightingLibrary(Handle<Shader>, Handle<Shader>, Handle<Shader>);
 
 impl Plugin for LevelMaterialsPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/game_lighting.wesl");
         embedded_asset!(app, "shaders/level.wesl");
         embedded_asset!(app, "shaders/decals.wesl");
+        embedded_asset!(app, "shaders/material_slot.wesl");
         let library: Handle<Shader> = load_embedded_asset!(app, "shaders/game_lighting.wesl");
         let decals: Handle<Shader> = load_embedded_asset!(app, "shaders/decals.wesl");
-        app.insert_resource(GameLightingLibrary(library, decals))
+        let slot: Handle<Shader> = load_embedded_asset!(app, "shaders/material_slot.wesl");
+        app.insert_resource(GameLightingLibrary(library, decals, slot))
             .add_plugins(MaterialPlugin::<LevelMaterial>::default())
             .add_systems(Last, swap_level_materials);
+    }
+
+    fn finish(&self, app: &mut App) {
+        if let Some(render_app) = app.get_sub_app(bevy::render::RenderApp) {
+            check_binding_arrays(render_app.world().resource::<RenderDevice>());
+        }
+    }
+}
+
+/// The level and character extensions are bindless with texture and storage buffer binding
+/// arrays. Bevy 0.20 makes an `ExtendedMaterial`'s base (`StandardMaterial`, textures only)
+/// bindless whenever the device has texture binding arrays, even when the extension can't be,
+/// and the combined layout is then invalid. Devices have both or neither in practice (Vulkan
+/// with descriptor indexing, Metal with tier 2 argument buffers); say so if one doesn't.
+fn check_binding_arrays(device: &RenderDevice) {
+    use bevy::render::settings::WgpuFeatures as F;
+    let features = device.features();
+    let buffers = F::BUFFER_BINDING_ARRAY | F::STORAGE_RESOURCE_BINDING_ARRAY;
+    if features.contains(F::TEXTURE_BINDING_ARRAY) && !features.contains(buffers) {
+        panic!(
+            "the device has texture binding arrays but not storage buffer binding arrays \
+             ({:?}); run with BG3_NO_BINDLESS=1",
+            buffers - features
+        );
     }
 }
 

@@ -26,6 +26,10 @@ import bevy_pbr::render::{
 };
 @if(!PREPASS_PIPELINE)
 import bg3_viewer::shaders::game_lighting::{GameShading, game_lighting};
+@if(BINDLESS)
+import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
+@if(BINDLESS)
+import bg3_viewer::shaders::material_slot::{ext_index, set_slot};
 
 const MODE_SKIN: u32 = 0u;
 const MODE_CLOTH_PALETTE: u32 = 1u;
@@ -42,7 +46,12 @@ struct CharacterUniform {
     v: array<vec4<f32>, 24>,
 }
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> cu: CharacterUniform;
+// Without bindless the uniform and textures sit at 100–109; with it (`material_slot.wesl`)
+// the uniform is an element of one array (161) and the textures are in Bevy's binding arrays.
+@if(BINDLESS)
+@group(constants::MATERIAL_BIND_GROUP) @binding(161) var<storage> character_uniforms: array<CharacterUniform>;
+@if(!BINDLESS) {
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> character_uniform: CharacterUniform;
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var t0: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(102) var s0: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var t1: texture_2d<f32>;
@@ -52,6 +61,49 @@ struct CharacterUniform {
 @group(constants::MATERIAL_BIND_GROUP) @binding(107) var t5: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(108) var t6: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(109) var t7: texture_2d<f32>;
+}
+
+// The material's uniform, loaded by `fragment`.
+var<private> cu: CharacterUniform;
+
+@if(!BINDLESS)
+fn tex_bound(n: u32, uv: vec2<f32>, lod: f32, level: bool) -> vec4<f32> {
+    // `level`: an explicit level of detail (no derivatives).
+    switch n {
+        case 0u: { if level { return textureSampleLevel(t0, s0, uv, lod); } return textureSample(t0, s0, uv); }
+        case 1u: { if level { return textureSampleLevel(t1, s0, uv, lod); } return textureSample(t1, s0, uv); }
+        case 2u: { if level { return textureSampleLevel(t2, s0, uv, lod); } return textureSample(t2, s0, uv); }
+        case 3u: { if level { return textureSampleLevel(t3, s0, uv, lod); } return textureSample(t3, s0, uv); }
+        case 4u: { if level { return textureSampleLevel(t4, s0, uv, lod); } return textureSample(t4, s0, uv); }
+        case 5u: { if level { return textureSampleLevel(t5, s0, uv, lod); } return textureSample(t5, s0, uv); }
+        case 6u: { if level { return textureSampleLevel(t6, s0, uv, lod); } return textureSample(t6, s0, uv); }
+        default: { if level { return textureSampleLevel(t7, s0, uv, lod); } return textureSample(t7, s0, uv); }
+    }
+}
+
+// Texture `n` (t0–t7; non-bindless bindings 101, 103–109, sampler 102) at `uv`.
+fn tex(n: u32, uv: vec2<f32>) -> vec4<f32> {
+@if(BINDLESS)
+    return textureSample(
+        bindless_textures_2d[ext_index(select(102u + n, 101u, n == 0u))],
+        bindless_samplers_filtering[ext_index(102u)],
+        uv,
+    );
+@else
+    return tex_bound(n, uv, 0.0, false);
+}
+
+fn tex_level(n: u32, uv: vec2<f32>, lod: f32) -> vec4<f32> {
+@if(BINDLESS)
+    return textureSampleLevel(
+        bindless_textures_2d[ext_index(select(102u + n, 101u, n == 0u))],
+        bindless_samplers_filtering[ext_index(102u)],
+        uv,
+        lod,
+    );
+@else
+    return tex_bound(n, uv, lod, true);
+}
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 const SKIN_TINT: vec3<f32> = vec3<f32>(0.95222, 0.7440979, 0.5952425);
@@ -105,14 +157,14 @@ fn surface_new() -> Surface {
 fn skin(uv: vec2<f32>) -> Surface {
     let v = cu.v;
     let head = v[14].w > 0.5;
-    let hmvy = textureSample(t0, s0, uv);
-    var clea = textureSample(t1, s0, uv);
+    let hmvy = tex(0u, uv);
+    var clea = tex(1u, uv);
     if v[19].y > 0.5 {
         // Bodies read CLEA from the sRGB albedo VT layer and re-encode it.
         clea = vec4(spow3(clea.rgb, vec3(0.45454550)), clea.a);
     }
-    let shading = textureSample(t2, s0, uv);
-    let cancel = textureSample(t3, s0, uv);
+    let shading = tex(2u, uv);
+    let cancel = tex(3u, uv);
     let skin_weight = v[5].w;
 
     // Pigments.
@@ -138,16 +190,16 @@ fn skin(uv: vec2<f32>) -> Surface {
 
     let curvature = clea.x;
     if head {
-        let stubble = textureSample(t7, s0, uv).a * 2.0 - 1.0;
+        let stubble = tex(7u, uv).a * 2.0 - 1.0;
         let f = 1.0 - max(stubble * v[18].xy, -stubble * v[18].zw);
         c = mix(vec3(dot(c, LUMA)), c, f.x) * f.y;
         c = mix(c, v[15].rgb, clea.z * v[15].w);
-        let custom = textureSample(t6, s0, atlas_uv(v[17].y, 4.0, 4.0, uv)).y;
+        let custom = tex(6u, atlas_uv(v[17].y, 4.0, 4.0, uv)).y;
         c = mix(c, v[16].rgb, v[16].w * curvature * custom);
     }
 
     // Tattoos.
-    let tat = textureSample(t5, s0, atlas_uv(v[9].y, v[19].z, v[19].w, uv));
+    let tat = tex(5u, atlas_uv(v[9].y, v[19].z, v[19].w, uv));
     let t4v = mix(tat, tat * curvature, v[9].z) * v[10];
     let t_sum = dot(t4v, vec4(1.0));
     c = c * (1.0 - t_sum) + t4v.x * v[11].rgb + t4v.y * v[12].rgb + t4v.z * v[13].rgb + t4v.w * v[14].rgb;
@@ -155,7 +207,7 @@ fn skin(uv: vec2<f32>) -> Surface {
 
     var makeup: f32;
     if head {
-        makeup = v[8].w * textureSample(t6, s0, atlas_uv(v[13].w, 4.0, 4.0, uv)).x;
+        makeup = v[8].w * tex(6u, atlas_uv(v[13].w, 4.0, 4.0, uv)).x;
         c = mix(c, v[8].rgb, makeup);
         c = mix(c, v[7].rgb * clea.y, clea.y);
     } else {
@@ -165,7 +217,7 @@ fn skin(uv: vec2<f32>) -> Surface {
     }
 
     let non_skin_w = v[6].w * cancel.x;
-    var ns = textureSample(t4, s0, uv).rgb;
+    var ns = tex(4u, uv).rgb;
     if head { ns = vec3(ns.x); }
     c = mix(c, ns * v[6].rgb, non_skin_w);
 
@@ -231,7 +283,7 @@ fn palette_point(i: u32) -> vec3<f32> {
 }
 
 fn palette_tint(uv: vec2<f32>) -> vec3<f32> {
-    let m = textureSample(t0, s0, uv).rgb;
+    let m = tex(0u, uv).rgb;
     var tint = vec3(0.0);
     for (var i = 0u; i < 12u; i++) {
         let w = 4.0 * clamp(1.0 - length(m - palette_point(i)) / 1.7320508 - 0.75, 0.0, 1.0);
@@ -243,7 +295,7 @@ fn palette_tint(uv: vec2<f32>) -> vec3<f32> {
 // ---- Clothing: 3-colour mask (*_MSK_* graphs) ----
 // t0 MSKcloth; v[0..3] Color_01..03.
 fn msk_tint(albedo: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
-    let m = textureSample(t0, s0, uv).rgb;
+    let m = tex(0u, uv).rgb;
     let tinted = albedo * (m.r * cu.v[0].rgb + m.g * cu.v[1].rgb + m.b * cu.v[2].rgb);
     return mix(albedo, tinted, clamp(m.r + m.g + m.b, 0.0, 1.0));
 }
@@ -259,7 +311,7 @@ fn eye_parallax_uv(in: VertexOutput, uv: vec2<f32>, view: vec3<f32>) -> vec2<f32
     let t = normalize(in.world_tangent.xyz);
     let b = cross(n, t) * sign(in.world_tangent.w);
     let vt = normalize(vec3(dot(view, t), dot(view, n), dot(view, b)));
-    let h = textureSample(t0, s0, uv).a;
+    let h = tex(0u, uv).a;
     // `_Creature_FX` mixes the parallax in by ParallaxWeight (1 for the other graphs).
     return mix(uv, uv - 0.045 * (1.0 + h) * vec2(vt.x, vt.z), cu.v[11].y);
 }
@@ -268,7 +320,7 @@ fn eye_parallax_uv(in: VertexOutput, uv: vec2<f32>, view: vec3<f32>) -> vec2<f32
 
 // The sclera detail normal (`EYES_Sclera_NM`, t4) as tangent and binormal offsets.
 fn eye_sclera_offset(uv: vec2<f32>) -> vec2<f32> {
-    let ns = textureSample(t4, s0, uv);
+    let ns = tex(4u, uv);
     return vec2(ns.a * 2.0 - 1.0, -(ns.g * 2.0 - 1.0));
 }
 
@@ -285,16 +337,16 @@ fn eye_glow(uv: vec2<f32>, vc_r: f32, time: f32) -> vec3<f32> {
         het = 0.0;
         ersatz = 0.0;
     }
-    let region = textureSample(t0, s0, uv);
-    let n1 = textureSample(t2, s0, uv + time * v[15].xy).r;
+    let region = tex(0u, uv);
+    let n1 = tex(2u, uv + time * v[15].xy).r;
     let uv2 = uv + v[15].zw * (n1 * region.g * region.b);
-    let colors = textureSample(t1, s0, uv2);
+    let colors = tex(1u, uv2);
     let m1 = spow(1.0 - (colors.g + colors.b), mix(v[12].w, v[13].w, het));
-    let s = clamp(1.0 - textureSample(t0, s0, uv2).g, 0.0, 1.0);
+    let s = clamp(1.0 - tex(0u, uv2).g, 0.0, 1.0);
     let mask = m1 * s * s * (3.0 - 2.0 * s);
     let gc = mix(v[12].rgb, v[13].rgb, het);
-    let n0 = textureSample(t2, s0, uv).r;
-    let n3 = textureSample(t2, s0, uv + vec2(n0, n0 + time * v[14].w)).r;
+    let n0 = tex(2u, uv).r;
+    let n3 = tex(2u, uv + vec2(n0, n0 + time * v[14].w)).r;
     let blind = mix(v[9].z, v[9].w, vc_r);
     let bright = (1.0 - blind) * mix(v[14].x * (1.0 - ersatz), v[14].y, het);
     let pupil = gc * (1.0 - region.b) * (1.0 - ersatz) * v[14].z;
@@ -304,9 +356,9 @@ fn eye_glow(uv: vec2<f32>, vc_r: f32, time: f32) -> vec3<f32> {
 fn eye(uv: vec2<f32>, vc_r: f32) -> Surface {
     let v = cu.v;
     let creature = v[10].z > 0.5;
-    let region = textureSample(t0, s0, uv);
-    let parts = textureSample(t1, s0, uv);
-    let bl = textureSample(t2, s0, uv);
+    let region = tex(0u, uv);
+    let parts = tex(1u, uv);
+    let bl = tex(2u, uv);
     var het = vc_r * v[10].x;
     var ersatz = (1.0 - vc_r) * v[10].y;
     if creature {
@@ -361,7 +413,7 @@ fn eye_catchlight(in: VertexOutput, n_world: vec3<f32>, view: vec3<f32>) -> vec3
     let o = normalize(vec3(dot(m[0].xyz, r), dot(m[1].xyz, r), dot(m[2].xyz, r)));
     // Our object space is BG3's mirrored along z (docs/research/coordinate-space.md).
     let uv = vec2(atan2(-o.z, o.x) / 6.2831853 + 0.5, 0.5 - asin(clamp(o.y, -1.0, 1.0)) / 3.1415927);
-    return textureSampleLevel(t3, s0, uv, 0.0).rgb / 3.0 * cu.v[10].w;
+    return tex_level(3u, uv, 0.0).rgb / 3.0 * cu.v[10].w;
 }
     return vec3(0.0);
 }
@@ -374,9 +426,9 @@ fn hair(uv: vec2<f32>, vc: vec4<f32>, n_dot_v: f32) -> Surface {
     let v = cu.v;
     // Frizz: two mask reads, the second shifted by noise; per channel keep the one further
     // from 0.5 (ID) / 0 (others).
-    let noise = textureSample(t1, s0, uv * v[5].w).r * 2.0 - 1.0;
-    let a = textureSample(t0, s0, uv + v[4].w * noise) - vec4(0.5, 0.0, 0.0, 0.0);
-    let b = textureSample(t0, s0, uv) - vec4(0.5, 0.0, 0.0, 0.0);
+    let noise = tex(1u, uv * v[5].w).r * 2.0 - 1.0;
+    let a = tex(0u, uv + v[4].w * noise) - vec4(0.5, 0.0, 0.0, 0.0);
+    let b = tex(0u, uv) - vec4(0.5, 0.0, 0.0, 0.0);
     let m = max(sign(a), sign(b)) * max(abs(a), abs(b));
     let id = m.x + 0.5;
     let depth = m.y;
@@ -401,7 +453,7 @@ fn hair(uv: vec2<f32>, vc: vec4<f32>, n_dot_v: f32) -> Surface {
     var c = mix(dark, c2, rr);
     c *= mix(1.0, 1.8 * id + 0.2, v[4].y);
     c *= mix(1.0, 1.5 * spow(depth, 2.2) + 0.5, v[4].z);
-    let lut = textureSampleLevel(t2, s0, vec2(clamp(id, 0.0, 1.0), 0.0), 0.0).rgb;
+    let lut = tex_level(2u, vec2(clamp(id, 0.0, 1.0), 0.0), 0.0).rgb;
     c *= max(vec3(0.0), (lut - 0.5) * v[5].rgb * gray_mask + 1.0);
     c += noise * v[7].x;
 
@@ -423,7 +475,7 @@ fn hair(uv: vec2<f32>, vc: vec4<f32>, n_dot_v: f32) -> Surface {
 // t0 lash mask (R lash cards, G coverage, B root gradient).
 // v[0] (Eyelashes_Color.rgb, GradientIntensity), v[1] (LashesAlphaIntensity, ShadowAlphaIntensity).
 fn lashes(uv: vec2<f32>) -> Surface {
-    let m = textureSample(t0, s0, uv);
+    let m = tex(0u, uv);
     var s = surface_new();
     s.albedo = cu.v[0].rgb * m.r * (m.b * cu.v[0].w);
     s.alpha = clamp(cu.v[1].y * m.g * (1.0 - m.r) + spow(m.g * m.r, 2.0 * (1.0 - cu.v[1].x)), 0.0, 1.0);
@@ -453,6 +505,12 @@ fn fragment(
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
     var in = vertex_output;
+@if(BINDLESS) {
+    set_slot(in.instance_index);
+    cu = character_uniforms[ext_index(100u)];
+}
+@else
+    cu = character_uniform;
     let mode = cu.mode;
     var surf = surface_new();
     var vc = vec4(0.0, 0.0, 0.0, 1.0);
@@ -487,7 +545,7 @@ fn fragment(
         let b = cross(pbr_input.world_normal, t) * sign(in.world_tangent.w);
         let ns = eye_sclera_offset(uv);
         let detail = (ns.x * t + ns.y * b) * cu.v[11].w;
-        let blind = mix(cu.v[9].z, cu.v[9].w, vc_r) * textureSample(t2, s0, uv).g;
+        let blind = mix(cu.v[9].z, cu.v[9].w, vc_r) * tex(2u, uv).g;
         let ni = mix(pbr_input.N, pbr_input.world_normal, blind);
         pbr_input.N = normalize(ni + cu.v[11].z * detail);
         surf.emissive = eye_catchlight(in, normalize(pbr_input.world_normal + detail), pbr_input.V);

@@ -42,10 +42,13 @@ pub struct CharacterUniform {
 }
 
 /// The extension's bindings: a uniform block and up to eight textures whose meaning depends on
-/// the mode (see the shader).
+/// the mode (see the shader). Bindless where the device has buffer binding arrays (one batch set
+/// per pipeline instead of one per material in every view, `docs/performance.md`); the index
+/// table's range is the level extension's (`shaders/material_slot.wesl`).
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[data(100, CharacterUniform, binding_array(161))]
+#[bindless(index_table(range(100..148), binding(160)))]
 pub struct CharacterExtension {
-    #[uniform(100)]
     pub uniform: CharacterUniform,
     #[texture(101)]
     #[sampler(102)]
@@ -65,8 +68,14 @@ pub struct CharacterExtension {
     #[texture(109)]
     pub t7: Option<Handle<Image>>,
     /// The level's box lights (`lights::BOX_LIGHTS`), read by the game's light loop.
-    #[storage(120, read_only)]
+    #[storage(120, read_only, binding_array(162))]
     pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
+}
+
+impl From<&CharacterExtension> for CharacterUniform {
+    fn from(e: &CharacterExtension) -> Self {
+        e.uniform.clone()
+    }
 }
 
 impl MaterialExtension for CharacterExtension {

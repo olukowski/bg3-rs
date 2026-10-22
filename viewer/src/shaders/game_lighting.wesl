@@ -21,6 +21,8 @@ import bevy_pbr::render::{
 };
 @if(!PREPASS_PIPELINE)
 import bg3_viewer::shaders::game_light::bg3_light_falloff;
+@if(!PREPASS_PIPELINE && BINDLESS)
+import bg3_viewer::shaders::material_slot::ext_index;
 @if(!PREPASS_PIPELINE && ENVIRONMENT_MAP)
 import bevy_pbr::{
     light_probe::environment_map,
@@ -39,8 +41,32 @@ struct BoxLight {
     attenuation_xy: vec4<f32>,
 }
 
+// Bindless (`material_slot.wesl`): one array per shared buffer in the slab, the material's
+// index table points at the level's.
+struct BoxLights {
+    lights: array<BoxLight>,
+}
+
+@if(!PREPASS_PIPELINE && BINDLESS)
+@group(constants::MATERIAL_BIND_GROUP) @binding(162) var<storage, read> box_light_arrays: binding_array<BoxLights>;
+@if(!PREPASS_PIPELINE && !BINDLESS)
+@group(constants::MATERIAL_BIND_GROUP) @binding(120) var<storage, read> box_lights: BoxLights;
+
 @if(!PREPASS_PIPELINE)
-@group(constants::MATERIAL_BIND_GROUP) @binding(120) var<storage, read> box_lights: array<BoxLight>;
+fn box_light_count() -> u32 {
+@if(BINDLESS)
+    return arrayLength(&box_light_arrays[ext_index(120u)].lights);
+@else
+    return arrayLength(&box_lights.lights);
+}
+
+@if(!PREPASS_PIPELINE)
+fn box_light(i: u32) -> BoxLight {
+@if(BINDLESS)
+    return box_light_arrays[ext_index(120u)].lights[i];
+@else
+    return box_lights.lights[i];
+}
 
 // The fade curves of box lights: linear, square, smoothstep, smootherstep.
 @if(!PREPASS_PIPELINE)
@@ -355,8 +381,9 @@ fn game_lighting(in: pbr_types::PbrInput, sh: GameShading) -> vec3<f32> {
 
     // Box lights: constant direction and illuminance inside the box, faded at its faces
     // (`Illuminance_Direction`); those with `Shadow` take an orthographic shadow map.
-    for (var i = 0u; i < arrayLength(&box_lights); i += 1u) {
-        let b = box_lights[i];
+    let box_count = box_light_count();
+    for (var i = 0u; i < box_count; i += 1u) {
+        let b = box_light(i);
         let u = vec3(
             dot(b.to_box[0], vec4(p.xyz, 1.0)),
             dot(b.to_box[1], vec4(p.xyz, 1.0)),

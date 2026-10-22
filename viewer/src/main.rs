@@ -309,8 +309,23 @@ fn main() -> Result<()> {
         None => None,
     };
 
+    // `BG3_NO_BINDLESS=1`: no binding arrays, so every material has its own bind group (A/B
+    // check, `docs/performance.md`). Both features go: Bevy 0.20 builds an extended material's
+    // layout bindless for the base whenever the base supports it, even if the extension (ours
+    // need buffer binding arrays) doesn't (`level_materials::check_binding_arrays`).
+    let render = bevy::render::RenderPlugin {
+        render_creation: bevy::render::settings::WgpuSettings {
+            disabled_features: std::env::var_os("BG3_NO_BINDLESS").map(|_| {
+                bevy::render::settings::WgpuFeatures::BUFFER_BINDING_ARRAY
+                    | bevy::render::settings::WgpuFeatures::TEXTURE_BINDING_ARRAY
+            }),
+            ..default()
+        }
+        .into(),
+        ..default()
+    };
     let mut app = App::new();
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+    app.add_plugins(DefaultPlugins.set(render).set(WindowPlugin {
         primary_window: Some(Window {
             title: format!("bg3-viewer — {}", args.level),
             // Frame times under vsync are whole refresh intervals: benchmark without it.
