@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bg3_vfs::Vfs;
@@ -81,10 +80,7 @@ fn convert_visual(
 }
 
 pub fn to_bevy_mesh(m: &bg3_gr2::Mesh) -> Mesh {
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
-    );
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::pick::mesh_usages());
     let positions: Vec<[f32; 3]> = m.positions.iter().map(|&p| space::vec3(p)).collect();
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     if m.normals.len() == m.positions.len() {

@@ -1,27 +1,44 @@
-//! Terrain rendering: one mesh per 64×64-cell patch, coloured by blending a flat placeholder
-//! colour per terrain brush with the per-cell layer weights. Holes are left out.
+//! Terrain rendering: one mesh per 64×64-cell patch, holes left out. Each patch gets a base
+//! colour texture baked from its brushes' `BaseColorMap`s and the per-cell layer weights
+//! (`bg3_world::terrain_albedo`); layers whose brush has no texture fall back to a flat
+//! placeholder colour.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
 use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bg3_vfs::Vfs;
 use bg3_world::terrain::{PATCH_CELLS, load_level_terrains, load_terrain_brushes};
-use bg3_world::{Terrain, TerrainBrush};
+use bg3_world::terrain_albedo::{LayerColor, bake_albedo, load_brush_albedo};
+use bg3_world::{ResourceBanks, Terrain, TerrainBrush};
+use rayon::prelude::*;
 
 use crate::space;
+
+/// Baked base colour texels per cell side (cells are 1 m): 6.25 cm texels.
+const TEXELS_PER_CELL: usize = 16;
+
+/// A patch's baked base colour: sRGB RGBA8 with its mip chain.
+pub struct BakedTile {
+    pub size: [u32; 2],
+    pub mips: u32,
+    pub data: Vec<u8>,
+}
 
 #[derive(Resource)]
 pub struct LevelTerrain {
     pub terrains: Vec<Terrain>,
-    pub brushes: HashMap<String, TerrainBrush>,
+    /// (terrain index, patch index) → baked base colour.
+    pub baked: HashMap<(usize, [usize; 2]), BakedTile>,
 }
 
 impl LevelTerrain {
     /// Terrains of `level` plus any extra (sub-)levels.
-    pub fn load(vfs: &Vfs, levels: &[String]) -> Result<Self> {
+    pub fn load(vfs: &Vfs, levels: &[String], banks: &ResourceBanks) -> Result<Self> {
         let started = std::time::Instant::now();
         let mut terrains = Vec::new();
         for level in levels {
@@ -40,7 +57,8 @@ impl LevelTerrain {
                 eprintln!("  terrain {}: {path}: {err}", t.name);
             }
         }
-        let out = Self { terrains, brushes };
+        let baked = bake_tiles(vfs, banks, &terrains, &brushes);
+        let out = Self { terrains, baked };
         if let Some((lo, hi)) = out.bounds() {
             eprintln!("terrain bounds (Bevy space): {lo} .. {hi}");
         }
@@ -75,7 +93,169 @@ impl LevelTerrain {
     }
 }
 
-/// Placeholder linear colour for a brush, from keywords in its name (textures are not loaded yet).
+/// Bake every patch's base colour from its terrain's brush textures, in parallel.
+fn bake_tiles(
+    vfs: &Vfs,
+    banks: &ResourceBanks,
+    terrains: &[Terrain],
+    brushes: &HashMap<String, TerrainBrush>,
+) -> HashMap<(usize, [usize; 2]), BakedTile> {
+    let started = std::time::Instant::now();
+    let used: std::collections::HashSet<&str> = terrains
+        .iter()
+        .flat_map(|t| t.layers.iter().map(|l| l.brush.as_str()))
+        .collect();
+    let colors: HashMap<&str, LayerColor> = used
+        .into_par_iter()
+        .map(|id| {
+            let brush = brushes.get(id);
+            let texture = brush
+                .filter(|b| !b.is_black_brush)
+                .map(|b| load_brush_albedo(vfs, banks, b, TEXELS_PER_CELL as f32));
+            let color = match texture {
+                Some(Ok(Some(t))) => LayerColor::Texture(t),
+                other => {
+                    if let Some(Err(e)) = other {
+                        eprintln!("  terrain brush {id}: {e}");
+                    }
+                    LayerColor::Flat(brush_color(brush))
+                }
+            };
+            (id, color)
+        })
+        .collect();
+    let jobs: Vec<(usize, [usize; 2])> = terrains
+        .iter()
+        .enumerate()
+        .flat_map(|(i, t)| {
+            let [tw, th] = [
+                t.cells[0].div_ceil(PATCH_CELLS),
+                t.cells[1].div_ceil(PATCH_CELLS),
+            ];
+            (0..th).flat_map(move |tz| (0..tw).map(move |tx| (i, [tx, tz])))
+        })
+        .collect();
+    let baked: HashMap<_, _> = jobs
+        .into_par_iter()
+        .map(|(i, tile)| {
+            let t = &terrains[i];
+            let layers: Vec<LayerColor> = t
+                .layers
+                .iter()
+                .map(|l| colors[l.brush.as_str()].clone())
+                .collect();
+            let rect = tile_rect(t, tile);
+            let linear = bake_albedo(t, &layers, rect, TEXELS_PER_CELL);
+            let size = [
+                ((rect[2] - rect[0]) * TEXELS_PER_CELL) as u32,
+                ((rect[3] - rect[1]) * TEXELS_PER_CELL) as u32,
+            ];
+            ((i, tile), srgb_mip_chain(size, linear))
+        })
+        .collect();
+    eprintln!(
+        "baked {} terrain tiles from {} brushes ({} textured) in {:.2?}",
+        baked.len(),
+        colors.len(),
+        colors
+            .values()
+            .filter(|c| matches!(c, LayerColor::Texture(_)))
+            .count(),
+        started.elapsed()
+    );
+    baked
+}
+
+/// The cells `[x0, z0, x1, z1)` of a patch-sized tile.
+fn tile_rect(t: &Terrain, [tx, tz]: [usize; 2]) -> [usize; 4] {
+    let (x0, z0) = (tx * PATCH_CELLS, tz * PATCH_CELLS);
+    [
+        x0,
+        z0,
+        (x0 + PATCH_CELLS).min(t.cells[0]),
+        (z0 + PATCH_CELLS).min(t.cells[1]),
+    ]
+}
+
+fn linear_to_srgb8(c: f32) -> u8 {
+    let c = c.clamp(0.0, 1.0);
+    let s = if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    };
+    (s * 255.0).round() as u8
+}
+
+/// sRGB RGBA8 levels of a linear RGB image, each half the previous (2×2 box filter on linear
+/// colour), down to 1×1.
+fn srgb_mip_chain([w, h]: [u32; 2], mut level: Vec<[f32; 3]>) -> BakedTile {
+    let (mut lw, mut lh) = (w as usize, h as usize);
+    let mut data = Vec::new();
+    let mut mips = 0;
+    loop {
+        data.extend(level.iter().flat_map(|c| {
+            [c[0], c[1], c[2]]
+                .map(linear_to_srgb8)
+                .into_iter()
+                .chain([255])
+        }));
+        mips += 1;
+        if lw <= 1 && lh <= 1 {
+            break;
+        }
+        let (nw, nh) = ((lw / 2).max(1), (lh / 2).max(1));
+        let at = |x: usize, y: usize| level[y.min(lh - 1) * lw + x.min(lw - 1)];
+        let mut next = Vec::with_capacity(nw * nh);
+        for y in 0..nh {
+            for x in 0..nw {
+                let q = [
+                    at(2 * x, 2 * y),
+                    at(2 * x + 1, 2 * y),
+                    at(2 * x, 2 * y + 1),
+                    at(2 * x + 1, 2 * y + 1),
+                ];
+                next.push(std::array::from_fn(|i| {
+                    q.iter().map(|c| c[i]).sum::<f32>() / 4.0
+                }));
+            }
+        }
+        (level, lw, lh) = (next, nw, nh);
+    }
+    BakedTile {
+        size: [w, h],
+        mips,
+        data,
+    }
+}
+
+fn baked_image(tile: &BakedTile) -> Image {
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: tile.size[0],
+            height: tile.size[1],
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.data = Some(tile.data.clone());
+    image.texture_descriptor.mip_level_count = tile.mips;
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::ClampToEdge,
+        address_mode_v: ImageAddressMode::ClampToEdge,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..default()
+    });
+    image
+}
+
+/// Placeholder linear colour for a brush without a base colour texture, from keywords in its
+/// name.
 fn brush_color(brush: Option<&TerrainBrush>) -> [f32; 3] {
     let Some(b) = brush else {
         return [0.5, 0.5, 0.5];
@@ -119,19 +299,17 @@ fn brush_color(brush: Option<&TerrainBrush>) -> [f32; 3] {
     base.map(|c| (c * v).min(1.0))
 }
 
-/// Mesh for one patch-sized tile of a terrain, in the terrain's local space (Bevy convention).
-fn tile_mesh(t: &Terrain, colors: &[[f32; 3]], tile: [usize; 2]) -> Option<Mesh> {
+/// Mesh for one patch-sized tile of a terrain, in the terrain's local space (Bevy convention),
+/// with UVs spanning the tile's baked texture.
+fn tile_mesh(t: &Terrain, tile: [usize; 2]) -> Option<Mesh> {
     let [cw, ch] = t.cells;
-    let x0 = tile[0] * PATCH_CELLS;
-    let z0 = tile[1] * PATCH_CELLS;
-    let x1 = (x0 + PATCH_CELLS).min(cw);
-    let z1 = (z0 + PATCH_CELLS).min(ch);
+    let [x0, z0, x1, z1] = tile_rect(t, tile);
     let vw = x1 - x0 + 1;
     let vertex = |x: usize, z: usize| ((z - z0) * vw + (x - x0)) as u32;
 
     let mut positions = Vec::new();
     let mut normals = Vec::new();
-    let mut vcolors = Vec::new();
+    let mut uvs = Vec::new();
     for z in z0..=z1 {
         for x in x0..=x1 {
             let h = t.height(x, z);
@@ -144,7 +322,10 @@ fn tile_mesh(t: &Terrain, colors: &[[f32; 3]], tile: [usize; 2]) -> Option<Mesh>
             let dz = (hz((z + 1).min(ch)) - hz(z.saturating_sub(1)))
                 / ((z + 1).min(ch) - z.saturating_sub(1)) as f32;
             normals.push(space::vec3(Vec3::new(-dx, 1.0, -dz).normalize().to_array()));
-            vcolors.push(vertex_color(t, colors, x, z));
+            uvs.push([
+                (x - x0) as f32 / (x1 - x0) as f32,
+                (z - z0) as f32 / (z1 - z0) as f32,
+            ]);
         }
     }
     let mut indices = Vec::new();
@@ -168,64 +349,23 @@ fn tile_mesh(t: &Terrain, colors: &[[f32; 3]], tile: [usize; 2]) -> Option<Mesh>
         return None;
     }
     space::flip_winding(&mut indices);
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
-    );
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, crate::pick::mesh_usages());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vcolors);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
     Some(mesh)
-}
-
-/// Blend brush colours by the layer weights of the cells touching vertex `(x, z)`.
-fn vertex_color(t: &Terrain, colors: &[[f32; 3]], x: usize, z: usize) -> [f32; 4] {
-    let [cw, ch] = t.cells;
-    let mut acc = [0.0f32; 3];
-    let mut total = 0.0f32;
-    for (cx, cz) in [
-        (x.wrapping_sub(1), z.wrapping_sub(1)),
-        (x, z.wrapping_sub(1)),
-        (x.wrapping_sub(1), z),
-        (x, z),
-    ] {
-        if cx >= cw || cz >= ch {
-            continue;
-        }
-        for (layer, c) in t.weights.iter().zip(colors) {
-            let w = layer[cz * cw + cx] as f32;
-            for i in 0..3 {
-                acc[i] += c[i] * w;
-            }
-            total += w;
-        }
-    }
-    if total <= 0.0 {
-        let c = colors.first().copied().unwrap_or([0.4; 3]);
-        return [c[0], c[1], c[2], 1.0];
-    }
-    [acc[0] / total, acc[1] / total, acc[2] / total, 1.0]
 }
 
 pub fn spawn_terrain(
     mut commands: Commands,
     terrain: Res<LevelTerrain>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let material = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
-        perceptual_roughness: 0.9,
-        ..default()
-    });
     let mut tiles = 0;
-    for t in &terrain.terrains {
-        let colors: Vec<[f32; 3]> = t
-            .layers
-            .iter()
-            .map(|l| brush_color(terrain.brushes.get(&l.brush)))
-            .collect();
+    for (i, t) in terrain.terrains.iter().enumerate() {
         let parent = commands
             .spawn((
                 Name::new(format!("terrain {}", t.name)),
@@ -235,13 +375,22 @@ pub fn spawn_terrain(
             .id();
         for tz in 0..t.cells[1].div_ceil(PATCH_CELLS) {
             for tx in 0..t.cells[0].div_ceil(PATCH_CELLS) {
-                let Some(mesh) = tile_mesh(t, &colors, [tx, tz]) else {
+                let Some(mesh) = tile_mesh(t, [tx, tz]) else {
                     continue;
                 };
+                let texture = terrain
+                    .baked
+                    .get(&(i, [tx, tz]))
+                    .map(|b| images.add(baked_image(b)));
+                let material = materials.add(StandardMaterial {
+                    base_color_texture: texture,
+                    perceptual_roughness: 0.9,
+                    ..default()
+                });
                 tiles += 1;
                 commands.spawn((
                     Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(material.clone()),
+                    MeshMaterial3d(material),
                     ChildOf(parent),
                 ));
             }

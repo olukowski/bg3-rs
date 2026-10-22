@@ -93,8 +93,9 @@ pub fn frame_character(
         };
         *camera = placement(min, max, front, frame.mode, perspective);
         // Close-up cameras can sit behind level rails or inside scenery. Clip only the
-        // foreground before the nearest bound, with 5 cm clearance for the character.
-        perspective.near = foreground_near(min, max, front, camera.translation);
+        // foreground before the nearest bound, with 5 cm clearance for the character, and
+        // never the floor the character stands on.
+        perspective.near = foreground_near(min, max, front, camera.translation, perspective.fov);
         *global = GlobalTransform::from(*camera);
         if frame.target.is_none() {
             eprintln!("frame: {} (height {:.2} m)", root.name, max.y - min.y);
@@ -119,11 +120,17 @@ fn corners(min: Vec3, max: Vec3) -> impl Iterator<Item = Vec3> {
     })
 }
 
-fn foreground_near(min: Vec3, max: Vec3, front: Vec3, camera: Vec3) -> f32 {
+/// Near plane distance: just before the subject's nearest bound, but no further than where
+/// the bottom of the view meets the subject's floor level (minus a fifth for uneven ground).
+/// A near plane beyond that cuts the floor in front of the subject into straight-edged
+/// slabs, with whatever lies below showing through. The camera looks horizontally
+/// (`placement`), so the view's lower edge drops `tan(fov / 2)` per metre of depth.
+fn foreground_near(min: Vec3, max: Vec3, front: Vec3, camera: Vec3, fov: f32) -> f32 {
     let nearest = corners(min, max)
         .map(|p| (camera - p).dot(front))
         .fold(f32::INFINITY, f32::min);
-    (nearest - 0.05).max(0.01)
+    let floor = (camera.y - min.y).max(0.0) / (fov * 0.5).tan() * 0.8;
+    (nearest - 0.05).min(floor).max(0.01)
 }
 
 fn placement(
@@ -235,7 +242,7 @@ mod tests {
             let front = Quat::from_rotation_y(yaw) * Vec3::Z;
             let camera = placement(min, max, front, FrameMode::Body, &lens);
             assert!(camera.translation.dot(front) > 0.0);
-            let near = foreground_near(min, max, front, camera.translation);
+            let near = foreground_near(min, max, front, camera.translation, lens.fov);
             assert!(near > lens.near);
             let view = camera.to_matrix().inverse();
             for p in corners(min, max) {
@@ -245,6 +252,19 @@ mod tests {
                 assert!(p.x.abs() < -p.z * (lens.fov * 0.5).tan() * lens.aspect_ratio);
             }
         }
+    }
+
+    #[test]
+    fn near_plane_stops_short_of_the_floor_in_view() {
+        let (min, max) = (Vec3::new(-0.3, 0.0, -0.3), Vec3::new(0.3, 2.0, 0.3));
+        let lens = PerspectiveProjection::default();
+        let camera = placement(min, max, Vec3::Z, FrameMode::Body, &lens);
+        let near = foreground_near(min, max, Vec3::Z, camera.translation, lens.fov);
+        // Where the lower edge of the view reaches the floor (y = 0) at that depth.
+        let drop = near * (lens.fov * 0.5).tan();
+        assert!(camera.translation.y - drop > min.y + 0.15, "near {near}");
+        // Still clips scenery well in front of the subject.
+        assert!(near > 1.0, "near {near}");
     }
 
     #[test]

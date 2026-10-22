@@ -1,6 +1,7 @@
 # Terrain
 
-Status: format understood well enough to rebuild geometry, holes and layer weights. Implemented in
+Status: format understood well enough to rebuild geometry, holes and layer weights; drawn with
+baked brush textures (simplified blend, see Drawing). Implemented in
 `crates/bg3-world/src/terrain.rs`. The viewer renders terrain from it (`viewer/src/terrain.rs`).
 In the reference build, all 3,707 patches referenced by 753 terrains in 223 levels parse. One
 patch (`EPI_CIN_VlaakithThroneRoom_A`) is referenced but not shipped.
@@ -77,8 +78,8 @@ Notes:
   hole entries in the install: every one falls inside its own patch's cell rectangle. The reader
   sets bits in a terrain-wide hole bitset. One code path re-strides indices when the patch is
   narrower than the file stride.
-- **Layer weights** are one byte per cell and per layer. In practice the weights of a cell sum to
-  about 255.
+- **Layer weights** are one byte per cell and per layer. They often sum to about 255, but not
+  always (see Drawing).
 - **Block data** (v ≥ 7): the reader only accepts it when its length is exactly
   `ceil(vx/4)·ceil(vy/4)·16`. It is copied into a 2D GPU-side buffer with a 16-byte-aligned row
   pitch. It looks like a block-compressed texture (BC-style, 4×4 texels per 16 bytes), most likely
@@ -106,14 +107,55 @@ also has `TextureBank` entries for the brush textures.
   `WLD_Forest_G`, `WLD_Plains_D`, … Their terrains are placed in the same world coordinates as
   `WLD_Main_A`. The viewer takes `--terrain-levels A,B,…` to add them.
 
+## Drawing
+
+Sources: disassembly of `ecl::EntityManager::AddTerrain` (objdump on the arm64 slice) and the
+terrain shaders `Terrain_VS` / `Terrain_PS4` in `Core.metallib` (`bg3x metallib Core.metallib
+--extract …`, read with `llvm-dis`), 4.1.1.7631656.
+
+- **Every terrain is drawn.** The client gives each terrain object a `VisualComponent` and a
+  `TerrainObject` with no condition on the template or the object (`Flag`, `WalkOn`,
+  `IsDecorative`, … don't matter). On the Nautiloid the terrains follow the sculpted deck
+  meshes closely: around the imp fight `WLD_TUT_Avernus_C_Lower_A` lies within about ±0.45 m of
+  the deck surface, and from straight above it is the first surface hit for 30 of 169 sample
+  rays (found with the viewer's `BG3_PICK`).
+- **Geometry** (`Terrain_VS`): vertices at the cell corners plus one at each cell centre, so a
+  cell is four triangles around its centre. Heights come from a heightmap texture sampled at the
+  vertex. The centre vertex reads the hole texture at its cell; a hole discards the whole cell.
+  The viewer splits each cell along one diagonal instead (same outline, slightly different
+  interior shape).
+- **Layer weights** (`Terrain_PS<n>`, `n` = layer count rounded up to a multiple of 4): one RGBA
+  texel per cell and per 4 layers, sampled bilinearly at terrain-local `(x, z)` / size, so texel
+  centres sit at cell centres. Weights don't sum to 255 in the data (e.g. `[255, 0, 145, 0]`,
+  `[0, 0, 18, 0]` on the Nautiloid).
+- **Texture coordinates**: projected from the terrain-local position, choosing the projection by
+  the terrain normal (triplanar, sharpened above a threshold). On level ground they are
+  `(x, −z)` times a per-layer scale (presumably the brush's `Tiling`).
+- **Blend**: by height. Each layer's albedo alpha is a height; with the layer's weight `w`, a
+  value `w · |a|^contrast` is kept where `w + a − 1` exceeds a threshold, then scaled and offset
+  by per-layer parameters. The final factors are relative to the highest layer (minus a
+  transition width), plus a fallback "base layer" for the remaining weight. Which brush fields
+  (`HeightScale`, `HeightOffset`, `HeightContrast`, `AlphaThreshold`) and which terrain field
+  (`Visual/HeightTransition`?) feed the shader's parameters is not traced yet.
+
+The viewer (`bg3_world::terrain_albedo`, `viewer/src/terrain.rs`) bakes a base colour texture
+per 64×64-cell patch on the CPU, 16 texels per cell, from the brushes' `BaseColorMap`s at a mip
+matching that density. It uses the bilinear cell-centre weights and the level-ground
+projection, but **assumes** a linear blend of the weights normalised by their sum, and applies
+neither the height blend, the side projections, the normal/physical maps, nor the per-layer
+`ParamOverrides`. Before this the viewer coloured terrain with flat placeholder colours per
+brush name, which on the Nautiloid drew a smooth pink-orange sheet through the lower deck
+(easily mistaken for the Avernus backdrop).
+
 ## Open questions
 
 - **Sub-level registry:** how does the engine know which levels make up `WLD_Main_A`? Searches
   turned up nothing: no LSF attribute in `Mods/*` names the sub-levels, `meta.lsf` has no list,
   and `Layers/*.lsx` are editor layers. The only symbol is `strSubLevelName`. Next step: find where
   level loading enumerates `Levels/` (REA).
-- Triangle diagonal: we split every cell along the same diagonal. The engine's choice (fixed,
-  alternating, or height-based) is unverified.
+- Triangle layout: the engine draws four triangles per cell around a centre vertex (see
+  Drawing); the viewer still splits each cell along one diagonal.
 - Meaning of the v8 header's two `IVec4`s, of the block data, and of the >4-layer extra section.
 - The `Curves` on `TerrainBaseLayer`, and whether they matter at runtime.
-- Brush shading itself (height blend, tiling, detail normals) belongs to the materials work.
+- Brush shading: the height-blend parameters, the base-layer fallback, slope projections,
+  normal and physical maps, detail normals (see Drawing).

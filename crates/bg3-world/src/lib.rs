@@ -13,6 +13,7 @@ pub mod lights;
 pub mod probes;
 pub mod templates;
 pub mod terrain;
+pub mod terrain_albedo;
 pub mod trigger;
 pub mod unsheath;
 
