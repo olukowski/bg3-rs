@@ -19,8 +19,12 @@ pub struct ObjectId(pub String);
 #[derive(Resource, Default)]
 pub struct ShowPlaceholders(pub bool);
 
-/// A mesh and its material, ready to spawn.
-type MeshPart = (Handle<Mesh>, Handle<StandardMaterial>);
+/// A visual's mesh, material and LOD distance range (`meshes::VisualMesh`).
+type MeshPart = (
+    Handle<Mesh>,
+    Handle<StandardMaterial>,
+    Option<bevy::camera::visibility::VisibilityRange>,
+);
 
 #[derive(Resource)]
 pub struct LoadedLevel {
@@ -101,8 +105,8 @@ pub fn spawn_level(
     for (id, list) in std::mem::take(&mut visual_meshes.by_visual) {
         let parts = list
             .into_iter()
-            .filter_map(|(mesh, material)| {
-                let key = material.unwrap_or_default();
+            .filter_map(|m| {
+                let key = m.material.unwrap_or_default();
                 let mat = match level_materials.by_id.get(&key) {
                     Some(Some(mat)) => mat.clone(),
                     Some(None) => return None, // helper geometry the game doesn't draw
@@ -111,7 +115,10 @@ pub fn spawn_level(
                         .or_insert_with(|| materials.add(tint(&key)))
                         .clone(),
                 };
-                Some((meshes.add(mesh), mat))
+                let range = m.range.map(|(near, far)| {
+                    bevy::camera::visibility::VisibilityRange::abrupt(near, far)
+                });
+                Some((meshes.add(m.mesh), mat, range))
             })
             .collect();
         uploaded.insert(id, parts);
@@ -150,12 +157,15 @@ pub fn spawn_level(
                     Visibility::default(),
                 ))
                 .with_children(|parent| {
-                    for (mesh, mat) in parts.into_iter().flatten() {
-                        parent.spawn((
+                    for (mesh, mat, range) in parts.into_iter().flatten() {
+                        let mut e = parent.spawn((
                             Mesh3d(mesh.clone()),
                             MeshMaterial3d(mat.clone()),
                             MeshTag::new(decal_tag),
                         ));
+                        if let Some(range) = range {
+                            e.insert(range.clone());
+                        }
                     }
                 });
             continue;

@@ -187,6 +187,13 @@ or the sun's shadow lookups. Images: ≤ 5 pixels of 1.44 M differ by more than 
 steps, in the wide view and in a view through the dense red slab over the deck
 (`--camera=-30,20,-380 --look-at=-50,12,-410`), the same as between two runs.
 
+**Level LODs.** Level objects drew LOD 0 only; they now switch LODs by the GR2's per-mesh
+`LodDistance` (`docs/research/lod.md`; characters still LOD 0). Small gain on the Nautiloid, two
+alternating runs each at 1600×900, `BG3_LOD_SCALE=0` (LOD 0 only) → default: combat
+10.1–10.2 → 9.6–9.9 ms, start pod 12.2–12.3 → 11.8, static deck 13.8–14.4 → 13.7–13.8, wide
+13.2 → 12.9–13.1; shadow passes −0.1 to −0.5 ms. Load time unchanged (~175 ms). Images: ≤ 380
+of 1.44 M pixels differ by more than 1 % (far objects at their lower LOD).
+
 Bevy 0.20 caveat: an `ExtendedMaterial`'s layout makes the base bindless whenever the base
 supports it, even when the extension can't be (here: no buffer binding arrays), which gives an
 invalid layout. Vulkan with descriptor indexing and Metal with tier 2 argument buffers have both,
@@ -216,6 +223,8 @@ animation 1.3–1.6, skin extraction 0.9) and runs in parallel with the render w
 - `BG3_BOX_SHADOW_CASCADES=1`: box light shadows on Bevy's four camera cascades, with casters
   culled to the boxes (`cull_box_shadow_casters`), instead of one map per box. Sharper near the
   camera, 10–25 % slower; the look before this change.
+- `BG3_LOD_SCALE=<f>`: multiplier on the level's LOD switch distances (default 1; 0 draws LOD 0
+  only).
 - `BG3_FOG_STEP_M=<m>`: fog ray-march step length (default 0.5; a tiny value gives Bevy's fixed
   64 steps).
 - `BG3_NO_BINDLESS=1`: no texture or buffer binding arrays, so every material is its own bind

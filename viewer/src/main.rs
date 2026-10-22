@@ -300,7 +300,7 @@ fn main() -> Result<()> {
         &vfs,
         &level.banks,
         material_ids
-            .filter_map(|(_, m)| m.as_deref())
+            .filter_map(|m| m.material.as_deref())
             .chain(characters.material_ids()),
     );
 
