@@ -56,6 +56,8 @@ struct Frame {
     presences: Option<Vec<Presence>>,
     notifications: Vec<Notification>,
     combat: CombatOut,
+    /// The ground surfaces, when they changed (`crate::surfaces`).
+    surfaces: Option<Vec<crate::surfaces::SurfaceCell>>,
 }
 
 /// The state right after the new game started.
@@ -184,6 +186,12 @@ fn game_thread(
     }
     opts.character = character;
     let started = bg3_sim::start::new_game(&mut game, &opts);
+    // Surfaces on the level's AI grid: the painted ones now, blood from the fights later.
+    if let Some(grid) = &grid {
+        game.sim
+            .set_surface_grid(Some(Arc::new(bg3_sim_nav::GridSurfaces::new(grid.clone()))));
+    }
+    let mut surfaces_revision = None;
     eprintln!(
         "play: new game in {:.1?}: {} in {} ({} triggers)",
         t.elapsed(),
@@ -244,11 +252,21 @@ fn game_thread(
                 let now = presences(&game);
                 let presences = (now != last).then(|| now.clone());
                 last = now;
+                let revision = game.sim.surfaces.revision;
+                let surfaces = (surfaces_revision != Some(revision)).then(|| {
+                    surfaces_revision = Some(revision);
+                    game.sim
+                        .surface_cells(bg3_sim::surface::SurfaceLayer::Ground)
+                        .into_iter()
+                        .map(|(p, ty)| crate::surfaces::SurfaceCell::at(p, ty))
+                        .collect()
+                });
                 let frame = Frame {
                     names: display_names(&game.sim),
                     presences,
                     notifications: std::mem::take(&mut pending),
                     combat,
+                    surfaces,
                 };
                 if tx.send(frame).is_err() {
                     break;
@@ -395,6 +413,7 @@ pub(crate) fn receive(
     mut state: ResMut<SimState>,
     mut dialogs: ResMut<Dialogs>,
     mut combat: ResMut<CombatInbox>,
+    mut surfaces: ResMut<crate::surfaces::SurfaceCells>,
 ) {
     let rx = link.rx.lock().expect("frame channel");
     while let Ok(frame) = rx.try_recv() {
@@ -407,6 +426,10 @@ pub(crate) fn receive(
         }
         if !frame.combat.is_empty() {
             combat.0.push(frame.combat);
+        }
+        if let Some(cells) = frame.surfaces {
+            surfaces.cells = cells;
+            surfaces.dirty = true;
         }
     }
 }

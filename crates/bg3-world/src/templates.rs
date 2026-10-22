@@ -34,6 +34,8 @@ pub struct RootTemplate {
     pub decal: Option<crate::decals::DecalProps>,
     /// `RecieveDecal` (sic), if this template sets it.
     pub receive_decal: Option<bool>,
+    /// Surface fields (`surface` templates only).
+    pub surface: Option<crate::surfaces::SurfaceProps>,
 }
 
 #[derive(Debug, Default)]
@@ -148,6 +150,7 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
             let probe = (kind == "lightProbe").then(|| crate::probes::ProbeProps::read(n));
             let fog = (kind == "fogVolume").then(|| crate::fog::FogProps::read(n));
             let decal = (kind == "decal").then(|| crate::decals::DecalProps::read(n));
+            let surface = (kind == "surface").then(|| crate::surfaces::SurfaceProps::read(n));
             Some(RootTemplate {
                 id: str_attr(n, "MapKey")?,
                 name: str_attr(n, "Name").unwrap_or_default(),
@@ -166,6 +169,7 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
                 fog,
                 decal,
                 receive_decal: n.attr("RecieveDecal").and_then(|v| v.as_bool()),
+                surface,
             })
         })
 }
@@ -192,6 +196,7 @@ mod tests {
             fog: None,
             decal: None,
             receive_decal: None,
+            surface: None,
         }
     }
 

@@ -90,7 +90,7 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   coarse middle-region sRGB colour/luma means, 0–255, difference = ours minus reference),
   `combat [LEVEL] --party A,B [--target X] [--seed N] [--events] [--nav] [--ai-debug]` (a fight on
   bg3-sim with the story, every side on the scoring AI; `--nav` follows the AI grid and reports
-  endpoint standability and path length; `--ai-debug` prints each AI decision's best candidates
+  endpoint standability and path length, and prints the surfaces (blood) after the fight; `--ai-debug` prints each AI decision's best candidates
   with score breakdowns; prints the combat log, see `docs/research/combat.md`, `docs/research/ai.md`).
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
   level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
@@ -120,6 +120,10 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   the base colour texture-array size (default 1024).
   `BG3_BOX_SHADOW_CASCADES=1` puts box light shadows on Bevy's camera cascades instead of one
   map per box (sharper near the camera, slower; `docs/performance.md`).
+  Surfaces (blood, …) on the AI grid are drawn after the decals (`docs/research/surfaces.md`):
+  the level's painted ones, and with `--play` the sim's (hit and death blood);
+  `BG3_NO_SURFACES=1` turns them off, `BG3_SURFACE_DEBUG=1` paints the shader's inputs (red
+  coverage, green height fade, blue near a surface cell) and logs cell counts.
   `--play --cc` opens a character creation screen first (Start re-runs the viewer with
   `--character <spec>`; default character: the trace's deep gnome cleric).
   `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled

@@ -331,7 +331,7 @@ fn build_grid(decals: &[Decal], cell: f32) -> Vec<u32> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum MapKind {
+pub(crate) enum MapKind {
     /// Base colour: stored sRGB, filtered in linear.
     Albedo,
     /// Normal and physical maps: stored as is (the shader reads the game's channels).
@@ -341,7 +341,7 @@ enum MapKind {
 impl MapKind {
     /// Texel for a missing map: transparent base colour (the decal draws nothing), a flat
     /// normal (X in A, Y in G, Z in B), metal 0 / roughness ½ / occlusion 1.
-    fn neutral(self) -> [u8; 4] {
+    pub(crate) fn neutral(self) -> [u8; 4] {
         match self {
             MapKind::Albedo => [0, 0, 0, 0],
             MapKind::Linear => [0, 128, 255, 128],
@@ -368,7 +368,7 @@ fn linear_to_srgb(c: f32) -> f32 {
 /// Resample a decoded texture (RGBA8, all mips) to `size`² and build its full mip chain,
 /// starting from the smallest source mip at least `size` wide and high (bilinear, wrapping).
 /// Colour is filtered in linear space; `srgb` says how the source is encoded.
-fn layer_chain(
+pub(crate) fn layer_chain(
     tex: &bg3_material::convert::Texture,
     srgb: bool,
     kind: MapKind,
@@ -466,14 +466,14 @@ fn mip_chain(mut level: Vec<[f32; 4]>, size: u32, kind: MapKind) -> Vec<u8> {
 }
 
 /// A full mip chain of one colour.
-fn flat_chain(texel: [u8; 4], size: u32) -> Vec<u8> {
+pub(crate) fn flat_chain(texel: [u8; 4], size: u32) -> Vec<u8> {
     let texels: usize = (0..=size.ilog2())
         .map(|l| ((size >> l) as usize).pow(2))
         .sum();
     texel.repeat(texels)
 }
 
-fn array_image(layers: &[Vec<u8>], size: u32, kind: MapKind) -> Image {
+pub(crate) fn array_image(layers: &[Vec<u8>], size: u32, kind: MapKind) -> Image {
     let format = match kind {
         MapKind::Albedo => TextureFormat::Rgba8UnormSrgb,
         MapKind::Linear => TextureFormat::Rgba8Unorm,

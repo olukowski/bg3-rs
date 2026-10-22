@@ -27,6 +27,7 @@ mod post;
 mod probes;
 mod space;
 mod sss;
+mod surfaces;
 mod terrain;
 
 use anyhow::Result;
@@ -252,6 +253,24 @@ fn main() -> Result<()> {
         lights.lighting.fog_phase,
     );
     let decals = decals::LevelDecals::load(&vfs, &args.level, &level);
+    let surface_grid = navigation.as_ref().map(|n| n.grid.clone());
+    let level_surfaces = surfaces::LevelSurfaces::load(
+        &vfs,
+        &level,
+        surface_grid.clone(),
+        avatar_position
+            .or(camera_start)
+            .or(args.look_at)
+            .map(|v| v.to_array()),
+    );
+    // Without `--play`, the level's painted surfaces; with it, the sim sends them.
+    let surface_cells = surfaces::SurfaceCells {
+        cells: match (&play, &surface_grid) {
+            (None, Some(g)) if surfaces::enabled() => surfaces::painted_cells(g),
+            _ => Vec::new(),
+        },
+        dirty: true,
+    };
     let probes = probes::LevelProbes::load(
         &vfs,
         &args.level,
@@ -310,6 +329,7 @@ fn main() -> Result<()> {
     .add_plugins(level_materials::LevelMaterialsPlugin)
     .add_plugins(terrain::TerrainPlugin)
     .add_plugins(decals::DecalsPlugin)
+    .add_plugins(surfaces::SurfacesPlugin)
     .add_plugins(sss::SssPlugin)
     .add_plugins(post::GamePostPlugin)
     .add_plugins(bloom::GameBloomPlugin)
@@ -327,6 +347,8 @@ fn main() -> Result<()> {
     .insert_resource(probes)
     .insert_resource(fog)
     .insert_resource(decals)
+    .insert_resource(level_surfaces)
+    .insert_resource(surface_cells)
     .insert_resource(materials)
     .insert_resource(characters)
     .insert_resource(level::ShowPlaceholders(args.placeholders))
@@ -341,7 +363,10 @@ fn main() -> Result<()> {
         Startup,
         (
             decals::upload,
-            materials::upload.after(decals::upload),
+            surfaces::upload,
+            materials::upload
+                .after(decals::upload)
+                .after(surfaces::upload),
             level::spawn_level.after(materials::upload),
             terrain::spawn_terrain.after(decals::upload),
             lights::spawn_lights,

@@ -102,6 +102,8 @@ pub fn implements(name: &str, arity: usize) -> bool {
         .chain(QUERIES)
         .chain(crate::story_misc::CALLS)
         .chain(crate::story_misc::QUERIES)
+        .chain(crate::surface::CALLS)
+        .chain(crate::surface::QUERIES)
         .any(|(n, a)| *a == arity && n.eq_ignore_ascii_case(name))
 }
 
@@ -158,6 +160,9 @@ impl<'a> SimFunctions<'a> {
             return Some(ok);
         }
         if let Some(ok) = crate::party::call(sim, ctx, name, args) {
+            return Some(ok);
+        }
+        if let Some(ok) = crate::surface::call(sim, ctx, name, args) {
             return Some(ok);
         }
         if is_dialog_function(name) && sim.dialog_bank().is_none() {
@@ -245,6 +250,9 @@ impl<'a> SimFunctions<'a> {
             return Some(ok);
         }
         if let Some(ok) = crate::presentation::query(self.sim, ctx, name, args) {
+            return Some(ok);
+        }
+        if let Some(ok) = crate::surface::query(self.sim, ctx, name, args) {
             return Some(ok);
         }
         if is_dialog_function(name) && self.sim.dialog_bank().is_none() {

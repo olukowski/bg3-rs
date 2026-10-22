@@ -13,6 +13,7 @@ pub mod fog;
 pub mod level;
 pub mod lights;
 pub mod probes;
+pub mod surfaces;
 pub mod templates;
 pub mod terrain;
 pub mod terrain_albedo;

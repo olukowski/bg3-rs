@@ -803,6 +803,7 @@ mod tests {
             fog: None,
             decal: None,
             receive_decal: None,
+            surface: None,
         }
     }
 
