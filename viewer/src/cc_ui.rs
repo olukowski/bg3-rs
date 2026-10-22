@@ -235,6 +235,16 @@ impl Screen {
     }
 
     fn prune_appearance(&mut self) {
+        for (kind, id) in self.choice.appearance.material_choices() {
+            if !self
+                .data
+                .material_options(&self.choice, &kind)
+                .iter()
+                .any(|m| m.id == id)
+            {
+                self.choice.appearance.set_material(&kind, None);
+            }
+        }
         for (slot, id) in self.choice.appearance.visuals() {
             if !self
                 .data
@@ -382,8 +392,7 @@ impl Screen {
                         .collect()
                 } else {
                     self.data
-                        .appearance
-                        .material_options(slot)
+                        .material_options(&self.choice, slot)
                         .iter()
                         .map(|m| m.id)
                         .collect()
@@ -718,7 +727,7 @@ fn redraw(mut commands: Commands, mut screen: ResMut<Screen>, root: Query<Entity
                 appearance_cycler(col, &slot, &name, true);
             }
             for kind in d.appearance.material_kinds() {
-                let options = d.appearance.material_options(&kind);
+                let options = d.material_options(c, &kind);
                 let name = c
                     .appearance
                     .material(&kind)

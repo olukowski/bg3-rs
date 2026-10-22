@@ -301,8 +301,7 @@ pub fn run(a: Args) -> Result<()> {
             let id = find_appearance(
                 kind,
                 query,
-                cc.appearance
-                    .material_options(kind)
+                cc.material_options(&choice, kind)
                     .iter()
                     .map(|m| (m.id, m.preset, names.text(m.display.as_ref(), &m.name))),
             )?;
@@ -469,7 +468,7 @@ fn list(cc: &CcData, names: &Names<'_>, choice: &CharacterChoice) {
     }
     for kind in cc.appearance.material_kinds() {
         println!("  {kind} materials:");
-        for m in cc.appearance.material_options(&kind) {
+        for m in cc.material_options(choice, &kind) {
             println!(
                 "    {} [{}] preset={} {}",
                 names.text(m.display.as_ref(), &m.name),
