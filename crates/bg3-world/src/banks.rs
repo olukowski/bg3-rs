@@ -89,6 +89,8 @@ pub struct ResourceBanks {
     /// Character visuals, skeletons, animations and animation sets.
     pub characters: crate::characters::CharacterBanks,
     pub equipment: crate::characters::EquipmentSettings,
+    /// Equipment types and weapon animation sets (drawn/sheathed weapons, `unsheath.rs`).
+    pub weapons: crate::unsheath::WeaponData,
     /// `MaterialPresetBank` resources (their `Presets` node): colour/skin/hair/eye presets
     /// that character visuals and items reference (see `appearance.rs`).
     pub material_presets: HashMap<String, crate::characters::MaterialOverrides>,
@@ -151,6 +153,7 @@ impl ResourceBanks {
             }
         }
         banks.equipment = crate::characters::EquipmentSettings::load(vfs, modules)?;
+        banks.weapons = crate::unsheath::WeaponData::load(vfs, modules)?;
         Ok(banks)
     }
 

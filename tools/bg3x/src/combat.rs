@@ -317,6 +317,9 @@ fn print_events(sim: &Sim, events: Vec<CombatEvent>, verbose: bool) {
                 n(&entity)
             ),
             CombatEvent::CombatEnded { .. } => println!("combat ends"),
+            CombatEvent::Unsheathed { entity, state } if verbose => {
+                println!("    {} weapons: {state:?}", n(&entity))
+            }
             CombatEvent::Log(l) if verbose => println!("    | {l}"),
             CombatEvent::StatusApplied { target, status } if verbose => {
                 println!("    {} gains {status}", n(&target))

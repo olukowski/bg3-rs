@@ -615,6 +615,29 @@ pub struct EquippedItem {
     pub hides_slots: Vec<String>,
     pub body_masks: Vec<BodyMask>,
     pub material_overrides: MaterialOverrides,
+    /// Item template `EquipmentTypeID` (through the parent chain).
+    pub equipment_type: Option<String>,
+    /// Stats `Weapon Properties` (`Twohanded`, `Versatile`, `Melee`, …).
+    pub weapon_properties: Vec<String>,
+}
+
+impl EquippedItem {
+    /// The item as a weapon visual for the drawn/sheathed selection (`unsheath.rs`), when it
+    /// sits in a weapon slot (shields included: they occupy the melee off hand).
+    pub fn weapon_item(&self) -> Option<crate::unsheath::WeaponItem<'_>> {
+        let has = |p: &str| self.weapon_properties.iter().any(|w| w == p);
+        Some(crate::unsheath::WeaponItem {
+            slot: crate::unsheath::WeaponSlot::from_stats(&self.slot)?,
+            equipment_type: self.equipment_type.as_deref(),
+            two_handed: has("Twohanded"),
+            versatile: has("Versatile"),
+        })
+    }
+}
+
+/// The weapon visuals among `items`, in item order.
+pub fn weapon_items(items: &[EquippedItem]) -> Vec<crate::unsheath::WeaponItem<'_>> {
+    items.iter().filter_map(EquippedItem::weapon_item).collect()
 }
 
 /// Each equipment group contributes its first entry. This selection remains an assumption:
@@ -660,6 +683,7 @@ pub fn resolve_equipment_items<'a>(
                 return None;
             }
             let template = obj.get("RootTemplate")?.to_owned();
+            let equipment_type = templates.equipment_type_for(&template).map(str::to_owned);
             let equipment = templates.equipment_for(&template);
             let worn = race
                 .and_then(|r| equipment.visuals_for(r, &banks.equipment))
@@ -701,6 +725,15 @@ pub fn resolve_equipment_items<'a>(
                 worn,
                 hides_slots,
                 material_overrides: equipment.material_overrides,
+                equipment_type,
+                weapon_properties: obj
+                    .get("Weapon Properties")
+                    .unwrap_or_default()
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
             })
         })
         .collect()
@@ -880,9 +913,20 @@ impl ResolvedCharacter {
     /// Look up an animation type in the character's animation sets (default subset), in the
     /// same order as the idle.
     pub fn animation(&self, banks: &ResourceBanks, simple_name: &str) -> Option<AnimationResource> {
+        self.animation_in_subset(banks, "", simple_name)
+    }
+
+    /// Look up an animation type in subset `subset` (a weapon subset GUID from
+    /// [`crate::unsheath::subset_for_state`], `""` for the default subset).
+    pub fn animation_in_subset(
+        &self,
+        banks: &ResourceBanks,
+        subset: &str,
+        simple_name: &str,
+    ) -> Option<AnimationResource> {
         banks
             .characters
-            .animation_in_sets(&self.animation_sets, "", simple_name)
+            .animation_in_sets(&self.animation_sets, subset, simple_name)
             .cloned()
     }
 }
@@ -1216,6 +1260,8 @@ add equipment entry "camp"
             }],
             material_overrides: Default::default(),
             body_masks: vec![],
+            equipment_type: None,
+            weapon_properties: vec![],
         };
         banks.equipment.body_mask_values.insert("Torso".into(), 73);
         let original = c.clone();
@@ -1287,6 +1333,105 @@ add equipment entry "camp"
                 eprintln!("{equipment} {race}: {}", p.visual.name);
             }
         }
+    }
+
+    #[test]
+    #[ignore = "needs BG3 install"]
+    fn weapons_sheath_on_the_back_and_select_weapon_subsets() {
+        use crate::unsheath::{UnsheathState, WeaponSlot, placement, subset_for_state};
+        let Ok(install) = bg3_install::Install::locate() else {
+            eprintln!("skipping: no BG3 install found");
+            return;
+        };
+        let vfs = bg3_vfs::Vfs::from_install(&install).unwrap();
+        let templates = RootTemplates::load(&vfs).unwrap();
+        let banks = ResourceBanks::load(&vfs).unwrap();
+        let stats =
+            bg3_stats::install::load(vfs.packages(), bg3_vfs::modules::BASE_LOAD_ORDER).unwrap();
+        let simple_names = animation_simple_names(&vfs);
+        let blueprint = crate::parse(&vfs, CHARACTER_BLUEPRINT).unwrap();
+        let idle = blueprint_variable_default(&blueprint, IDLE_BLUEPRINT_VARIABLE).unwrap();
+        let globals = crate::level::load_global_characters(&vfs).unwrap();
+        let laezel = globals
+            .iter()
+            .find(|o| o.name == "S_Player_Laezel")
+            .unwrap();
+        let c = resolve_character(laezel, &templates, &banks, &idle).unwrap();
+        let race = c.props.equipment_race.as_deref();
+        let w = &banks.weapons;
+        assert!(w.equipment_types.len() > 30 && w.animation_sets.len() > 30);
+
+        // Lae'zel: versatile longsword alone in the melee set, a shortbow in the ranged set.
+        let items = resolve_equipment("EQ_Laezel", race, &stats, &templates, &banks);
+        let weapons = weapon_items(&items);
+        let bone = |slot, state| {
+            let i = weapons.iter().find(|i| i.slot == slot).unwrap();
+            placement(w, i, &weapons).for_state(state).clone()
+        };
+        let sword = bone(WeaponSlot::MeleeMain, UnsheathState::Sheathed);
+        assert_eq!(sword.bone.as_deref(), Some("Dummy_Sheath_Upper_R"));
+        assert_eq!(sword.source, "Dummy_Sheath");
+        let drawn = bone(WeaponSlot::MeleeMain, UnsheathState::Melee);
+        assert_eq!(drawn.bone.as_deref(), Some("Dummy_R_Hand"));
+        let bow = bone(WeaponSlot::RangedMain, UnsheathState::Melee);
+        assert_eq!(bow.bone.as_deref(), Some("Dummy_Sheath_Ranged"));
+        let bow = bone(WeaponSlot::RangedMain, UnsheathState::Ranged);
+        assert_eq!(bow.bone.as_deref(), Some("Dummy_L_Hand"));
+        let melee = subset_for_state(w, UnsheathState::Melee, &weapons);
+        let ranged = subset_for_state(w, UnsheathState::Ranged, &weapons);
+        assert_eq!(melee, w.animation_subset("Sword2H", "Unarmed1H"));
+        assert_eq!(ranged, w.animation_subset("Bow2H", "Unarmed1H"));
+        assert!(!melee.is_empty() && !ranged.is_empty());
+        for (state, subset) in [
+            (UnsheathState::Sheathed, ""),
+            (UnsheathState::Melee, melee),
+            (UnsheathState::Ranged, ranged),
+        ] {
+            for (what, name) in [
+                ("idle", idle.as_str()),
+                ("run", RUN_PEACE),
+                ("melee", &simple_names[CombatAnimation::Melee.simple_name()]),
+                (
+                    "ranged",
+                    &simple_names[CombatAnimation::Ranged.simple_name()],
+                ),
+            ] {
+                let clip = c.animation_in_subset(&banks, subset, name);
+                eprintln!(
+                    "Lae'zel {state:?} {what}: {}",
+                    clip.map_or("MISSING".into(), |a| a.name)
+                );
+            }
+        }
+
+        // The CC cleric: mace on the back, the shield hidden until drawn.
+        let human = templates
+            .templates
+            .values()
+            .find(|t| t.name == "Humans_Male_Player_Dev")
+            .unwrap();
+        let race = templates
+            .character_field(&human.id, |p| p.equipment_race.as_ref())
+            .unwrap();
+        let items = resolve_equipment("EQP_CC_Cleric", Some(race), &stats, &templates, &banks);
+        let weapons = weapon_items(&items);
+        let at = |slot, state| {
+            let i = weapons.iter().find(|i| i.slot == slot).unwrap();
+            placement(w, i, &weapons).for_state(state).bone.clone()
+        };
+        assert_eq!(
+            at(WeaponSlot::MeleeMain, UnsheathState::Sheathed).as_deref(),
+            Some("Dummy_Sheath_Upper_R")
+        );
+        assert_eq!(at(WeaponSlot::MeleeOff, UnsheathState::Sheathed), None);
+        assert_eq!(
+            at(WeaponSlot::MeleeOff, UnsheathState::Melee).as_deref(),
+            Some("Dummy_L_Hand")
+        );
+        assert_eq!(
+            subset_for_state(w, UnsheathState::Melee, &weapons),
+            w.animation_subset("Slashing1H", "Shield1H")
+        );
     }
 
     fn anim(key: &str, id: &str) -> Node {

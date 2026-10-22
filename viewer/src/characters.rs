@@ -13,6 +13,9 @@
 //!   rotations of joints, animation samples and the inverse bind matrices (`M · IBM · M` with
 //!   `M = diag(1, 1, -1)`), so `joint · IBM · v` stays the mirror of the original skinning.
 //! * The idle animation is sampled every frame (looping) into the joints' local transforms.
+//! * Weapons hang on their sheath bones or sit in the hands depending on the sim's weapon
+//!   state, and each state has its own clip set (weapon animation subsets); see [`Unsheath`]
+//!   and `bg3_world::unsheath`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,8 +27,9 @@ use bg3_vfs::Vfs;
 use bg3_world::characters::{
     CombatAnimation, DEFAULT_MOVEMENT_SPEED_RUN, DEFAULT_MOVEMENT_STEP_UP_HEIGHT, EquippedItem,
     RUN_PEACE, ResolvedCharacter, animation_simple_names, idle_simple_name, resolve_character,
-    resolve_equipment, resolve_equipment_items,
+    resolve_equipment, resolve_equipment_items, weapon_items,
 };
+use bg3_world::unsheath::{UnsheathState, WeaponSlot, placement, subset_for_state};
 use rayon::prelude::*;
 
 use crate::level::LoadedLevel;
@@ -200,6 +204,25 @@ pub struct PreparedPart {
     pub local: Transform,
     /// Material overrides, vertex colours and cut support (`char_materials.rs`).
     pub look: crate::char_materials::PartLook,
+    /// For weapon visuals: where they go when sheathed and when drawn.
+    pub weapon: Option<WeaponPose>,
+}
+
+/// A weapon visual's two placements: `(joint, transform relative to it)`, `None` when the
+/// equipment type names no bone (or the skeleton lacks it) and the visual is hidden.
+#[derive(Clone, Debug)]
+pub struct WeaponPose {
+    pub slot: WeaponSlot,
+    pub sheathed: Option<(usize, Transform)>,
+    pub unsheathed: Option<(usize, Transform)>,
+}
+
+/// The idle, run and combat clips of one weapon state (unbound).
+#[derive(Clone, Default)]
+pub struct PreparedClips {
+    pub idle: Option<Arc<PreparedAnimation>>,
+    pub run: Option<Arc<PreparedAnimation>>,
+    pub combat: HashMap<CombatAnimation, Arc<PreparedAnimation>>,
 }
 
 pub struct PreparedCharacter {
@@ -212,6 +235,9 @@ pub struct PreparedCharacter {
     /// Forward run loop, for characters that walk (`nav.rs`).
     pub run: Option<Arc<PreparedAnimation>>,
     pub combat: HashMap<CombatAnimation, Arc<PreparedAnimation>>,
+    /// Clip sets of the drawn states whose weapon subset differs from the default
+    /// (`animation`/`run`/`combat` are the sheathed set).
+    pub drawn: HashMap<UnsheathState, PreparedClips>,
     /// `MovementSpeedRun` (m/s) and `MovementStepUpHeight` (m) from the template chain.
     pub run_speed: f32,
     pub step_height: f32,
@@ -286,7 +312,20 @@ impl LevelCharacters {
                         );
                     }
                     let run = c.animation(&level.banks, RUN_PEACE);
-                    resolved.push((obj.transform, c, items, run));
+                    let weapons = weapon_items(&items);
+                    let subsets: Vec<(UnsheathState, String)> =
+                        [UnsheathState::Melee, UnsheathState::Ranged]
+                            .into_iter()
+                            .map(|st| {
+                                let key = subset_for_state(&level.banks.weapons, st, &weapons);
+                                (st, key.to_owned())
+                            })
+                            .filter(|(_, key)| !key.is_empty())
+                            .collect();
+                    if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
+                        eprintln!("weapon subsets {}: {subsets:?}", c.name);
+                    }
+                    resolved.push((obj.transform, c, items, run, subsets));
                 }
                 Err(e) => out.failed.push((obj.name.clone(), e.to_string())),
             }
@@ -294,8 +333,16 @@ impl LevelCharacters {
         let cache = GrannyCache::default();
         let results: Vec<_> = resolved
             .par_iter()
-            .map(|(t, c, items, run)| {
-                let mut p = prepare(vfs, &cache, *t, c, items, &level.banks.material_presets);
+            .map(|(t, c, items, run, subsets)| {
+                let mut p = prepare(
+                    vfs,
+                    &cache,
+                    *t,
+                    c,
+                    items,
+                    &level.banks.material_presets,
+                    &level.banks.weapons,
+                );
                 if let Ok(p) = &mut p {
                     p.run = run
                         .as_ref()
@@ -321,6 +368,34 @@ impl LevelCharacters {
                                 p.combat.get(&kind).map_or("MISSING", |a| a.name.as_str())
                             );
                         }
+                    }
+                    // Drawn weapon states: the same animation types in the weapon subset.
+                    let clip = |subset: &str, name: &str| {
+                        c.animation_in_subset(&level.banks, subset, name)
+                            .and_then(|a| a.source_file)
+                            .and_then(|path| cache.animation(vfs, &path))
+                    };
+                    for (state, subset) in subsets {
+                        let set = PreparedClips {
+                            idle: clip(subset, &idle),
+                            run: clip(subset, RUN_PEACE),
+                            combat: CombatAnimation::ALL
+                                .into_iter()
+                                .filter_map(|k| {
+                                    let id = simple_names.get(k.simple_name())?;
+                                    Some((k, clip(subset, id)?))
+                                })
+                                .collect(),
+                        };
+                        if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
+                            eprintln!(
+                                "{state:?} clips {}: idle {:?}, run {:?}",
+                                c.name,
+                                set.idle.as_ref().map(|a| &a.name),
+                                set.run.as_ref().map(|a| &a.name)
+                            );
+                        }
+                        p.drawn.insert(*state, set);
                     }
                 }
                 (c.name.clone(), p)
@@ -459,6 +534,7 @@ fn prepare(
     c: &ResolvedCharacter,
     items: &[EquippedItem],
     presets: &HashMap<String, bg3_world::characters::MaterialOverrides>,
+    weapons: &bg3_world::unsheath::WeaponData,
 ) -> Result<PreparedCharacter, String> {
     let looks = crate::char_materials::LookOverrides::new(c, items, presets);
     let skel_path = c
@@ -516,11 +592,12 @@ fn prepare(
                 attach_joint,
                 local: Transform::default(),
                 look: looks.part(&part.visual, mesh),
+                weapon: None,
             });
         }
     }
     if c.character_visual.show_equipment_visuals {
-        parts.extend(rigid_equipment_parts(vfs, cache, &skeleton, items));
+        parts.extend(rigid_equipment_parts(vfs, cache, &skeleton, items, weapons));
     }
     if !unmapped.is_empty() {
         unmapped.sort();
@@ -546,6 +623,7 @@ fn prepare(
         animation,
         run: None,
         combat: HashMap::new(),
+        drawn: HashMap::new(),
         run_speed: c
             .props
             .movement_speed_run
@@ -558,82 +636,82 @@ fn prepare(
     })
 }
 
-/// Weapons and rigid wearable attachments (the drawn/sheathed state is not modelled).
+/// Weapons and rigid wearable attachments.
 ///
-/// Assumption: a weapon GR2's `Dummy_Attachment` bone is placed on the character's
-/// `Dummy_R_Hand` (main hand) or `Dummy_L_Hand` (off hand); both names occur in the game
-/// binary and in every humanoid skeleton. A ranged main weapon is shown only when there is no
-/// melee main weapon.
+/// A visual in a weapon slot (shields included) gets both placements from its equipment type
+/// (`bg3_world::unsheath::placement`): the weapon model's source bone (`Dummy_Sheath`,
+/// `Dummy_Attachment`, …) is put on the character's sheath or hand bone. It is spawned
+/// sheathed; [`Unsheath`] moves it. Other rigid items use their visual's `AttachBone`.
 fn rigid_equipment_parts(
     vfs: &Vfs,
     cache: &GrannyCache,
     skeleton: &Skeleton,
     items: &[EquippedItem],
+    weapons: &bg3_world::unsheath::WeaponData,
 ) -> Vec<PreparedPart> {
-    let has_melee = items.iter().any(|i| i.slot == "Melee Main Weapon");
+    let held = weapon_items(items);
     let mut out = Vec::new();
     for item in items {
         if !item.worn.is_empty() {
             continue;
         }
         let Some(visual) = &item.visual else { continue };
-        let Some(bone) = equipment_attachment_bone(
-            &item.slot,
-            item.is_weapon,
-            visual.attach_bone.as_deref(),
-            has_melee,
-        ) else {
-            continue;
-        };
-        let Some(joint) = skeleton.index(bone) else {
-            continue;
-        };
         let Some(path) = visual.source_file.as_deref() else {
             continue;
         };
         let Ok(scene) = cache.scene(vfs, path) else {
             continue;
         };
-        // The attachment bone's rest pose is where the hand goes: mesh = inverse(attach world).
-        let local = scene
-            .skeletons
-            .first()
-            .and_then(|s| s.bones.iter().find(|b| b.name == "Dummy_Attachment"))
-            .map_or(Transform::default(), |b| {
-                Transform::from_matrix(inverse_bind(&b.inverse_world))
-            });
+        // The source bone's rest pose is where the target bone goes: mesh = inverse(bone world).
+        let source_local = |name: &str| {
+            scene
+                .skeletons
+                .first()
+                .and_then(|s| s.bones.iter().find(|b| b.name == name))
+                .map_or(Transform::default(), |b| {
+                    Transform::from_matrix(inverse_bind(&b.inverse_world))
+                })
+        };
+        let (attach_joint, local, weapon) = if let Some(w) = item.weapon_item() {
+            let p = placement(weapons, &w, &held);
+            let mount = |a: &bg3_world::unsheath::Attachment| {
+                let joint = skeleton.index(a.bone.as_deref()?)?;
+                Some((joint, source_local(&a.source)))
+            };
+            let pose = WeaponPose {
+                slot: p.slot,
+                sheathed: mount(&p.sheathed),
+                unsheathed: mount(&p.unsheathed),
+            };
+            if pose.sheathed.is_none() && pose.unsheathed.is_none() {
+                continue;
+            }
+            let (joint, local) = pose.sheathed.unwrap_or_default();
+            (Some(joint), local, Some(pose))
+        } else {
+            let Some(joint) = visual
+                .attach_bone
+                .as_deref()
+                .and_then(|b| skeleton.index(b))
+            else {
+                continue;
+            };
+            (Some(joint), Transform::default(), None)
+        };
         for obj in visual.objects.iter().filter(|o| o.lod == 0) {
             if let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) {
                 out.push(PreparedPart {
                     mesh: crate::meshes::to_bevy_mesh(mesh),
                     material_id: obj.material_id.clone(),
-                    attach_joint: Some(joint),
+                    attach_joint,
                     local,
                     look: Default::default(),
+                    weapon: weapon.clone(),
                 });
             }
         }
     }
     out
-}
-
-// bg3: ecl::equipment::GetAttachmentBoneName (4.1.1.7631656)
-// Explicit rigid-wearable attachment comes from data; hand choice remains a viewer assumption.
-fn equipment_attachment_bone<'a>(
-    slot: &str,
-    is_weapon: bool,
-    attach_bone: Option<&'a str>,
-    has_melee: bool,
-) -> Option<&'a str> {
-    if !is_weapon && let Some(bone) = attach_bone {
-        return Some(bone);
-    }
-    match slot {
-        "Melee Main Weapon" => Some("Dummy_R_Hand"),
-        "Ranged Main Weapon" if !has_melee => Some("Dummy_R_Hand"),
-        "Melee Offhand Weapon" => Some("Dummy_L_Hand"),
-        _ => None,
-    }
 }
 
 /// Convert a GR2 mesh and remap its bone indices (into the mesh's `BoneBindings`) to joints of
@@ -699,6 +777,97 @@ pub struct CharacterRoot {
     pub combat: HashMap<CombatAnimation, BoundClip>,
 }
 
+/// A character's weapon state as shown: weapon visuals and clip sets follow `state`.
+///
+/// The sim owns the state (`bg3_sim::Sim::unsheath_state`); the combat UI sets `state` when it
+/// presents a `CombatEvent::Unsheathed`, and [`apply_unsheath`] re-attaches the weapons and
+/// swaps [`CharacterRoot`]'s idle/run/combat clips. The switch is instant: the game's
+/// sheathe/unsheathe animation (`ecl::CharacterTask_SheathUnsheath`) is not played.
+#[derive(Component)]
+pub struct Unsheath {
+    pub state: UnsheathState,
+    applied: UnsheathState,
+    weapons: Vec<(Entity, WeaponMount)>,
+    /// Bound clip sets per state; the sheathed set is always present.
+    clips: HashMap<UnsheathState, ClipSet>,
+}
+
+#[derive(Clone)]
+struct WeaponMount {
+    slot: WeaponSlot,
+    sheathed: Option<(Entity, Transform)>,
+    unsheathed: Option<(Entity, Transform)>,
+}
+
+#[derive(Clone, Default)]
+struct ClipSet {
+    idle: Option<BoundClip>,
+    run: Option<BoundClip>,
+    combat: HashMap<CombatAnimation, BoundClip>,
+}
+
+impl ClipSet {
+    fn bind(c: &PreparedClips, skeleton: &Skeleton) -> Self {
+        let b = |a: &Arc<PreparedAnimation>| (a.clone(), a.bind(skeleton));
+        Self {
+            idle: c.idle.as_ref().map(b),
+            run: c.run.as_ref().map(b),
+            combat: c.combat.iter().map(|(&k, a)| (k, b(a))).collect(),
+        }
+    }
+}
+
+/// Re-attach weapon visuals and swap clip sets when a character's weapon state changes.
+pub fn apply_unsheath(
+    mut commands: Commands,
+    mut chars: Query<(
+        &mut Unsheath,
+        &mut CharacterRoot,
+        Option<&mut CharacterAnimator>,
+    )>,
+) {
+    for (mut u, mut root, animator) in &mut chars {
+        if u.state == u.applied {
+            continue;
+        }
+        let state = u.state;
+        u.applied = state;
+        for (entity, m) in &u.weapons {
+            let mount = if state.draws(m.slot) {
+                m.unsheathed
+            } else {
+                m.sheathed
+            };
+            match mount {
+                Some((joint, local)) => {
+                    commands
+                        .entity(*entity)
+                        .insert((ChildOf(joint), local, Visibility::Inherited));
+                }
+                None => {
+                    commands.entity(*entity).insert(Visibility::Hidden);
+                }
+            }
+        }
+        // A clip missing from the state's set falls back to the sheathed (default) one.
+        let base = u
+            .clips
+            .get(&UnsheathState::Sheathed)
+            .cloned()
+            .unwrap_or_default();
+        let set = u.clips.get(&state).cloned().unwrap_or_default();
+        let old = (root.idle.clone(), root.run.clone());
+        root.idle = set.idle.or(base.idle);
+        root.run = set.run.or(base.run);
+        root.combat = base.combat;
+        root.combat.extend(set.combat);
+        if let Some(mut a) = animator {
+            a.swap_loops(&old.0, &root.idle);
+            a.swap_loops(&old.1, &root.run);
+        }
+    }
+}
+
 /// Joint entities of a spawned character, plus its animation state.
 #[derive(Component)]
 pub struct CharacterAnimator {
@@ -736,6 +905,28 @@ impl CharacterAnimator {
         self.bindings.clone_from(&clip.1);
         self.time = 0.0;
         self.playback = playback;
+    }
+
+    /// Replace `old` with `new` where it plays as a loop or is the clip a one-shot returns
+    /// to, keeping the loop's phase.
+    pub fn swap_loops(&mut self, old: &Option<BoundClip>, new: &Option<BoundClip>) {
+        let (Some(old), Some(new)) = (old, new) else {
+            return;
+        };
+        if Arc::ptr_eq(&old.0, &new.0) {
+            return;
+        }
+        match &mut self.playback {
+            Playback::Loop if Arc::ptr_eq(&self.animation, &old.0) => {
+                let phase = self.time / old.0.duration.max(1e-3);
+                self.select(new, Playback::Loop);
+                self.time = phase * new.0.duration;
+            }
+            Playback::Once { then: Some(then) } if Arc::ptr_eq(&then.0, &old.0) => {
+                *then = new.clone();
+            }
+            _ => {}
+        }
     }
 
     pub fn locomotion(&mut self, clip: &Option<BoundClip>) {
@@ -845,6 +1036,7 @@ pub fn spawn_characters(
                 ))
             })
             .clone();
+        let mut weapons: Vec<(Entity, WeaponMount)> = Vec::new();
         for mut part in c.parts {
             let Some(material) = crate::char_materials::part_material(
                 &mut part,
@@ -875,9 +1067,48 @@ pub fn spawn_characters(
                     .and_then(|j| joints.get(j).copied())
                     .unwrap_or(root);
                 let mut e = commands.spawn((Mesh3d(mesh), part.local, ChildOf(parent)));
+                if let Some(pose) = &part.weapon {
+                    // Spawned sheathed; hidden when the sheathed type names no bone.
+                    if pose.sheathed.is_none() {
+                        e.insert(Visibility::Hidden);
+                    }
+                    let joint = |m: Option<(usize, Transform)>| {
+                        m.and_then(|(j, t)| Some((joints.get(j).copied()?, t)))
+                    };
+                    weapons.push((
+                        e.id(),
+                        WeaponMount {
+                            slot: pose.slot,
+                            sheathed: joint(pose.sheathed),
+                            unsheathed: joint(pose.unsheathed),
+                        },
+                    ));
+                }
                 material.insert(&mut e);
             }
         }
+        let mut clips: HashMap<UnsheathState, ClipSet> = c
+            .drawn
+            .iter()
+            .map(|(&st, set)| (st, ClipSet::bind(set, &c.skeleton)))
+            .collect();
+        clips.insert(
+            UnsheathState::Sheathed,
+            ClipSet::bind(
+                &PreparedClips {
+                    idle: c.animation.clone(),
+                    run: c.run.clone(),
+                    combat: c.combat.clone(),
+                },
+                &c.skeleton,
+            ),
+        );
+        commands.entity(root).insert(Unsheath {
+            state: UnsheathState::Sheathed,
+            applied: UnsheathState::Sheathed,
+            weapons,
+            clips,
+        });
         commands.entity(root).insert(CharacterRoot {
             id: c.id.clone(),
             name: c.name.clone(),
@@ -966,42 +1197,13 @@ pub struct CharactersPlugin;
 impl Plugin for CharactersPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_characters.after(crate::materials::upload))
-            .add_systems(Update, animate_characters);
+            .add_systems(Update, (apply_unsheath, animate_characters).chain());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn wearable_attachment_uses_visual_bone_and_weapons_keep_hand_policy() {
-        assert_eq!(
-            equipment_attachment_bone("Helmet", false, Some("Dummy_Hat"), true),
-            Some("Dummy_Hat")
-        );
-        assert_eq!(
-            equipment_attachment_bone("Melee Offhand Weapon", false, Some("Dummy_Shield"), true),
-            Some("Dummy_Shield")
-        );
-        assert_eq!(
-            equipment_attachment_bone("Melee Offhand Weapon", false, None, true),
-            Some("Dummy_L_Hand")
-        );
-        assert_eq!(
-            equipment_attachment_bone("Melee Main Weapon", true, Some("Other"), true),
-            Some("Dummy_R_Hand")
-        );
-        assert_eq!(
-            equipment_attachment_bone("Ranged Main Weapon", true, None, true),
-            None
-        );
-        assert_eq!(
-            equipment_attachment_bone("Ranged Main Weapon", true, None, false),
-            Some("Dummy_R_Hand")
-        );
-        assert_eq!(equipment_attachment_bone("Helmet", false, None, true), None);
-    }
 
     fn clip(name: &str, duration: f32) -> BoundClip {
         (
@@ -1024,6 +1226,25 @@ mod tests {
             playback: Playback::Loop,
             incapacitated: false,
         }
+    }
+
+    #[test]
+    fn weapon_state_swaps_loops_keeping_phase_and_return_clips() {
+        let (idle, run) = (clip("idle", 2.0), clip("run", 1.0));
+        let (drawn_idle, drawn_run) = (clip("drawn_idle", 4.0), clip("drawn_run", 1.0));
+        let mut a = animator(&idle);
+        a.time = 0.5;
+        a.swap_loops(&Some(idle.clone()), &Some(drawn_idle.clone()));
+        a.swap_loops(&Some(run.clone()), &Some(drawn_run.clone()));
+        assert_eq!(a.animation.name, "drawn_idle");
+        assert!((a.time - 1.0).abs() < 1e-6, "same phase: {}", a.time);
+        // A one-shot returns to the new idle.
+        let attack = clip("attack", 0.5);
+        a.once(&attack, Some(drawn_idle.clone()));
+        a.swap_loops(&Some(drawn_idle), &Some(idle.clone()));
+        assert_eq!(a.animation.name, "attack");
+        a.advance(0.6);
+        assert_eq!(a.animation.name, "idle");
     }
 
     #[test]

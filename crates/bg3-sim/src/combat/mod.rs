@@ -31,6 +31,7 @@ use std::collections::HashMap;
 
 use bg3_rules::context::{Ability, DamageType, Hand, Resistance, Weapon};
 use bg3_rules::natives::RollEvent;
+pub use bg3_world::unsheath::UnsheathState;
 
 pub use action::{CastReport, CombatError};
 pub use ai::AiAction;
@@ -220,6 +221,11 @@ pub enum CombatEvent {
     CombatEnded {
         combat: Guid,
     },
+    /// The character's weapons were drawn (melee, ranged, instrument) or sheathed.
+    Unsheathed {
+        entity: Guid,
+        state: UnsheathState,
+    },
     /// A line of the rules engine's text log.
     Log(String),
 }
@@ -242,6 +248,8 @@ pub struct CombatState {
     /// Characters made by character creation (`crate::cc`): their starting equipment,
     /// proficiencies and spells ([`crate::cc::apply::combat_setup`]).
     pub created_characters: HashMap<Guid, crate::cc::CreatedCharacter>,
+    /// Drawn/sheathed weapon state (`eoc::unsheath::StateComponent`); absent = sheathed.
+    pub unsheath: HashMap<Guid, UnsheathState>,
 }
 
 /// `ActionResource(Name, amount, level)` boosts of a progression (unconditional, fixed
@@ -676,6 +684,40 @@ impl Sim {
         self.combat.events.push(e);
     }
 
+    /// The character's weapon state (out of a fight it starts sheathed).
+    pub fn unsheath_state(&self, id: Guid) -> UnsheathState {
+        self.combat.unsheath.get(&id).copied().unwrap_or_default()
+    }
+
+    /// Change the weapon state, telling the front end when it changes.
+    pub(crate) fn set_unsheath(&mut self, id: Guid, state: UnsheathState) {
+        if self.unsheath_state(id) == state {
+            return;
+        }
+        self.combat.unsheath.insert(id, state);
+        self.combat_event(CombatEvent::Unsheathed { entity: id, state });
+    }
+
+    /// Whether the character's active weapon set is the ranged one. *Assumption*: the sim does
+    /// not model weapon-set switching (`eoc::WeaponSetComponent`); a character with a ranged
+    /// weapon and no melee weapon or shield starts on the ranged set, everyone else on melee.
+    pub(crate) fn uses_ranged_set(&self, id: Guid) -> bool {
+        self.combatant(id).is_some_and(|c| {
+            let e = &c.equipment;
+            e.ranged_main.is_some()
+                && e.melee_main.is_none()
+                && e.melee_off.is_none()
+                && e.shield.is_none()
+        })
+    }
+
+    /// Joining a fight draws the active weapon set (`esv::unsheath::CombatJoiningComponent`).
+    /// *Assumption*: the set's state, as for a `WeaponSet` spell.
+    fn draw_for_combat(&mut self, id: Guid) {
+        let state = bg3_world::unsheath::weapon_set_state(self.uses_ranged_set(id));
+        self.set_unsheath(id, state);
+    }
+
     fn alive(&self, id: Guid) -> bool {
         self.combatant(id).is_some_and(|c| !c.dead)
             && self
@@ -898,6 +940,9 @@ impl Sim {
             combat: cid,
             participants: participants.clone(),
         });
+        for &p in &participants {
+            self.draw_for_combat(p);
+        }
         let cs = SimValue::Guid(cid.to_string());
         for &p in &participants {
             let who = self.render(p);
@@ -937,6 +982,7 @@ impl Sim {
             combat: cid,
             entity: who,
         });
+        self.draw_for_combat(who);
         true
     }
 
@@ -1093,6 +1139,10 @@ impl Sim {
             if still_in {
                 let who = self.render(p);
                 self.push_event("LeftCombat", vec![SimValue::Guid(who), cs.clone()]);
+                // Leaving a fight sheathes (`esv::unsheath::CombatLeavingComponent`).
+                if self.combatant(p).is_some_and(|c| !c.dead) {
+                    self.set_unsheath(p, UnsheathState::Sheathed);
+                }
             }
         }
         self.push_event("CombatEnded", vec![cs]);

@@ -106,9 +106,9 @@ right hand, and an unrotated human faces BG3 −Z.
   visual's `AnimationWaterfall` in file order; first hit wins.
 - **Subsets.** A set's subsets are keyed by GUID (`""` is the default `DFLT` subset). Observed
   per-weapon subsets: one-handed (`f6fa9d34-…`, `*_1HS_*` clips) and crossbow (`32bbe70b-…`,
-  `*_XB_*`). Lookup follows `FallBackSubSet` and ends at the default subset (**assumption**). The
-  viewer uses the default subset; which subset the game selects depends on the equipped weapon
-  and isn't traced.
+  `*_XB_*`). Lookup follows `FallBackSubSet` and ends at the default subset (**assumption**).
+  Sheathed characters use the default subset; drawn weapons select a weapon subset from the
+  equipped weapon types (see "Drawn and sheathed weapons" below).
 - The clip is the first animation in the AnimationBank's GR2; tracks bind to bones by name and
   hold parent-local transforms. Played looping from a per-character phase offset.
 
@@ -125,8 +125,8 @@ from the install, not an embedded extracted table. `ResolvedCharacter::animation
 exactly the idle/run chain: the effective character/template `AnimationSetResourceID` first,
 then its base visual's shared `AnimationWaterfall` in file order. Each set checks the default
 subset. `AnimationSetResource::find()` also supports explicit subsets and their
-`FallBackSubSet` links, ending at the default subset, but the viewer does not yet select
-weapon subsets. A missing type falls through to the next set; a type absent from the whole
+`FallBackSubSet` links, ending at the default subset; `ResolvedCharacter::animation_in_subset`
+asks for a weapon subset in every set of the chain, in the same order. A missing type falls through to the next set; a type absent from the whole
 chain stays unavailable. No additional rig fallback is invented outside the waterfall. The order remains a
 **data-inferred assumption**, not engine-verified behaviour. Related original symbol:
 `ls::AnimationSetSystem::Update` (4.1.1.7631656).
@@ -184,7 +184,7 @@ the walk followed by those events; each attack/hit/death waits for its decoded G
 before presenting the next event or requesting another AI turn. Missing attacks retain the
 0.7 s pause. Logs follow presentation order, although HP/action availability snapshots still
 represent the current simulation state. This is not the game's animation-event synchronization:
-no weapon-aware subsets, preparation/recovery chain, blending, directional reactions, or
+no sheathe/unsheathe clips, preparation/recovery chain, blending, directional reactions, or
 spell-specific animation blueprint selection is implemented. Initial scenery corpses still
 need their `DefaultState` interpreted.
 
@@ -322,15 +322,12 @@ surveyed needs this table. It is loaded into `EquipmentSettings::attachments`, b
 automatic expansion is not implemented: how it interacts with explicit character
 slots still needs observation. This limitation does not block the tested wearables.
 
-Rigid visuals use their `AttachBone` when present. Weapons retain the existing
-`Dummy_Attachment` anchor alignment to `Dummy_R_Hand`/`Dummy_L_Hand`; a ranged main
-weapon is shown only without a melee main weapon. The cleric shield has no `AttachBone`,
-so it uses that existing offhand anchor path. Drawn versus sheathed state, shield-on-back
-selection, and weapon-specific animation subsets remain **assumptions/unimplemented**.
-Related symbols found by grepping the supplied symbol index:
-`eoc::EquipmentData::Visit`, `ResolveAppliedRace`, `GetVisualResources`, and
-`ecl::equipment::GetAttachmentBoneName` (4.1.1.7631656). Symbol references identify the
-original subsystem; they do not claim its implementation was inspected.
+Rigid visuals outside the weapon slots use their `AttachBone`. Visuals in a weapon slot
+(shields included) are placed by their equipment type, sheathed or drawn: see "Drawn and
+sheathed weapons" below. Related symbols found by grepping the supplied symbol index:
+`eoc::EquipmentData::Visit`, `ResolveAppliedRace`, `GetVisualResources` (4.1.1.7631656).
+These symbol references identify the original subsystem; they do not claim its
+implementation was inspected.
 
 #### Equipment groups
 
@@ -390,10 +387,215 @@ Lae'zel even when the supplied initial look-at targets the avatar; autoplay give
 clearer frontal avatar view after his move. No original-game comparison trace was
 captured, and no shader files were edited.
 
+
+### Drawn and sheathed weapons
+
+Status: the bone selection, the weapon-type pair and the animation-subset lookup were read
+from the 4.1.1.7631656 arm64 slice (symbol index, `objdump`, headless Ghidra on single
+functions, for understanding only). The data comes from the install at runtime:
+`bg3_world::unsheath`, loaded into `ResourceBanks::weapons`. The weapon state is sim state
+(`bg3_sim::Sim::unsheath_state`). The viewer attaches weapon visuals and switches clip sets
+from it (`viewer/src/characters.rs`, `Unsheath`).
+
+#### State
+
+`eoc::unsheath::StateComponent` holds an `EState`. Its values, in order, are **Instrument,
+Melee, Ranged, Sheathed**: the `ls.anubis.game.UnsheathState` value names in the binary,
+and the order `ResolveSubSetFromState` switches on. The component also has `m_Priority`
+(`EPriority`) and `m_IsAnimated`. The server decides the state in
+`esv::unsheath::StateSystem::ProcessEntities`. It gathers requests from one component per
+cause (`DefaultComponent`, `CombatJoiningComponent`, `CombatLeavingComponent`,
+`ScriptOverrideComponent`, `SpellAnimation*`, `Climbing`, `LockPicking`, `Consuming`,
+`Combining`, `Coating`, `Resurrect`, `Summoned`, user requests). It sorts them (a `QuickSort`
+over the request list) and applies the winner. The priority values and the comparator were
+not traced.
+
+What the sim models:
+
+- **Default: Sheathed.** Out of a fight every character starts sheathed (`unsheath_state`
+  returns Sheathed for characters without an entry). Both reference screenshots show
+  weapons on the back out of combat.
+- **Joining a fight draws the active weapon set** (`CombatJoiningComponent`). The sim does
+  not model weapon-set switching (`eoc::WeaponSetComponent`). **Assumption**: a character
+  with a ranged weapon and no melee weapon or shield is on the ranged set; everyone else is
+  on the melee set. So joining gives Melee, or Ranged for such archers. This happens after
+  `CombatStarted` / `Joined`.
+- **A cast sets the state from the spell's `Sheathing` field**
+  (`eoc::unsheath::ResolveStateFromSpell`). The values come from the `SpellSheathing` value
+  list:
+  - `Melee`, `Ranged` and `Instrument` give the state of the same name.
+  - `WeaponSet` gives the active set's state.
+  - `DontChange` keeps the current state.
+  - `Sheathed` and anything unknown give Sheathed.
+  - **Assumption**: `Somatic` keeps the current state. The engine resolves it through a
+    lookup that was not traced.
+
+  The sim raises `CombatEvent::Unsheathed` before `SpellCast`. So `Target_MainHandAttack`
+  (`Sheathing "Melee"`) draws the melee weapon and `Projectile_MainHandAttack` (`"Ranged"`)
+  the bow.
+- **Leaving a fight sheathes** (`CombatLeavingComponent`). It applies to survivors at
+  `check_combat_end`. Dead characters keep their state.
+
+Not modelled: the out-of-combat default timer (`esv::unsheath::DefaultSystem`), script
+overrides (`SetWeaponUnsheathed`, `Push/PopUnsheathedState`), the other causes, and the
+sheathe/unsheathe animation (`ecl::CharacterTask_SheathUnsheath`). The viewer switches
+instantly when it presents the event.
+
+#### Where a weapon goes
+
+`Public/<Module>/EquipmentTypes/EquipmentTypes.lsx` has one `EquipmentType` per weapon
+kind, keyed by `UUID`. An item's root template points to it with `EquipmentTypeID`; this is
+inherited through `ParentTemplateId` (**assumption**, same sparse-field rule as
+`VisualTemplate`). For example `WPN_Mace` → template `WPN_HUM_Mace_A_0` → type `Mace`.
+The attributes and the defaults when an attribute is missing come from
+`eoc::EquipmentTypeData::Visit`:
+
+- `BoneMainSheathed`, `BoneMainUnsheathed`, `BoneOffHandSheathed`,
+  `BoneOffHandUnsheathed`, `BoneVersatileSheathed`: default `NONE`.
+- `BoneVersatileUnsheathed`: default `Dummy_R_Hand`.
+- `SourceBoneSheathed`, `SourceBoneVersatileSheathed`: default `NONE`.
+- `SourceBoneVersatileUnsheathed`, `SourceBoneAlternativeUnsheathed`: default
+  `Dummy_Attachment`.
+- `WeaponType_OneHanded`, `WeaponType_TwoHanded`: animation weapon types.
+- Sound types (not used here).
+
+`Bone*` are character skeleton bones: `Dummy_Sheath_Upper_R/L`, `Dummy_Sheath_Hip_L/R`,
+`Dummy_Sheath_Lower_R/L`, `Dummy_Sheath_Ranged`, `Dummy_Sheath_Music`, and the hand bones.
+Every humanoid skeleton bank surveyed has them. `SourceBone*` are bones of the weapon model:
+weapon GR2s carry `Dummy_Sheath`, `Dummy_Attachment` and variants. The weapon is placed so
+its source bone coincides with the character bone (mesh = character bone ·
+inverse(source bone rest)).
+
+`ecl::equipment::GetAttachmentBoneName(type, unsheathed, off_hand, versatile, alternative,
+slot, &bone, &source)` picks them. The weapon-slot branch was read in the assembly, which
+mapped the four flags to registers. The source bone starts as `Dummy_Attachment`.
+
+- **No equipment type:** drawn → `Dummy_R_Hand`; sheathed → `Dummy_Weapon_R_1H` with
+  source `Dummy_Sheath`. No surveyed skeleton has that bone, so such a weapon is not drawn.
+- **Drawn with the alternative grip:** off hand → `BoneOffHandUnsheathed`; main hand →
+  `BoneVersatileUnsheathed`. Source `SourceBoneAlternativeUnsheathed` (`Dummy_Attachment_Rage`
+  on several two-handers).
+- **Versatile:** the off hand uses its off-hand bones; the main hand uses
+  `BoneVersatile(Un)sheathed`. Source `SourceBoneVersatile(Un)sheathed`.
+- **Otherwise:** `BoneMain…` / `BoneOffHand…` for the drawn or sheathed state. Source:
+  `SourceBoneSheathed` when sheathed, `Dummy_Attachment` when drawn.
+
+The client caller (`GetVisualsDesiredState`) computes the flags:
+
+- `off_hand`: the slot is the melee or ranged off hand.
+- `versatile`: the weapon has the `Versatile` property and the opposite hand's slot is in a
+  set the function tests. **Assumption**: that set means the other hand is empty.
+- `alternative`: needs a flag the caller reads, plus a melee weapon that is `Versatile` or
+  `Twohanded` (likely raging). The sim never sets it.
+- `unsheathed`: one flag per slot. **Assumption**: Melee draws the melee slots, Ranged the
+  ranged slots, Instrument the instrument, Sheathed nothing. This is consistent with the
+  slots `ResolveSubSetFromState` reads.
+
+`WeaponFlags` bit positions come from the install's `ValueLists.txt` (`Twohanded` 0x400,
+`Versatile` 0x800, `Melee` 0x1000).
+
+Consequences, checked by the ignored test
+`weapons_sheath_on_the_back_and_select_weapon_subsets`:
+
+- Lae'zel's lone longsword (versatile) is sheathed on `Dummy_Sheath_Upper_R` with source
+  `Dummy_Sheath` and drawn in `Dummy_R_Hand`.
+- Her shortbow hangs on `Dummy_Sheath_Ranged` while sheathed or in Melee, and goes to
+  `Dummy_L_Hand` in Ranged.
+- The CC cleric's mace hangs on `Dummy_Sheath_Upper_R`.
+- The `Shield` type names no sheathed bone. A sheathed shield is not attached, and the viewer
+  hides it. The avatar reference screenshot shows no shield on the back either.
+- Both weapons are always shown, on their sheath bone or in the hand. The old viewer rule
+  "ranged only without melee" is gone.
+
+#### Animation subset
+
+`eoc::unsheath::ResolveSubSetFromState(world, entity, state)` picks the subset:
+
+- Melee reads the melee main/off-hand slots; Ranged the ranged ones.
+- Instrument reads the instrument (weapon type `Voice` without one).
+- Sheathed returns the empty subset (`DFLT`).
+
+`eoc::ResolveWeaponData` turns the two hands into a (main, off) weapon-type pair. Both default
+to `Unarmed1H`. With both hands filled, each uses `WeaponType_OneHanded`. A single weapon
+uses `WeaponType_TwoHanded` when it is `Twohanded` or `Versatile` (`WeaponComponent` flags
+`& 0xC00`), otherwise `WeaponType_OneHanded`. A weapon without an equipment type leaves its
+hand `Unarmed1H`.
+
+`eoc::WeaponAnimationSetData::GetAnimationSet(main, off)` looks the pair up exactly in
+`Public/<Module>/WeaponAnimationSetData/WeaponAnimationSetData.lsx`. `MainHand`/`OffHand`
+default to `Unarmed1H` (`eoc::WeaponAnimationSet::Visit`). Its `AnimationSetUUID` is the
+`MapKey` of an `AnimationSubSets` entry in the character's animation sets. For example
+(`Slashing1H`, `Unarmed1H`) is the one-handed subset `f6fa9d34-…`, and (`Crossbow2H`,
+`Unarmed1H`) the crossbow subset `32bbe70b-…` noted above. **Assumption**: a pair that is not
+listed selects no subset (the default). The engine returns a static string there that was not
+identified.
+
+Observed with the install (`BG3_CHAR_DEBUG=1` viewer log; ignored test output):
+
+- Lae'zel, Melee: (`Sword2H`, `Unarmed1H`) → `808afd36-…`. Idle
+  `GTY_F_Rig_2HS_IDLE_Still_Peace_01`, run `HUM_F_Rig_2HS_LOCO_Run_F_Peace_01`, melee
+  `GTY_F_Rig_2HS_CMBT_Melee_RHand_01_Attack`.
+- Lae'zel, Ranged: (`Bow2H`, `Unarmed1H`) → `f709f223-…`. Idle and ranged attack are `BOW`
+  clips.
+- Lae'zel, sheathed: her own `GTY_F_Rig_Lae'zel_DFLT_IDLE_Still_Peace_01`.
+- The deep-gnome cleric, Melee: (`Slashing1H`, `Shield1H`) → `fbddf847-…`.
+
+The viewer resolves the idle, run and combat clips per drawn state with the existing set
+order (**assumption**, see "Combat clips"). It swaps them in on `CombatEvent::Unsheathed`. A
+type missing from a weapon subset falls back within each set to the default subset, as
+before.
+
+#### Verification (2026-10-22)
+
+- Synthetic tests in `crates/bg3-world/src/unsheath.rs` cover:
+  - every branch of the bone selection, the untyped fallback and unnamed (hidden) bones;
+  - the weapon-type pairs;
+  - the subset per state;
+  - versatile only with a free hand;
+  - spell `Sheathing`;
+  - reading both files with the engine defaults.
+- `weapons_are_drawn_for_the_fight_by_spell_and_sheathed_after` (bg3-sim) checks the order
+  draw-after-`CombatStarted` and switch-before-`SpellCast`, and that the end of the fight
+  sheathes.
+- The ignored install test above checks the real data.
+- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` and `cargo test --release -p bg3-sim -p bg3-world -- --ignored` all
+  exited 0. `bg3x sim-replay --check` on `full-nautiloid.log` reports 12197 agreeing answers and
+  0 disagreements. The new events are presentation-only and raise no story events.
+
+Screenshots (local, `.cache/shots/`):
+
+- `sheath-ooc.png` / `sheath-ooc-avatar-a.png` (back, `--no-follow
+  --camera=51.3,18.9,-424.6 --look-at=53.06,18.45,-426.5`) and `sheath-ooc-avatar-b.png`
+  (front, `--camera=54.9,18.9,-428.4`): `--play --shot-after 8`, out of combat. The cleric's mace hangs diagonally across his back, handle up at
+  his right shoulder, and the shield is not shown. This matches the reference screenshot.
+- `sheath-combat.png`: `--play --combat-test --shot-after 10`. Lae'zel holds the longsword
+  two-handed in the `2HS` idle with the bow sheathed on her back. The avatar has the mace in
+  his right hand and the shield on his left arm.
+- `sheath-after-combat.png`, `sheath-laezel-after-a.png` / `-b.png`: `--combat-autoplay`
+  until the fight ends. Both are sheathed again in their peace idles. The `-a`/`-b` shots add
+  `--no-follow --camera=-42.3,4.2,-400.6` / `--camera=-37.8,4.2,-396.3` with
+  `--look-at=-40.05,3.7,-398.43`.
+
+**Known discrepancy:** in the reference screenshot Lae'zel's sheathed longsword lies on the
+other diagonal: grip down by her right hip, blade up behind her left shoulder. We show the
+grip up at her right shoulder and the blade down towards her left hip. Our placement follows
+the data exactly:
+
+- The mace and the longsword share the model convention (business end along −Z).
+- Both resolve to `Dummy_Sheath_Upper_R` with source `Dummy_Sheath`.
+- The idle clips key that bone at its rest pose.
+- The mace matches its reference.
+
+Something weapon- or type-specific that we do not apply is therefore still unidentified.
+
 ## Open
 
 - Character shaders: what remains open is listed in `character-shaders.md`.
-- Subset selection, sheathing, helmet hair, camp-outfit switching and automatic visual attachments.
+- Sheathing: the state arbitration (`EPriority`, the other causes), weapon sets, script
+  overrides, sheathe/unsheathe animations, the alternative (rage) grip, and Lae'zel's
+  longsword orientation (see "Drawn and sheathed weapons").
+- Helmet hair, camp-outfit switching and automatic visual attachments.
 - Facial animation and physics/cloth for the extra mesh bones.
 - Initial death/lying poses for scenery corpses (combat deaths now animate).
 - Confirm the waterfall/override order and the fallback rule against the original
