@@ -4,10 +4,13 @@
 //! level object → root template → visual resource → GR2 + materials.
 
 pub mod appearance;
+pub mod atmosphere;
 pub mod banks;
 pub mod characters;
+pub mod fog;
 pub mod level;
 pub mod lights;
+pub mod probes;
 pub mod templates;
 pub mod terrain;
 

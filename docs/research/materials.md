@@ -122,6 +122,19 @@ VT layers (via `bg3-vt`, BC3 tiles kept compressed, converted like the DDS maps)
 and loaded with rayon. On an M5 Pro: 298 textures (55 DDS + 243 VT layers) = 276 MiB in ~65 ms at
 mip 1; 785 MiB in ~200 ms at mip 0.
 
+### Lighting differences from the game
+
+Level surfaces are lit by Bevy's PBR with the game's light units, falloff (patched in, see
+`lighting.md`), exposure and display transform, and by the level's probes as Bevy reflection
+probes. What still differs from the game's deferred lighting (`ClusteredLighting_*`, described in
+`character-shaders.md`, "Lighting"): Bevy's diffuse is Lambert-like Burley without the game's
+renormalisation (`lerp(1, 1/1.51, r)`), its specular visibility uses α² where the game uses the
+remapped `((r + 1)/2)²`, there is no geometric specular anti-aliasing or sun-disc specular, F0 is
+`0.16 · reflectance²` with reflectance fixed at Bevy's default instead of the G-buffer's
+`Reflectance`, no light channels, and the probes are blended as described in `lighting.md`. The
+emissive scale (`GLOW_NITS`) is still tuned by eye. A level material on the game's light loop (as
+`character.wesl` does for characters) would close these.
+
 ## Open
 
 Character graphs (skin, hair, eyes, clothing palettes, vertex-colour cuts) have their own

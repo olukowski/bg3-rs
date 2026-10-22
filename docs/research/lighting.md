@@ -1,8 +1,12 @@
 # Lighting
 
-Status: placed lights and level-wide lighting are parsed (`crates/bg3-world/src/lights.rs`) and
-mapped to Bevy lights in the viewer (`viewer/src/lights.rs`). The unit conversion is approximate
-and tuned by eye. It is not verified against the original.
+Status: placed lights, level-wide lighting, lighting/atmosphere triggers, light probes and fog
+volumes are parsed (`crates/bg3-world/src/{lights,atmosphere,probes,fog}.rs`). The viewer renders
+them with the game's units, falloff, exposure, colour grading and display transform
+(`viewer/src/{lights,probes,fog,post}.rs`, `shaders/{game_light,post}.wesl`). Everything below
+was established statically, from the compiled shaders (`Core.metallib`) and the binary (4.1.1.7631656),
+not traced at run time; what is exact and what is approximated is listed per section.
+Points not established are marked **assumption**.
 
 ## Placed lights
 
@@ -33,20 +37,20 @@ confirmed case of "empty field means inherit" (see `level-structure.md`).
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `LightType` | u8 | 0 = point, 1 = spot, 2 = directional. Inferred: spots carry `Angle` and have names like `*_Spot*`/`*Spotlight*`; type 2 carries `DirectionLightDimensions` and has names like `*_Directional_*`. Enum names are not found in the binary (`ls::ELightType`) |
-| `Color` | fvec3 | linear filter colour |
-| `Intensity` | float | 0–~10⁴. Unit unclear, see below |
-| `Kelvin`, `UseTemperature` | float, bool | colour temperature, applied when `UseTemperature` is set |
-| `Radius` | float | range / attenuation radius |
-| `Angle` | fvec2 | spot cone, degrees, (inner, outer). Combined lights have `GameplaySpotlightAngle = (x+y)/2` |
-| `FlatFalloff`, `Gain` | bool, float | falloff shape. Unknown details |
+| `LightType` | u8 | 0 = point, 1 = spot, 2 = box ("directional"). Confirmed by the bounds the engine builds per type (`ls::LightComponent::UpdateBounds`) |
+| `Color` | fvec3 | linear colour, used as stored |
+| `Intensity` | float | 150–600000 on the Nautiloid, typically 2000–10000. Luminous power (lumen-like), see "Light units" |
+| `Kelvin`, `UseTemperature` | float, bool | colour temperature (default 6445.9 K), multiplied in when `UseTemperature` is set |
+| `Radius` | float | range: the light is cut off at `Radius` |
+| `Angle` | fvec2 | spot cone, **full** angles in degrees (inner, outer). Combined lights have `GameplaySpotlightAngle = (x+y)/2` |
+| `FlatFalloff`, `Gain` | bool, float | the engine's "fill light" flag (constant falloff) and an additive term, see "Light units" |
 | `DirectionLightDimensions` | fvec3 | box size (w, h, depth) of type-2 lights |
-| `DirectionLightAttenuationStart/End/Side`, `…Function` | float, u8 | box-light falloff |
+| `DirectionLightAttenuationStart/End/Side`, `…Function` | float, u8 | box-light fade lengths (m) and curve (0 linear, 1 square, 2 smoothstep, 3 smootherstep) |
 | `Shadow`, `CastShadow`, `VolumetricShadow` | bool | |
-| `PreExpose` | bool | intensity is relative to the current exposure (presumably) |
+| `PreExpose` | bool | the light is multiplied by the camera exposure like everything else; without it the light is in display units. Every Nautiloid light has it |
 | `IsFlickering`, `Amount`, `Speed`, `IsMoving`, `MovementSpeed/Amount` | | animation |
 | `ScatteringScale` | float | volumetric fog contribution |
-| `LightChannelFlag` | u8 | light channel mask |
+| `LightChannelFlag` | u8 | light channel mask: a light reaches a pixel only if the bit of the pixel's G-buffer channel (bits 4–6 of target 2's alpha) is set. Mostly 191 (all but channel 6) |
 | `LightCookieTexture`, `LightCookieResource` | FixedString | projected texture |
 | `Enabled` | bool | |
 
@@ -87,37 +91,258 @@ are two `ExposureSettings` entries: (14, 16, 0) and (0, 16, −1). Which one app
 known. Levels may also switch lighting at runtime (atmosphere/lighting triggers); we don't handle
 that yet.
 
-## Viewer mapping (assumptions)
+### Lighting and atmosphere triggers
 
-- **Exposure:** a camera `Exposure { ev100 = ExposureMin − ExposureCompensation }` (14). The game
-  uses auto-exposure in [14, 16].
-- **Sun:** `DirectionalLight { illuminance = SunIntensity }`. Direction from yaw/pitch with
-  `(cos p · sin y, sin p, cos p · cos y)` pointing at the sun in BG3 space, then mirrored. The yaw
-  zero and handedness are **unverified**.
-- **Ambient:** `GlobalAmbientLight { color = SkyLight.Color, brightness = SkyLight.Intensity / π }`
-  (a uniform sky's luminance).
-- **Local lights:** `lumens = Intensity · 4π · light_scale`, with `light_scale = 200` by default
-  (`--light-scale`). This was tuned so the Nautiloid reads at EV 14. Most Nautiloid lights are
-  `PreExpose`, which suggests the engine scales them by the exposure. The real formula is still
-  open. `range = Radius`.
-- **Direction:** spot and box lights are assumed to shine along their local **+Z** (BG3 space),
-  then go through `space.rs`. Evidence is weak: for strongly tilted lights, +Z and +Y point down
-  about equally often. Box depth is the largest dimension, which fits +Z.
-- **Spot angles:** `Angle` is taken as (inner, outer) **half-angles**.
-- **Box lights (type 2)** are approximated by a spot light at the object origin covering the box
-  cross-section, with `range = depth`.
-- Colour temperature uses a black-body fit (Tanner Helland), not the engine's table.
-- Shadows, cookies, flicker, fog and volumetrics are not implemented.
+The level's `meta.lsf` resources are only the default. Polygon triggers in the level's
+`Triggers/_merged.lsf` replace them where the camera/player is: root template `TriggerType`
+`TriggerAtmosphere` (template `AtmosphereTrigger`) and `TriggerLighting` (`LightingTrigger`), with
+`ResourceIDs/ResourceID` (one or more resource IDs), `FadeTime` (s), `Height` and `Points` (the
+prism shape of `PhysicsType` 3, as in `bg3-sim`). `crates/bg3-world/src/atmosphere.rs` reads them;
+`LevelLighting::load_at` picks the innermost trigger containing a point (`bg3-world` tells
+lighting from atmosphere triggers by which bank the first resource is in).
+
+The Nautiloid (`TUT_Avernus_C`; level default `LTN_Default`/`ATM_Default`, EV 14–16, sun
+100000) has four:
+
+| Trigger | Resources (first = default) |
+|---------|-----------------------------|
+| `LTN_TUT_Avernus_C_Exterior` (whole ship) | `LTN_Default_EV10_Avernus_Ext`, `LTN_TUT_Avernus_A_Exterior_B`, `LTN_CRE_AstralPlane_A` (in no bank we load) |
+| `ATM_TUT_Avernus_C_Exterior` (whole ship) | `ATM_Default_EV10_Avernus_Ext`, `ATM_CRE_AstralPlane_A_CINE` |
+| `ATM_TUT_Avernus_C_Interior` | `ATM_Default_EV08_Avernus_Int`, `ATM_CRE_AstralPlane_A_CINE` |
+| `ATM_TUT_Avernus_C_Interior_UnderDeck` | `ATM_Default_EV08_Avernus_Int` |
+
+So in play the Nautiloid is lit by `LTN_Default_EV10_Avernus_Ext` (sun 500 at 3500 K, sky light
+5000, two fog layers) and exposed at EV 8.5–12 (exterior) or 8.5–10.5 (interior), about five stops
+darker than the level default. Light probes are baked per lighting resource and exist for exactly
+the three resources of the lighting trigger, which confirms it is the one in use. The astral-plane
+resources are also keyed in the `TUT_Helm_Transponder` timeline (the helm vision).
+**Assumptions:** the first resource is the default one; nested triggers resolve to the innermost
+(smallest area); the prism extends `Height` up from the trigger position (as `bg3-sim` assumes;
+with it the imp room deck, y ≈ 3, lies below `…_Interior` (y 14–62) and gets the exterior
+atmosphere; the two differ only in `ExposureMax` and the second entry's compensation). Blending
+over `FadeTime` and the story calls `TriggerSetAtmosphere`/`TriggerSetLighting` (not used on the
+Nautiloid) are not implemented: the viewer picks the resources once, at the avatar's (or
+`--look-at`) position.
+
+### Light probes
+
+`LightProbes/_merged.lsf`, `Type=lightProbe`, sparse over the root template `GUS_LightProbe`
+(`Radius` 5, `Size` 10³, `TransitionDistance` 1, `LightProbeShape` 0, `LightProbeType` 1,
+`Intensity` 1, `InfiniteCapture`). `CaptureDescriptions/CaptureDesc` per `Lighting` resource:
+`DiffuseIBL`, `DiffuseAlphaIBL`, `SpecularIBL`, `SpecularAlphaIBL` (`.dds` in
+`Gustav_Textures.pak`) and `SphericalHarmonicsIBL` (64-byte `_SH.dat`). The Nautiloid has 32
+probes (28 Gustav, 4 GustavDev) at y ≈ 17–30 in the rooms and a few at y ≈ 6 (`LightProbe_Room3*`).
+`crates/bg3-world/src/probes.rs` reads them.
+
+## Light units and falloff
+
+Sources: the light loop of `ClusteredLighting_*` (Core.metallib) and the CPU code that packs the
+light buffers (`ls::ClusteredAssignmentStage::SetLightData` / `SetDirectionLightData`,
+`ls::LightTemplate::Visit`, `ls::LightComponent::LightComponent`, `ls::blackbody`,
+`ls::Lighting::Visit`, `ls::GameRenderView::UpdateConstantBuffersData`).
+
+- **Colour** of every local light: `Color · blackbody(Kelvin) (if UseTemperature) · Intensity`.
+  No π or lumen/candela factor on the CPU. `blackbody` is a chromaticity on the Planckian locus
+  (rational fits in CIE 1960 uv) blended into the CIE daylight locus around 13000 K, converted to
+  linear Rec.709 and normalised to unit luminance (`bg3_world::lights::kelvin_to_rgb`, exact).
+- **Exposure:** the lighting multiplies `PreExpose` lights, the sun and the ambient by the
+  exposure `1/(1.2 · 2^EV100)` (the ambient also by 100, see "Light probes"); lights without
+  `PreExpose` get 1.
+- **Point:** `C · (1/max(d², 1e-4) + Gain) · sat(1 − (d/R)⁴)² · N·L / (4π)`, zero beyond `R`. With
+  `FlatFalloff` the inverse square becomes the constant `4/R²`. `Gain` is added, not multiplied.
+  Nautiloid lights are mostly `FlatFalloff` with `Gain` 1.
+- **Spot:** the same times `sat((cos θ − cos(outer/2)) / (cos(inner/2) − cos(outer/2)))²`, with
+  **1/π** instead of 1/(4π). The axis is the local **+Z**.
+- **Box (type 2):** the box spans `±w/2`, `±h/2` and `z ∈ [0, depth]` from the object origin (the
+  centre of the source face) along local +Z. Inside it the light has a constant direction (along
+  +Z), illuminance `C` (no π, no distance falloff), fades in over `AttenuationStart` from the
+  source face, out over `AttenuationEnd` before the far face and over `AttenuationSide` at the
+  sides, with the curve `…Function`. Light cookies can modulate it.
+- **Sun:** direction towards the sun `(cos p · cos y, sin p, cos p · sin y)` in BG3 space (yaw 0 =
+  +X, 90° = +Z, pitch = elevation). If `SkyLight.ScatteringEnabled` (both Nautiloid lighting
+  resources and `LTN_Default`), surfaces are lit with `ScatteringSunColor · ScatteringSunIntensity ·
+  transmittance` (Bruneton atmosphere LUT); otherwise with `pow(SunColor, 2.2) · SunIntensity ·
+  blackbody(Kelvin)`. Lux; the BRDF carries the 1/π. The sun is always exposed and shadowed
+  (cascades, `ShadowFarPlane`).
+
+### In the viewer
+
+`viewer/src/lights.rs`. Bevy's exposure is the same `1/(1.2 · 2^EV100)` and Bevy divides a point
+or spot light's lumens by 4π, so: point lumens = `Intensity` (exact); spot lumens = `4 ·
+Intensity` and half angles (exact cone); colours from the engine's `blackbody` (exact). The
+falloff is one function, `bg3_light_falloff` in `shaders/game_light.wesl`, used by the character
+shader and patched at run time into Bevy's point light (`bevy_pbr::render::pbr_lighting`, in
+place of `getDistanceAttenuation`). It reads `Gain`/`FlatFalloff` packed as the game does
+(`FlatFalloff ? −max(Gain, ε) : Gain`) from the light's `shadow_depth_bias` (unused: the viewer
+renders no local shadow maps). Approximations:
+
+- **Box lights** are fill-light spot lights from the source face: falloff `4/R²` with `R =
+  depth`, lumens `π · Intensity · depth²` (so the illuminance on the axis is `Intensity`), a cone
+  covering the cross-section at mid-depth (inner = 0.7 · outer). The range window stands in for
+  the far fade; the attenuation lengths and curve are not used; the direction is radial from the
+  source point instead of constant.
+- The sun's atmospheric transmittance is taken as 1 (the `Atmos_Transmittance` precompute and its
+  units are not ported). The sun casts Bevy cascaded shadows up to `ShadowFarPlane`; local lights
+  cast none. Bevy's volumetric fog uses Bevy's falloff, not the patched one.
+- Not handled: light channels (surface channels aren't known), lights without `PreExpose`,
+  `IntensityOffset`/flicker, cookies, the falloff-exponent modifier (0 at load).
+- `--light-scale` (default 1) multiplies local lights for A/B comparisons.
+
+## Exposure
+
+Sources: `PPCalculateEV`, `PPHistogram`, `PPExposure`, `PPRexpose_PS` (Core.metallib) and
+`ls::PostProcessStep_Exposure` (`OnSizeChanged`, `ExecuteWTKernel`), `ls::ExposureSettings::Visit`.
+
+The lighting writes **pre-exposed** HDR: it multiplies lights by last frame's exposure
+`E = 1/(1.2 · 2^EV100)`. The exposure buffer starts at EV100 6.38 with a histogram over EV100
+−8 to 18. Each frame:
+
+1. **EV texture**, 640×384 (1280×768 when the screen is wider than 2560 / taller than 1440):
+   four bilinear taps a quarter texel apart, Rec.709 luminance, un-pre-exposed, as EV100:
+   `log2(max(L · 1.2 · 2^EV, 1e-5)) + 3`.
+2. **Histogram** of 256 bins over [−8, 18], each texel split linearly between its two nearest bins
+   in 1/256 fixed point, weighted by the `ExposureMeteringMode`: 0 uniform, 1 centre-weighted
+   (`1 − sat(length((p − size/2) · 2/size))`); texels at or below −8 are skipped.
+3. **Average** over the mass between `ExposureMinPercentile` and `ExposureMaxPercentile` (5–95 %),
+   target = mean − `ExposureCompensation` (so positive compensation brightens).
+4. **Adaptation** `EV += (target − EV)(1 − e^{−k·dt})` with k = 2 towards a brighter scene, 1
+   towards a darker one, then **clamped** to [`ExposureMin`, `ExposureMax`].
+
+The gameplay camera uses the first `ExposureSettings` entry (**assumption**: the second is for
+dialog/cinematic cameras; the index comes from the camera component). `DeltaTime` is taken as the
+frame time (**assumption**).
+
+In the viewer (`viewer/src/post.rs`, `shaders/post.wesl`) all of the above is ported: a compute
+pass builds the histogram from the HDR target, a one-thread pass averages and adapts, and the
+result is read back to become the camera's `Exposure` (pre-exposure, a few frames late; the
+tonemap pass corrects the difference). Differences: the first frame jumps straight to the target
+(the game's "immediate" adaptation mode, **assumption** about when it applies; screenshots
+otherwise depend on the warm-up), and `PPRexpose_PS` (re-exposing history buffers) has no
+counterpart because there is no TAA history. `BG3_BEVY_POST=1` restores Bevy's tonemapping with a
+fixed exposure.
+
+## Colour grading and tonemapping
+
+Sources: `PPComputeLUT`, `PPColorGradingApplyLUTPS`, `PPToneMap_LUT`, `CombineUI`
+(Core.metallib), `ls::PostProcessStep_ToneMap::ExecuteGraphics`, `rf::GraphicSettings`,
+`ls::PostProcessStep_ComputeLUTs::ExecuteWTKernel`.
+
+On SDR (the default, tonemapper version 20 → shader version 21) the display transform is a
+**fixed 64³ LUT from the game data**, `Engine/Textures/ZCAM_SDR_4.dds` (`R10G10B10A2`, output
+sRGB-encoded). `ToneMapHighlightsFixAmount` only feeds the ACES LUT of the HDR/legacy path and
+has no effect here. Per pixel:
+
+1. **Grading** (`PPComputeLUT`, baked by the game into a 32³ LUT indexed by `PQ(x/222)`, input
+   pre-exposed linear Rec.709): `+ Brightness` (0), sRGB → AP1, a gamut expansion of saturated
+   colours, the `Shadows` and `Highlights` curves of `NewColorCorrection`, white balance (identity
+   at 6500 K / tint 0), hue rotation and `Saturation` in ICtCp (intensity and chroma of the
+   saturated colour, hue of the original), the six ranges (`Global`, `Dark`, `Shadow`, `Midtones`,
+   `Highlight`, `Specular`: chroma offset `XYOffset`, `Saturation`, `1.35^ExposureShift`) in
+   Oklab with smoothstep weights on lightness, then `Contrast` around `log2(0.18 · 2^Pivot)` on
+   AP1 luminance, and negatives lifted to 0.
+2. **Display** (`PPToneMap_LUT`): an ACES-style reference gamut compression (thresholds 0.815 /
+   0.803, limits 1.147 / 1.264), the ACEScc shaper, and the ZCAM SDR LUT sampled at the raw
+   coordinate (no half-texel remap, a quirk of the game we keep).
+3. `CombineUI`: the in-game gamma setting (default 1, identity).
+
+In the viewer the grading is evaluated per pixel instead of through the 32³ LUT (so the LUT's
+quantisation is not reproduced), the LUT is loaded from the install at start, and the encoded
+output is decoded to linear for Bevy's sRGB swapchain (which re-encodes it). Not ported: white
+balance other than 6500 K / tint 0 (logged), the VFX grading of spell effects, artist grading LUTs
+(`GradingLutEnabled`), screen fades, and **bloom**: the game adds a bloom chain before grading
+(threshold `sat(Amount · (lum − Threshold))` with a min-of-4 downsample, combined with weight 0.2;
+the parameter mapping is an **assumption**), the viewer has none.
+
+The Nautiloid atmospheres: `ATM_Default_EV08_Avernus_Int` (EV 8.5–10.5, centre-weighted,
+Highlights 10, blue shadows `ShadowRange.XYOffset (0.1, 0.01)`) and `ATM_Default_EV10_Avernus_Ext`
+(EV 8.5–12, uniform metering, Saturation 1.1, `ShadowRange.ExposureShift 0.25`); both Contrast
+1.12.
+
+## Light probes
+
+Formats (Nautiloid): `_Diffuse_RGB` is a 16² BC6H cubemap holding irradiance/π, `_Specular_RGB`
+a 128² BC6H cubemap with 8 GGX-prefiltered mips (mip m ≈ roughness m/8), the `_Alpha` maps BC4
+cubemaps of the same sizes holding coverage (≈ 1 where the capture saw geometry, ≈ 0.05 towards
+openings), `_SH.dat` 4 × float4 (`Y00, Y1−1, Y10, Y11`, each RGBA, the plain projection of
+radiance). Faces are in D3D order and sampled with the BG3 world direction. Probes without
+`LightProbeShape` are spheres (template default) and ignore `Size`.
+
+Shading (`ClusteredLighting_*`): start from a global "distant probe" (**assumption**: a runtime
+sky capture), then for each probe of the pixel's cluster in list order lay
+`probe · smoothstep(fade) · coverage` over the result (later probes win). The fade is
+`sat((R − |p|)/TD)` for spheres and the same measured from `half − TD` for boxes; lookups are
+parallax-corrected towards the volume's far side, less so for rough surfaces. Specular uses mip
+`8 · r` and a split-sum LUT, diffuse the diffuse cube times the diffuse colour. Both are multiplied
+by `Exposure · 100`: **captures are absolute radiance / 100** (cd/m² ÷ 100), not pre-exposed.
+Then SSAO on the diffuse and Lagarde's specular occlusion. The SH is not used for surfaces
+(only for fog). `SkyLight.Intensity` is not applied at run time; it only matters for baking.
+
+In the viewer (`viewer/src/probes.rs`) each probe with a capture for the active lighting is a
+Bevy reflection probe (`LightProbe` + `EnvironmentMapLight`, intensity `100 · Intensity`; no face
+swap needed, since Bevy's `(x, y, −z)` cube lookup undoes the viewer's z mirror), and the
+character shader evaluates the same probes (hair with N and −N, blended 0.3/0.7). Approximated:
+Bevy blends overlapping probes as a weighted sum instead of ordered lay-over, has no coverage
+alpha, uses a box for spheres (2R), Bevy's own falloff and parallax, mip `7 r`, and only the 8
+probes nearest the camera. There is no distant probe; Bevy's global ambient is off.
+
+## Fog
+
+All of the game's fog is volumetric (froxels: `VolumetricFogInitialize`, `VolumetricFogLighting`,
+`VolumetricFogGather`, applied by `DeferredFog_*_PS` as `scene · T + inscatter`, pre-exposed).
+
+- **Height layers** (`FogLayer0/1`, `ls::Fog::Layer::GetFogParameters`): density
+  `D0 · (D1/D0)^((y − H0)/(H1 − H0))` (exponential through both points, extrapolated, capped at
+  7.93), scattering `Albedo ·` density, optional noise when `NoiseCoverage` < 1. On the Nautiloid
+  they are negligible (optical depth ≈ 0.5 % per 100 m) and the viewer doesn't render them.
+- **Fog volumes** (`FogVolumes/_merged.lsf`, template `Shared_FogVolume`: Density 0.01, Albedo 1,
+  sphere of Radius 5, Size 10, TD 1): extinction `Density`, scattering `Albedo · Density`, a
+  *linear* fade over `TransitionDistance`; volumes of one `FogGroup` combine by max, `Replaces`
+  volumes scale down the fog before them. Nautiloid densities range from 0.002 to 0.15 /m (the red
+  rooms). Lighting: sun and local lights with a Henyey-Greenstein phase (g = `Fog/Phase`,
+  **assumption**) and each light's `ScatteringScale`, plus the probes' SH ambient.
+
+In the viewer (`viewer/src/fog.rs`) each enabled volume is a Bevy `FogVolume` (box of `Size` or
+2R) with the fade baked into a 16³ density texture, `density_factor = Density`, scattering =
+the largest albedo channel (colour = albedo / that), absorption = the rest; every light is a Bevy
+`VolumetricLight`. Not reproduced: groups and `Replaces` (Bevy adds volumes), noise, the SH
+ambient in-scattering (Bevy's fog ambient is unexposed and fades with depth, so it is off), the
+phase for local lights, per-light `ScatteringScale`. `BG3_NO_FOG=1` turns fog off.
+
+## Background
+
+There is no clear colour: the sky goes into the emissive buffer (`PPEmissiveSkydome_Procedural_PS`:
+the flat sky colour, or a skydome texture when `SkydomeEnabled`, plus Bruneton scattering, clouds
+and a sun disc, exposed) and then through the fog. The flat colour and the scattering set-up are
+CPU-side and not traced. The viewer uses what the probes recorded: the mean radiance of all
+specular texels (mip 3) whose coverage marks no geometry, over every probe of the active lighting,
+as a uniform `Skybox` (**assumption**: a uniform sky; the Nautiloid gives ≈ 43 / 36 / 28 cd/m²).
+The atmosphere's `EnvironmentEffect` (storm-cloud VFX) is not rendered.
+
+## Verification (2026-10-22)
+
+`scripts/compare-references.sh` (coarse central-region sRGB means, 0–255, against local
+screenshots of the original; game content, kept in `.cache/`), luma ours / reference:
+
+| Shot | Before (EV 14, light scale 200, Bevy tonemapping) | After |
+|------|------|------|
+| `laezel` | 114.5 / 41.9 | 27.1 / 41.9 |
+| `imp` | 108.6 / 32.4 | 51.5 / 32.4 |
+| `avatar-deepgnome-cleric` | 110.3 / 31.6 | 30.3 / 31.6 |
+
+The remaining differences are mostly framing (our framed shots are from further away and see
+other geometry) and level objects the game doesn't draw (large flat helper planes catching
+light); nothing was tuned to these numbers. Unit tests cover the trigger prisms, probe and fog
+template inheritance, the fog edge weights, the post-processing fields and the engine blackbody;
+the install test `nautiloid_triggers_choose_lighting_probes_and_fog` checks the Nautiloid's
+trigger choice, probe captures and fog volumes.
 
 ## Open questions
 
-- The unit and exposure relationship of local-light `Intensity` (`PreExpose`, `Gain`,
-  `FlatFalloff`), and the falloff curve.
-- `LightType` enum names. The forward axis of spot and box lights, and whether the box origin is
-  its centre or its source face.
-- Sun yaw/pitch convention. Which of the two `ExposureSettings` is active.
 - `CombinedLights`: how the gameplay half is evaluated (`eoc::GameplayLightComponent`:
   `m_Radius`, `m_EdgeSharpening`, `m_SpotLightAngle`, `m_DirectionalDimensions`, `m_IsSunlight`,
   `m_PointLightVerticalLimit`).
-- `LightProbes/*_SH.dat`: 64-byte spherical-harmonics probes, not parsed yet.
-- `FogVolumes/_merged.lsf` and lighting/atmosphere triggers.
+- Trigger prism height convention and trigger blending (`FadeTime`); probe list order
+  (`ls::LightProbeHierarchySystem`); the distant probe.
+- The sun's transmittance precompute; the flat sky colour; `TimelineFog`.
+- Bloom parameter mapping; which camera uses the second `ExposureSettings` entry.
+- Level materials still use Bevy's `StandardMaterial` BRDF (see `materials.md`), not the game's.

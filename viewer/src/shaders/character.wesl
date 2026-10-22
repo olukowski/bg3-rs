@@ -28,7 +28,13 @@ import bevy_pbr::render::{
     clustered_forward as clustering,
     shadows,
     pbr_ambient as ambient,
-    pbr_lighting::getDistanceAttenuation,
+};
+@if(!PREPASS_PIPELINE)
+import bg3_viewer::shaders::game_light::bg3_light_falloff;
+@if(!PREPASS_PIPELINE && ENVIRONMENT_MAP)
+import bevy_pbr::{
+    light_probe::environment_map,
+    render::pbr_lighting::{LightingInput, LAYER_BASE, F_AB},
 };
 
 const MODE_SKIN: u32 = 0u;
@@ -439,7 +445,8 @@ fn lashes(uv: vec2<f32>) -> Surface {
 // ---- Lighting: the game's deferred light loop for character surfaces ----
 // bg3: ClusteredLighting_N kernels, DoClusteredLight / DoClusteredLight_Subsurface,
 // Specular_Hair, CalculateHairParameters (Core.metallib, 4.1.1.7631656). Our own port of the
-// BRDFs, run over Bevy's lights (falloff, shadows and ambient stay Bevy's).
+// BRDFs, run over Bevy's lights with the game's falloff (`game_light.wesl`); shadows and
+// ambient stay Bevy's.
 // Shading model in `cu.flags`: 0 lit, 3 subsurface, 5 hair. Profile block (model 3):
 // v[20] (scatter colour, scatter distance mm), v[21] (transmission tint / 4, kernel index),
 // v[22] (thickness remap min, max − min, thick object, transmission), v[23] (dual specular
@@ -668,7 +675,7 @@ fn char_lighting(in: pbr_types::PbrInput, sh: CharShading) -> vec3<f32> {
         view_bindings::view.view_from_world[3].z
     ), p);
     let cluster_index = clustering::view_fragment_cluster_index(in.frag_coord.xy, view_z, in.is_orthographic);
-    let ranges = clustering::unpack_clusterable_object_index_ranges(cluster_index);
+    var ranges = clustering::unpack_clusterable_object_index_ranges(cluster_index);
     // Shadow lookups offset along the side the light is on (hair: along the light).
     var direct = vec3(0.0);
 
@@ -680,7 +687,7 @@ fn char_lighting(in: pbr_types::PbrInput, sh: CharShading) -> vec3<f32> {
         var li: CharLight;
         li.l = normalize(to_light);
         li.sun = false;
-        var falloff = getDistanceAttenuation(d2, (*light).color_inverse_square_range.w);
+        var falloff = bg3_light_falloff(d2, (*light).color_inverse_square_range.w, (*light).shadow_depth_bias);
         let spot = i >= ranges.first_spot_light_index_offset;
         if spot {
             var spot_dir = vec3((*light).light_custom_data.x, 0.0, (*light).light_custom_data.y);
@@ -730,15 +737,41 @@ fn char_lighting(in: pbr_types::PbrInput, sh: CharShading) -> vec3<f32> {
         direct += shade_light(sh, li);
     }
 
-    // Ambient: Bevy's uniform ambient through the split-sum approximation, as for every other
-    // surface here. Hair uses |N·V| (the game blends its probes 0.3 front / 0.7 back, which a
-    // uniform ambient doesn't distinguish).
+    // Ambient: Bevy's uniform ambient (zero for levels with probes) and the probes below, through
+    // the split-sum approximation as for every other surface here. Hair uses |N·V|.
     let n_v = select(max(dot(sh.n, sh.v), 1e-4), max(abs(dot(sh.n, sh.v)), 1e-4), sh.model == MODEL_HAIR);
     var amb_diffuse = sh.diffuse;
     if sh.model == MODEL_HAIR {
         amb_diffuse = sh.albedo;
     }
-    let indirect = ambient::ambient_light(p, sh.n, sh.v, n_v, amb_diffuse, sh.f0, sh.r, in.diffuse_occlusion);
+    var indirect = ambient::ambient_light(p, sh.n, sh.v, n_v, amb_diffuse, sh.f0, sh.r, in.diffuse_occlusion);
+    // The level's light probes (Bevy reflection probes, see `probes.rs`): the game lights
+    // characters with the same probe loop as everything else. Hair evaluates them with N and −N
+    // and blends 0.3 / 0.7.
+@if(ENVIRONMENT_MAP) {
+    var env_in: LightingInput;
+    env_in.layers[LAYER_BASE].NdotV = n_v;
+    env_in.layers[LAYER_BASE].N = sh.n;
+    env_in.layers[LAYER_BASE].R = reflect(-sh.v, sh.n);
+    env_in.layers[LAYER_BASE].perceptual_roughness = sh.r;
+    env_in.layers[LAYER_BASE].roughness = sh.r * sh.r;
+    env_in.P = p.xyz;
+    env_in.V = sh.v;
+    env_in.diffuse_color = amb_diffuse;
+    env_in.metallic = 0.0;
+    env_in.F0_dielectric = sh.f0;
+    env_in.F0_metallic = sh.f0;
+    env_in.F_ab = F_AB(sh.r, n_v);
+    var env = environment_map::environment_map_light(&env_in, &ranges, false);
+    if sh.model == MODEL_HAIR {
+        env_in.layers[LAYER_BASE].N = -sh.n;
+        env_in.layers[LAYER_BASE].R = reflect(-sh.v, -sh.n);
+        let back = environment_map::environment_map_light(&env_in, &ranges, false);
+        env.diffuse = mix(env.diffuse, back.diffuse, 0.7);
+        env.specular = mix(env.specular, back.specular, 0.7);
+    }
+    indirect += env.diffuse * in.diffuse_occlusion + env.specular * in.specular_occlusion;
+}
 
     let emissive = in.material.emissive.rgb * mix(1.0, view_bindings::view.exposure, in.material.emissive.a);
     return view_bindings::view.exposure * (direct + indirect) + emissive;
