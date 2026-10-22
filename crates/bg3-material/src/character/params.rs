@@ -71,6 +71,14 @@ impl ParamSet {
         }
     }
 
+    /// A 2-vector, or `default`.
+    pub fn vec2(&self, name: &str, default: [f32; 2]) -> [f32; 2] {
+        match self.values.get(name) {
+            Some(v) if v.len() >= 2 => [v[0], v[1]],
+            _ => default,
+        }
+    }
+
     /// A 4-vector, or `default`.
     pub fn vec4(&self, name: &str, default: [f32; 4]) -> [f32; 4] {
         match self.values.get(name) {

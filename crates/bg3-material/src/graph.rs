@@ -26,6 +26,8 @@ pub struct ShaderGraph {
     pub uv_count: u32,
     pub discards_pixels: bool,
     pub vertex_color: bool,
+    /// `DiffusionProfileUUID` of subsurface graphs (empty values dropped).
+    pub diffusion_profile: Option<String>,
     pub params: Vec<Param>,
 }
 
@@ -54,6 +56,11 @@ impl ShaderGraph {
             uv_count: int("UVCount") as u32,
             discards_pixels: flag("IsDiscardingPixels"),
             vertex_color: flag("VertexColorEnabled"),
+            diffusion_profile: node
+                .attr("DiffusionProfileUUID")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
             params: read_params(node),
         }
     }

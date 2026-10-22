@@ -18,9 +18,11 @@ pub enum CharKind {
     ClothPalette,
     /// 3-colour tint from an `MSKcloth` map (the `*_MSK_*` graphs).
     ClothMsk,
-    /// `CHAR_Eye_Parallax`, `_FX` (`creature: false`) and `_Creature_FX` (`creature: true`).
+    /// `CHAR_Eye_Parallax`, `_FX` (`creature: false`) and `_Creature_FX` (`creature: true`);
+    /// `fx`: the glowing variants.
     Eye {
         creature: bool,
+        fx: bool,
     },
     Hair,
     /// `CHAR_LashesShadow`: alpha-blended lash cards and contact shadow.
@@ -37,8 +39,18 @@ impl CharKind {
         let kind = match stem {
             "CHAR_Skin_Body" => Self::Skin(SkinKind::Body),
             "CHAR_Skin_Head_v3" => Self::Skin(SkinKind::Head),
-            "CHAR_Eye_Parallax" | "CHAR_Eye_Parallax_FX" => Self::Eye { creature: false },
-            "CHAR_Eye_Parallax_Creature_FX" => Self::Eye { creature: true },
+            "CHAR_Eye_Parallax" => Self::Eye {
+                creature: false,
+                fx: false,
+            },
+            "CHAR_Eye_Parallax_FX" => Self::Eye {
+                creature: false,
+                fx: true,
+            },
+            "CHAR_Eye_Parallax_Creature_FX" => Self::Eye {
+                creature: true,
+                fx: true,
+            },
             "CHAR_Hair" => Self::Hair,
             "CHAR_LashesShadow" => Self::Lashes,
             "CHAR_Tearline" => Self::Tearline,
@@ -48,6 +60,18 @@ impl CharKind {
             _ => return None,
         };
         Some(kind)
+    }
+
+    /// The G-buffer shading model the game lights this graph with: 3 subsurface (skin and the
+    /// `SSS` clothing graphs), 5 hair, else 0 (lit).
+    pub fn shading_model(self, graph_path: &str) -> u32 {
+        let file = graph_path.rsplit('/').next().unwrap_or(graph_path);
+        match self {
+            Self::Skin(_) => 3,
+            Self::Hair => 5,
+            Self::ClothPalette | Self::ClothMsk if file.to_ascii_uppercase().contains("SSS") => 3,
+            _ => 0,
+        }
     }
 
     /// The shader's `MODE_*` value.
@@ -83,7 +107,7 @@ impl CharKind {
                     v[i] = [r, g, b, 0.0];
                 }
             }
-            Self::Eye { creature } => eye_uniform(&mut v, p, creature),
+            Self::Eye { creature, fx } => eye_uniform(&mut v, p, creature, fx),
             Self::Hair => super::hair::uniform(&mut v, p),
             Self::Lashes => {
                 let [r, g, b] = p.rgb("Eyelashes_Color", [0.0; 3]);
@@ -151,7 +175,12 @@ pub fn palette_tint(m: [f32; 3], colours: &[[f32; 3]; 12]) -> [f32; 3] {
 /// Eye layout: v0 iris, v1 iris secondary, v2 sclera, v3 blood, v4..7 the `_L` set (rgb),
 /// v8 (SecondaryColourIntensity, _L, IrisEdgeStrength, _L), v9 (Redness, _L, Blindness, _L),
 /// v10 (Heterochromia, Ersatz, creature, catchlight weight).
-fn eye_uniform(v: &mut [[f32; 4]; UNIFORM_LEN], p: &ParamSet, creature: bool) {
+/// Eye uniform: v0–3 iris, secondary, sclera, blood colours; v4–7 their `_L` set; v8, v9 the
+/// paired scalars; v10 (Heterochromia, Ersatz, creature, catchlight on); v11 (fx,
+/// ParallaxWeight, Sclera_Normal_Weight); v12 (GlowColour, FxMasking); v13 (GlowColour_L,
+/// FxMasking_L); v14 (GlowBrightness, GlowBrightness_L, GlowBrightnessPupil, AnimationSpeed);
+/// v15 (FlameSpeed, FlameDirection).
+fn eye_uniform(v: &mut [[f32; 4]; UNIFORM_LEN], p: &ParamSet, creature: bool, fx: bool) {
     let colours = [
         ("Eyes_IrisColour", [0.18, 0.325, 0.567]),
         ("Eyes_IrisSecondaryColour", [0.349, 0.5, 0.68]),
@@ -180,6 +209,43 @@ fn eye_uniform(v: &mut [[f32; 4]; UNIFORM_LEN], p: &ParamSet, creature: bool) {
         if creature { 1.0 } else { 0.0 },
         1.0,
     ];
+    let flag = |b: bool| if b { 1.0 } else { 0.0 };
+    // `_Creature_FX` mixes its parallax by ParallaxWeight; the FX graphs fix the sclera
+    // detail-normal weight at 1.
+    v[11] = [
+        flag(fx),
+        if creature {
+            p.scalar("ParallaxWeight", 1.0)
+        } else {
+            1.0
+        },
+        if fx {
+            1.0
+        } else {
+            p.scalar("Sclera_Normal_Weight", 1.0)
+        },
+        0.0,
+    ];
+    let glow = p.rgb("GlowColour", [0.489, 0.0925, 0.0]);
+    let masking = p.scalar("FxMasking", 6.0);
+    v[12] = [glow[0], glow[1], glow[2], masking];
+    let glow_l = p.rgb("GlowColour_L", [0.0, 0.489, 0.427]);
+    v[13] = [
+        glow_l[0],
+        glow_l[1],
+        glow_l[2],
+        p.scalar("FxMasking_L", masking),
+    ];
+    let bright = p.scalar("GlowBrightness", 30.0);
+    v[14] = [
+        bright,
+        p.scalar("GlowBrightness_L", bright),
+        p.scalar("GlowBrightnessPupil", 0.0),
+        p.scalar("AnimationSpeed", 0.0),
+    ];
+    let [sx, sy] = p.vec2("FlameSpeed", [0.0; 2]);
+    let [dx, dy] = p.vec2("FlameDirection", [0.0; 2]);
+    v[15] = [sx, sy, dx, dy];
 }
 
 #[cfg(test)]
@@ -205,6 +271,8 @@ mod tests {
             virtual_textures: vec![],
             scalars: vec![],
             vectors: vec![],
+            shading_model: None,
+            diffusion_profile: None,
         }
     }
 
@@ -222,7 +290,10 @@ mod tests {
         );
         assert_eq!(
             c("CHAR_Eye_Parallax_Creature_FX.lsf", &m),
-            Some(CharKind::Eye { creature: true })
+            Some(CharKind::Eye {
+                creature: true,
+                fx: true
+            })
         );
         assert_eq!(c("CHAR_BASE_VT.lsf", &m), None);
         assert_eq!(
@@ -238,6 +309,27 @@ mod tests {
         );
         // Only character graphs: a level material with a mask parameter stays generic.
         assert_eq!(c("Base_VT.lsf", &material(&["MSKColor"])), None);
+    }
+
+    #[test]
+    fn shading_models() {
+        let skin = CharKind::Skin(SkinKind::Head);
+        assert_eq!(skin.shading_model("CHAR_Skin_Head_v3.lsf"), 3);
+        assert_eq!(CharKind::Hair.shading_model("CHAR_Hair.lsf"), 5);
+        let msk = CharKind::ClothMsk;
+        assert_eq!(
+            msk.shading_model("x/CHAR_BASE_SSS_AlphaTested_2S_MSK_VT.lsf"),
+            3
+        );
+        assert_eq!(CharKind::ClothPalette.shading_model("CHAR_BASE_VT.lsf"), 0);
+        assert_eq!(
+            CharKind::Eye {
+                creature: false,
+                fx: false
+            }
+            .shading_model("CHAR_Eye_Parallax.lsf"),
+            0
+        );
     }
 
     #[test]
@@ -259,7 +351,11 @@ mod tests {
         let mut p = ParamSet::default();
         p.set("Eyes_IrisColour", vec![0.5, 0.1, 0.2]);
         p.set("Redness", vec![0.8]);
-        let v = CharKind::Eye { creature: false }.uniform(&p);
+        let v = CharKind::Eye {
+            creature: false,
+            fx: false,
+        }
+        .uniform(&p);
         assert_eq!(v[0][..3], [0.5, 0.1, 0.2]);
         assert_eq!(v[4][..3], [0.5, 0.1, 0.2]);
         assert_eq!(v[9][..2], [0.8, 0.8]);

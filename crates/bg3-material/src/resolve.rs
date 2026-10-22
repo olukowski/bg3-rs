@@ -38,6 +38,12 @@ pub struct ResolvedMaterial {
     pub virtual_textures: Vec<String>,
     pub scalars: Vec<(String, f32)>,
     pub vectors: Vec<(String, Vec<f32>)>,
+    /// The graph's `ShadingModel` (G-buffer model: 0 lit, 1 unlit, 3 subsurface, 5 hair).
+    pub shading_model: Option<u8>,
+    /// The diffusion profile: the graph's, replaced by a non-empty instance value (set by the
+    /// caller, which owns the instance resource).
+    // bg3: ls::MaterialSystem::Request (4.1.1.7631656)
+    pub diffusion_profile: Option<String>,
 }
 
 impl ResolvedMaterial {
@@ -159,6 +165,8 @@ pub fn resolve(
         virtual_textures: Vec::new(),
         scalars: Vec::new(),
         vectors: Vec::new(),
+        shading_model: graph.map(|g| g.shading_model),
+        diffusion_profile: graph.and_then(|g| g.diffusion_profile.clone()),
     };
     for p in params {
         match p.value {
@@ -213,6 +221,7 @@ mod tests {
             uv_count: 1,
             discards_pixels: true,
             vertex_color: false,
+            diffusion_profile: Some("profile".into()),
             params,
         }
     }
@@ -230,6 +239,8 @@ mod tests {
             p("basecolor", ParamValue::Texture("mine".into()), true),
         ];
         let m = resolve("Base.lsf", Some(&g), &inst);
+        assert_eq!(m.shading_model, Some(0));
+        assert_eq!(m.diffusion_profile.as_deref(), Some("profile"));
         assert_eq!(m.scalar("Roughness"), Some(0.9));
         assert_eq!(m.scalar("Metal"), Some(0.0), "disabled override is ignored");
         assert_eq!(m.texture(Slot::BaseColor).unwrap().id, "mine");

@@ -11,7 +11,10 @@ pub enum DdsFormat {
     Bc3,
     Bc4,
     Bc5,
+    /// BC6H, unsigned half floats (DXGI 94/95).
     Bc6h,
+    /// BC6H, signed half floats (DXGI 96).
+    Bc6hSigned,
     Bc7,
     Rgba8,
     Bgra8,
@@ -71,7 +74,8 @@ impl DdsHeader {
                 76..=78 => DdsFormat::Bc3,
                 79..=81 => DdsFormat::Bc4,
                 82..=84 => DdsFormat::Bc5,
-                94..=96 => DdsFormat::Bc6h,
+                94 | 95 => DdsFormat::Bc6h,
+                96 => DdsFormat::Bc6hSigned,
                 97..=99 => DdsFormat::Bc7,
                 27..=29 => DdsFormat::Rgba8,
                 87 | 90 | 91 => DdsFormat::Bgra8,

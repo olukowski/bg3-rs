@@ -501,7 +501,7 @@ fn prepare(
         };
         let scene = cache.scene(vfs, path)?;
         let attach_joint = part.attach_bone.as_deref().and_then(|b| skeleton.index(b));
-        for obj in part.visual.objects.iter().filter(|o| o.lod == 0) {
+        for obj in part.visual.drawn_lod0_objects() {
             let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) else {
                 continue;
             };
@@ -602,7 +602,7 @@ fn rigid_equipment_parts(
             .map_or(Transform::default(), |b| {
                 Transform::from_matrix(inverse_bind(&b.inverse_world))
             });
-        for obj in visual.objects.iter().filter(|o| o.lod == 0) {
+        for obj in visual.drawn_lod0_objects() {
             if let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) {
                 out.push(PreparedPart {
                     mesh: crate::meshes::to_bevy_mesh(mesh),

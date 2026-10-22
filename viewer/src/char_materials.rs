@@ -15,6 +15,7 @@ use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
+use bg3_material::character::sss::{DiffusionProfile, SssProfiles};
 use bg3_material::character::{CharKind, ParamSet, SkinKind, UNIFORM_LEN, vertex_cut};
 use bg3_material::{BlendMode, ResolvedMaterial};
 use bg3_world::ResourceBanks;
@@ -24,6 +25,10 @@ use bg3_world::characters::{EquippedItem, MaterialOverrides, ResolvedCharacter};
 use crate::materials::{TextureKeys, Usage};
 
 const SHADER: &str = "embedded://bg3_viewer/shaders/character.wesl";
+
+/// `CharacterUniform::flags` bits above the shading model (bits 0–2), as in the shader.
+const FLAG_SSS_MARK: u32 = 8;
+const FLAG_BEVY_LIGHTING: u32 = 256;
 
 pub type CharacterMaterial = ExtendedMaterial<StandardMaterial, CharacterExtension>;
 
@@ -84,6 +89,10 @@ impl Plugin for CharacterMaterialsPlugin {
 #[derive(Debug, Clone)]
 pub struct CharPlan {
     kind: CharKind,
+    /// G-buffer shading model (0 lit, 3 subsurface, 5 hair).
+    model: u32,
+    /// The diffusion profile of a subsurface material (default profile when unresolved).
+    profile: Option<DiffusionProfile>,
     params: ParamSet,
     textures: [Option<usize>; 8],
     normal: Option<usize>,
@@ -156,6 +165,7 @@ pub fn plan(
             textures[1] = color(by_param("ColorsMask"));
             textures[2] = color(by_bank_name("EYES_Blindness"));
             textures[3] = color(by_bank_name("ATM_HDRi_EyesCatchlight"));
+            textures[4] = color(by_bank_name("EYES_Sclera_NM"));
             normal_tex(keys, "IrisNormal")
         }
         CharKind::Lashes => {
@@ -178,8 +188,21 @@ pub fn plan(
         }
         CharKind::Tearline => None,
     };
+    // The graph's own shading model; the name-based guess only without a graph.
+    let model = m
+        .shading_model
+        .map_or_else(|| kind.shading_model(graph_path), u32::from);
+    let profile = (model == 3).then(|| {
+        m.diffusion_profile
+            .as_ref()
+            .and_then(|id| banks.diffusion_profiles.get(id))
+            .cloned()
+            .unwrap_or_else(DiffusionProfile::engine_default)
+    });
     Some(CharPlan {
         kind,
+        model,
+        profile,
         params: ParamSet::from_material(m),
         textures,
         normal,
@@ -190,6 +213,9 @@ pub fn plan(
 
 struct CharTemplate {
     kind: CharKind,
+    model: u32,
+    /// Lighting block (`v[20..24]`) of subsurface materials.
+    profile_block: Option<[[f32; 4]; 4]>,
     params: ParamSet,
     base: StandardMaterial,
     textures: [Option<Handle<Image>>; 8],
@@ -199,6 +225,8 @@ struct CharTemplate {
 #[derive(Resource, Default)]
 pub struct CharacterTemplates {
     by_id: HashMap<String, CharTemplate>,
+    /// Kernel slots of the subsurface profiles the materials use.
+    sss: SssProfiles,
 }
 
 /// The material a character mesh part is drawn with.
@@ -240,10 +268,18 @@ impl CharacterTemplates {
                 };
             }
         }
+        // Transmission is on for every character subsurface graph surveyed (their G-buffer
+        // target 3 alpha is a constant 1).
+        let profile_block = plan
+            .profile
+            .as_ref()
+            .map(|p| p.uniform(self.sss.slot(p), true));
         self.by_id.insert(
             id.to_owned(),
             CharTemplate {
                 kind: plan.kind,
+                model: plan.model,
+                profile_block,
                 params: plan.params.clone(),
                 base,
                 textures: plan.textures.map(get),
@@ -274,14 +310,29 @@ impl CharacterTemplates {
         for o in overrides {
             params.set_declared(&o.parameter, &o.value);
         }
-        let v = t.kind.uniform(&params).map(Vec4::from_array);
+        let mut v = t.kind.uniform(&params);
+        if let Some(block) = &t.profile_block {
+            v[UNIFORM_LEN - 4..].copy_from_slice(block);
+        }
+        if matches!(t.kind, CharKind::Eye { .. }) {
+            // The sclera detail normal applies only when its texture is bound.
+            v[11][3] = if t.textures[4].is_some() { 1.0 } else { 0.0 };
+        }
+        let v = v.map(Vec4::from_array);
+        let mut flags = t.model;
+        if t.model == 3 && crate::sss::enabled() {
+            flags |= FLAG_SSS_MARK;
+        }
+        if std::env::var_os("BG3_CHAR_BEVY_LIGHTING").is_some() {
+            flags |= FLAG_BEVY_LIGHTING;
+        }
         let [t0, t1, t2, t3, t4, t5, t6, t7] = t.textures.clone();
         Some(PartMaterial::Character(materials.add(CharacterMaterial {
             base: t.base.clone(),
             extension: CharacterExtension {
                 uniform: CharacterUniform {
                     mode: t.kind.mode(),
-                    flags: 0,
+                    flags,
                     _pad0: 0,
                     _pad1: 0,
                     v,
@@ -296,6 +347,11 @@ impl CharacterTemplates {
                 t7,
             },
         })))
+    }
+
+    /// The subsurface profiles in kernel-slot order.
+    pub fn sss_profiles(&self) -> &SssProfiles {
+        &self.sss
     }
 
     /// Whether material `id` reads vertex colours in its fragment shader (eyes: left/right;

@@ -14,6 +14,7 @@ pub mod hair;
 pub mod kinds;
 pub mod params;
 pub mod skin;
+pub mod sss;
 pub mod vertex_cut;
 
 pub use kinds::{CharKind, UNIFORM_LEN};

@@ -60,7 +60,7 @@ pub fn survey(level_name: &str, verbose: bool) -> Result<()> {
         let Some(visual) = visual.and_then(|v| banks.visuals.get(v)) else {
             continue;
         };
-        for m in visual.objects.iter().filter(|o| o.lod == 0) {
+        for m in visual.drawn_lod0_objects() {
             if let Some(id) = m.material_id.as_deref() {
                 *uses.entry(id).or_default() += 1;
                 example.entry(id).or_insert(obj.transform.position);

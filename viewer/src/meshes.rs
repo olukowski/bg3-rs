@@ -62,7 +62,7 @@ fn convert_visual(
     let data = vfs.read(path).map_err(|e| e.to_string())?;
     let scene = bg3_gr2::Scene::from_bytes(&data).map_err(|e| format!("{path}: {e}"))?;
     let mut out = Vec::new();
-    for obj in visual.objects.iter().filter(|o| o.lod == 0) {
+    for obj in visual.drawn_lod0_objects() {
         let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) else {
             continue;
         };
