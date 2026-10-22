@@ -112,6 +112,9 @@ impl Plugin for PerfPlugin {
                     render_end.after(RenderSystems::Render),
                 ),
             );
+            if std::env::var_os("BG3_PERF_PASSES").is_some() {
+                render_app.add_systems(Render, log_phase_sizes.in_set(RenderSystems::Render));
+            }
         }
     }
 }
@@ -311,6 +314,18 @@ fn gpu_summary(diagnostics: Option<&DiagnosticsStore>) -> String {
     let Some(store) = diagnostics else {
         return "n/a (start with --fps)".into();
     };
+    // BG3_PERF_PASSES=1: every render diagnostic (nested passes, CPU and GPU), sorted by path.
+    if std::env::var_os("BG3_PERF_PASSES").is_some() {
+        let mut all: Vec<(String, f64)> = store
+            .iter()
+            .filter(|d| d.path().as_str().starts_with("render/"))
+            .map(|d| (d.path().as_str().to_string(), d.smoothed().unwrap_or(0.0)))
+            .collect();
+        all.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, t) in all {
+            eprintln!("pass: {path} {t:.3}");
+        }
+    }
     let mut passes: Vec<(String, f64)> = store
         .iter()
         .filter_map(|d| {
@@ -383,4 +398,50 @@ fn modified<A: Asset>(events: &mut MessageReader<AssetEvent<A>>) -> u32 {
         .read()
         .filter(|e| matches!(e, AssetEvent::Modified { .. }))
         .count() as u32
+}
+
+/// `BG3_PERF_PASSES=1`: per binned phase, the views and their batch sets, bins and entities
+/// (every 120 render frames). Each multidrawable batch set costs buffer writes, a bind group
+/// and a bin-unpacking dispatch per view.
+fn log_phase_sizes(
+    shadow: Res<bevy::render::render_phase::ViewBinnedRenderPhases<bevy::pbr::Shadow>>,
+    opaque: Res<
+        bevy::render::render_phase::ViewBinnedRenderPhases<bevy::core_pipeline::core_3d::Opaque3d>,
+    >,
+    mask: Res<
+        bevy::render::render_phase::ViewBinnedRenderPhases<
+            bevy::core_pipeline::core_3d::AlphaMask3d,
+        >,
+    >,
+    prepass: Res<
+        bevy::render::render_phase::ViewBinnedRenderPhases<
+            bevy::core_pipeline::prepass::Opaque3dPrepass,
+        >,
+    >,
+    mut frame: Local<u32>,
+) {
+    *frame += 1;
+    if !(*frame).is_multiple_of(120) {
+        return;
+    }
+    fn sizes<P: bevy::render::render_phase::BinnedPhaseItem>(
+        name: &str,
+        phases: &bevy::render::render_phase::ViewBinnedRenderPhases<P>,
+    ) {
+        let mut line = format!("phase {name}: {} views;", phases.len());
+        for phase in phases.values() {
+            let multi = phase.multidrawable_meshes.len();
+            let _ = write!(
+                line,
+                " [{multi} sets; {} batchable, {} unbatchable]",
+                phase.batchable_meshes.len(),
+                phase.unbatchable_meshes.len()
+            );
+        }
+        eprintln!("{line}");
+    }
+    sizes("shadow", &shadow);
+    sizes("opaque", &opaque);
+    sizes("alpha mask", &mask);
+    sizes("prepass", &prepass);
 }

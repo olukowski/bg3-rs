@@ -475,7 +475,7 @@ pub fn spawn_lights(
             DirectionalLight {
                 color: color(c),
                 illuminance: lux,
-                shadow_maps_enabled: sun.shadow,
+                shadow_maps_enabled: sun.shadow && std::env::var_os("BG3_NO_SUN_SHADOWS").is_none(),
                 // With shadow maps the character shader uses them; otherwise it reads the marker
                 // as "shadowed in the game".
                 shadow_normal_bias: if sun.shadow {

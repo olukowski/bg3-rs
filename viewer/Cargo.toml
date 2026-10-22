@@ -29,3 +29,7 @@ rayon.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Per-system spans written to trace-<timestamp>.json (chrome://tracing, ui.perfetto.dev).
+trace = ["bevy/trace_chrome"]

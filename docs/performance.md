@@ -23,6 +23,12 @@ fidelity or cost for A/B checks.
   for no vsync (`AutoNoVsync`). **macOS** still paces a window to the display (120 Hz on the M5
   Pro: an empty view benches at exactly 8.33 ms), so Mac frame times are refresh-quantised.
   Compare medians and treat differences below one refresh interval as noise.
+- `BG3_PERF_PASSES=1` (with `--fps`) logs every render diagnostic each second (nested passes,
+  CPU and GPU) and, every 120 render frames, the multidrawable batch sets per view of the
+  shadow, opaque, alpha-mask and prepass phases.
+- `cargo build --release -p bg3-viewer --features trace` adds Bevy's `trace_chrome`: a run writes
+  `trace-<timestamp>.json` to the working directory (per-system spans on every thread; open in
+  ui.perfetto.dev). Run it from `.cache/` (a 10 s run writes ~700 MB).
 - Other viewers running on the machine (other agents' screenshots) change the numbers by tens of
   percent: check `ps` before benchmarking, and alternate the runs being compared.
 
@@ -98,12 +104,53 @@ with `BG3_NO_ANIM=1`. One map per box: −0.66 to +0.17. `BG3_BOX_SHADOW_CASCADE
 (identical by construction). A one-map box's texels are coarser near the camera than Bevy's
 first cascade, so shadow edges there are slightly softer.
 
+## Findings (2026-10-22, RTX 5060 Ti, Linux, Vulkan)
+
+Combat view 25.3 ms (39.5 fps), wide view 23.5 ms, start pod 17.7 ms. The GPU is ~62 % busy in
+the combat view (`nvidia-smi dmon -s u`): the frame is bound by the **render thread's CPU**.
+Bevy's per-pass GPU timestamps are unusable here (the main opaque pass reports 3 vertices; most
+passes are missing), so attribute GPU costs with A/B switches and GPU utilisation instead.
+
+A `--features trace` profile (Bevy's `trace_chrome`, see "Measuring") of one combat frame on the
+render thread (22 ms; the main app waits ~14 ms of each frame for it):
+
+| Render-world work | ms |
+|------|------|
+| `write_binned_instance_buffers<Shadow>` (one task, every shadow view) | 6.0 |
+| `prepare_preprocess_bind_groups` (one task) | 4.6 |
+| `render_system`: shadow pass encoding, `finish` of command buffers 2.5, `queue_submit` 3.8 | 8.7 |
+| everything else | ~3 |
+
+All three scale with **multidrawable batch sets × views**. `BG3_PERF_PASSES=1` logs the binned
+phases: the main view has 54 opaque + 6 alpha-mask batch sets, the 13 shadow views 1224 (sun
+cascades 429/305/183/128, the two box carriers in use 121/58). A level material is not bindless,
+so each material is its own batch set (its own bind group) in every shadow view it is cast into,
+and each set costs buffer writes, a bind group, a bin-unpacking dispatch and a multi-draw per
+view and frame. The sun's far cascades cover most of the level (`ShadowFarPlane` = 100 m).
+
+A/B, combat view (means; GPU = busy %):
+
+| Configuration | Frame | GPU |
+|------|------|------|
+| Default | 25.3 ms | 62 % |
+| `BG3_NO_BOX_SHADOWS=1` | 18.3 ms | 76 % |
+| Sun with 1 cascade (instead of 4) | 13.4 ms | 74 % |
+| `BG3_NO_SUN_SHADOWS=1` | 8.2 ms | 95 % |
+| both off | 5.9 ms | 97 % |
+
+With the sun's shadows off the frame is GPU-bound, and each remaining feature costs 0.5–1.8 ms
+(`BG3_NO_SUN_SHADOWS=1` plus): `NO_FOG` −1.6, `STANDARD_LEVEL` −1.9, `STANDARD_CHARACTERS`
+−1.4, `NO_DECALS` −1.2, `STANDARD_TERRAIN` −1.2, `NO_SSS`/`NO_SURFACES`/`NO_BLOOM` −0.8. Wide
+view 23.5 → 13.4 ms, start pod 17.7 → 8.6 ms without sun shadows (both GPU-bound then). Level
+objects always draw LOD0. The main world takes ~4–5 ms (transform propagation 1.4, character
+animation 1.3–1.6, skin extraction 0.9) and runs in parallel with the render world.
+
 ## Switches
 
 - `BG3_BOX_SHADOW_CASCADES=1`: box light shadows on Bevy's four camera cascades, with casters
   culled to the boxes (`cull_box_shadow_casters`), instead of one map per box. Sharper near the
   camera, 10–25 % slower; the look before this change.
-- `BG3_NO_BOX_SHADOWS=1`, `BG3_NO_BOX_LIGHTS=1`, `BG3_NO_FOG=1`, `BG3_NO_BLOOM=1`,
+- `BG3_NO_SUN_SHADOWS=1`, `BG3_NO_BOX_SHADOWS=1`, `BG3_NO_BOX_LIGHTS=1`, `BG3_NO_FOG=1`, `BG3_NO_BLOOM=1`,
   `BG3_NO_SSS=1`, `BG3_STANDARD_LEVEL=1`, `BG3_STANDARD_CHARACTERS=1`, `BG3_BEVY_POST=1`,
   `BG3_NO_ANIM=1`: A/B switches for attributing costs (they change the image).
 
