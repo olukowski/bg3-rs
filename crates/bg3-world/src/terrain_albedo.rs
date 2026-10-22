@@ -1,4 +1,6 @@
-//! Terrain base colour from the brushes' textures, blended by the per-cell layer weights.
+//! Terrain base colour from the brushes' textures, blended by the per-cell layer weights: the
+//! viewer's simplified path (`BG3_STANDARD_TERRAIN=1`); the game's shading is ported in
+//! `terrain_shading` and the viewer's `terrain.wesl`.
 //!
 //! The game draws a terrain with one texture layer per brush (`TerrainLayers`): each brush's
 //! `BaseColorMap` tiles over the terrain, and the layer weights stored per cell in the
@@ -9,10 +11,10 @@
 //!
 //! From the shader: the weights are a texture with one texel per cell, sampled bilinearly
 //! (texel centres at cell centres); on level ground a layer's texture coordinates are the
-//! terrain-local `(x, -z)` times a per-layer scale.
+//! terrain-local `(x, -z)` times the layer's `Tiling`.
 //!
-//! **Assumptions**: that scale is the brush's `Tiling`; layer weights are linear blend factors
-//! normalised by their sum, on linear colour. The shader actually blends by height (the
+//! **Simplification**: layer weights are linear blend factors normalised by their sum, on
+//! linear colour. The shader actually blends by height (the
 //! albedo's alpha with per-layer contrast, scale and offset, and a transition width) and
 //! switches to side projections on steep slopes; neither is applied, nor are the per-layer
 //! `ParamOverrides`.
@@ -231,14 +233,14 @@ mod tests {
             layers: (0..weights.len())
                 .map(|i| TerrainLayer {
                     brush: format!("b{i}"),
+                    ..Default::default()
                 })
                 .collect(),
             heights: vec![0.0; (cells[0] + 1) * (cells[1] + 1)],
             holes: vec![false; cells[0] * cells[1]],
             weights,
             patches: 1,
-            errors: Vec::new(),
-            module: String::new(),
+            ..Default::default()
         }
     }
 
