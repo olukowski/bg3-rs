@@ -258,13 +258,20 @@ renders no point or spot shadow maps). Notes and approximations:
   orthographic map, so black directional lights carry them (`lights::spawn_box_shadow_carriers`;
   the shader finds the carrier by direction, boxes along one axis share it). Bevy allows ten
   directional lights, one being the sun, so the nine carriers go each frame to the directions
-  of the shadowed boxes nearest the camera (`assign_box_shadow_carriers`); farther ones go
-  unshadowed. Approximations: Bevy fits cascades to the camera (four, as for the sun), the
-  game fits its map to the box; biases and filtering are Bevy's; box lights don't scatter in
-  Bevy's fog. The extra shadow passes cost frame time: the framed imp shot renders about a third
-  as many frames as with `BG3_NO_BOX_SHADOWS=1` (M5 Pro). Two cascades per carrier instead of
-  four darkened that shot by 3.5 luma (coarser maps shadow more), so the cascade set-up matters
-  at that level. Surfaces on Bevy's `StandardMaterial` (`BG3_STANDARD_LEVEL=1`) get no box
+  of the shadowed boxes in the camera's view nearest the camera (`assign_box_shadow_carriers`);
+  farther ones go unshadowed. As in the game, each carrier renders one map fitted to its boxes
+  (`fit_box_shadow_cascades`; the Nautiloid has 11 shadowed boxes along 10 directions). Unused
+  carriers render an empty map rather than being switched off, so the shadow map array keeps its
+  size. Approximations: the map size is Bevy's directional one (2048; the game's box light shadow
+  resolution is not known), biases and filtering are Bevy's; box lights don't scatter in Bevy's
+  fog. The first port gave each carrier Bevy's four cascades over the camera. That drew the
+  whole view 36 times a frame (5 fps on the M5 Pro, a slideshow on Linux; see
+  `docs/performance.md`). `BG3_BOX_SHADOW_CASCADES=1` brings that look back, with casters culled to
+  the boxes, so it costs 10–25 % instead. The one-map shadows differ from it by −0.7 to +0.2 luma
+  on static deck views (softer edges close to the camera). An earlier finding, that two cascades
+  instead of four darkened the framed imp shot by 3.5 luma, came from `--play` shots, which change
+  with the frame rate (the fight runs while the shot waits). Surfaces on Bevy's
+  `StandardMaterial` (`BG3_STANDARD_LEVEL=1`) get no box
   lights. `BG3_NO_BOX_LIGHTS=1`, `BG3_BOX_ONLY=<name substring>` and `BG3_NO_BOX_SHADOWS=1` are
   A/B switches.
 - The sun's atmospheric transmittance is taken as 1 (the `Atmos_Transmittance` precompute and its

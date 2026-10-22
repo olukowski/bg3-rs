@@ -20,6 +20,7 @@ mod lights;
 mod materials;
 mod meshes;
 mod nav;
+mod perf;
 mod pick;
 mod play;
 mod post;
@@ -120,6 +121,14 @@ struct Args {
     /// trace's, a deep gnome cleric).
     #[arg(long)]
     character: Option<String>,
+    /// Show the performance overlay (`F3` toggles it) and print it to the log every second,
+    /// with GPU pass times where the backend has timestamp queries.
+    #[arg(long)]
+    fps: bool,
+    /// Benchmark: after warm-up, measure frame times for this many seconds without vsync,
+    /// print them and exit (see `docs/performance.md`).
+    #[arg(long)]
+    bench: Option<f32>,
 }
 
 fn parse_vec3(s: &str) -> Result<Vec3, String> {
@@ -285,6 +294,12 @@ fn main() -> Result<()> {
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: format!("bg3-viewer — {}", args.level),
+            // Frame times under vsync are whole refresh intervals: benchmark without it.
+            present_mode: if args.bench.is_some() {
+                bevy::window::PresentMode::AutoNoVsync
+            } else {
+                default()
+            },
             ..default()
         }),
         ..default()
@@ -300,6 +315,10 @@ fn main() -> Result<()> {
     .add_plugins(bloom::GameBloomPlugin)
     .add_plugins(lights::GameLightPlugin)
     .add_plugins(fog::FogAmbientPlugin)
+    .add_plugins(perf::PerfPlugin {
+        readout: args.fps,
+        bench: args.bench,
+    })
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)
     .insert_resource(meshes)
@@ -337,7 +356,17 @@ fn main() -> Result<()> {
     .add_systems(Last, lights::follow_camera_triggers)
     .add_systems(
         PostUpdate,
-        lights::assign_box_shadow_carriers.before(TransformSystems::Propagate),
+        (
+            lights::assign_box_shadow_carriers
+                .after(bevy::camera::visibility::VisibilitySystems::UpdateFrusta)
+                .before(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades),
+            lights::fit_box_shadow_cascades
+                .after(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades)
+                .before(bevy::light::SimulationLightSystems::UpdateLightFrusta),
+            lights::cull_box_shadow_casters
+                .after(bevy::light::SimulationLightSystems::UpdateLightFrusta)
+                .before(bevy::light::SimulationLightSystems::CheckLightVisibility),
+        ),
     );
     if args.terrain_only {
         app.add_systems(PostStartup, terrain::hide_objects);
