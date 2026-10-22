@@ -67,6 +67,9 @@ pub struct LevelExtension {
     /// The level's box lights (`lights::BOX_LIGHTS`), read by the game's light loop.
     #[storage(120, read_only, binding_array(162))]
     pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
+    /// The box lights by world cell (`lights::BOX_LIGHT_GRID`).
+    #[storage(121, read_only, binding_array(166))]
+    pub box_light_grid: Handle<bevy::render::storage::ShaderBuffer>,
     /// Level decals (`decals.rs`, `shaders/decals.wesl`), shared by every level material.
     #[storage(130, read_only, binding_array(163))]
     pub decals: Handle<ShaderBuffer>,
@@ -297,6 +300,7 @@ impl LevelGameMaterials {
                 glow_map: glow,
                 sss_map,
                 box_lights: crate::lights::BOX_LIGHTS,
+                box_light_grid: crate::lights::BOX_LIGHT_GRID,
                 decals: self.decals.decals.clone(),
                 decal_grid: self.decals.grid.clone(),
                 decal_albedo: self.decals.albedo.clone(),

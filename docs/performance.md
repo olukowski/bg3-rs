@@ -20,8 +20,11 @@ fidelity or cost for A/B checks.
     driver's ISA) than on Metal.
 - `--bench <seconds>` waits until loading has settled (≥ 5 s and no pipeline created for 1 s),
   measures that long, prints `bench: N frames …: mean, median, p95, p99, max` and exits. It asks
-  for no vsync (`AutoNoVsync`) and keeps rendering when the window is unfocused (Bevy would
-  throttle it to 60 Hz). **macOS** still paces a window to the display (120 Hz on the M5
+  for no vsync (`AutoNoVsync`), keeps rendering when the window is unfocused (Bevy would
+  throttle it to 60 Hz) and opens a fixed 1600×900 window (equal minimum and maximum size, which
+  a tiling window manager such as Hyprland floats instead of resizing); the result line prints
+  the size. Before this, benchmark windows took whatever size the tiling layout gave them and
+  views differed by up to 70 % between runs (GPU-bound frames scale with pixels). **macOS** still paces a window to the display (120 Hz on the M5
   Pro: an empty view benches at exactly 8.33 ms), so Mac frame times are refresh-quantised.
   Compare medians and treat differences below one refresh interval as noise.
 - `BG3_PERF_PASSES=1` (with `--fps`) logs every render diagnostic each second (nested passes,
@@ -149,10 +152,30 @@ deck and wide shots (float rounding).
 
 All three views are now GPU-bound. Render graph CPU time fell from 9–10 to 3–4 ms. Wide and
 start pod were 23.5 and 17.7 ms earlier in the day with the binary from before the change
-(30.9 and 26.4 ms in this session): run-to-run conditions, not the change. Since this change
+(30.9 and 26.4 ms in this session): the window had another size (benchmarks were not yet at a
+fixed size), not the change. Since this change
 `--fps` reports GPU times for the main passes (why they were missing before is not known). Combat
 view: main opaque pass 5.4 ms, shadow passes
 4.1, volumetric fog 3.0, bin unpacking and uniform allocation 1.6.
+
+**Box light grid.** The game's light loop visited all 52 box lights of the Nautiloid for every
+pixel of every game-shaded material (`BG3_NO_BOX_LIGHTS=1` halved the main opaque pass). The
+boxes are now listed per 4 m world cell (`lights::box_light_grid`, the decal grid's layout,
+`decals::xz_grid`) and the loop visits only the boxes of the pixel's cell; boxes larger than
+512 m (one ~10 km box) don't extend the grid, and pixels outside it visit every box. Images
+match (≤ 17 pixels of 1.44–1.95 M differ by more than 1 %, as between two runs of one binary).
+At 1600×900, two alternating runs each:
+
+| View | Without grid | With grid |
+|------|------|------|
+| Combat set-up | 14.3–14.7 ms | 11.4–11.6 ms |
+| Static deck (`BG3_NO_ANIM=1`) | 19.3–19.7 ms | 15.4–17.4 ms |
+| Wide deck view (`BG3_NO_ANIM=1`) | 20.1–21.2 ms | 18.4 ms |
+| Start pod (`--play`) | 17.9–18.6 ms | 16.5–16.7 ms |
+
+The main opaque pass goes from 5.8–6.2 to 2.9–3.2 ms in the combat view and from 10.3–10.9 to
+6.3–7.9 ms in the deck view. Remaining GPU time (combat): shadow passes 4.0 ms, opaque 3.0,
+volumetric fog 2.3; the wide view spends 7.1–7.2 ms in volumetric fog.
 
 Bevy 0.20 caveat: an `ExtendedMaterial`'s layout makes the base bindless whenever the base
 supports it, even when the extension can't be (here: no buffer binding arrays), which gives an

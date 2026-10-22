@@ -444,6 +444,17 @@ pub fn spawn_lights(
         eprintln!("lights: box light buffer not stored");
     }
 
+    let grid = box_light_grid(&boxes[..box_count]);
+    if buffers
+        .insert(
+            &BOX_LIGHT_GRID,
+            ShaderBuffer::new(grid, bevy::asset::RenderAssetUsages::RENDER_WORLD),
+        )
+        .is_err()
+    {
+        eprintln!("lights: box light grid not stored");
+    }
+
     let lighting = &lights.lighting;
     spawn_box_shadow_carriers(
         &mut commands,
@@ -509,6 +520,39 @@ pub fn spawn_lights(
 /// The level's box lights, bound by every game-shaded material (`level_materials.rs`,
 /// `char_materials.rs`) and evaluated in `shaders/game_lighting.wesl`.
 pub const BOX_LIGHTS: Handle<ShaderBuffer> = uuid_handle!("6f1f2f4e-3c55-4c1e-9a43-0b6c1d3f7a52");
+
+/// The box lights by world cell (`decals::xz_grid`), so the light loop only visits the boxes
+/// that can contain a pixel. The grid spans the boxes under [`BOX_GRID_MAX_EXTENT`] across; the
+/// larger ones (one ~10 km box on the Nautiloid) are clipped to it, and the shader visits every
+/// box outside the grid.
+pub const BOX_LIGHT_GRID: Handle<ShaderBuffer> =
+    uuid_handle!("2d0b7c55-61a8-4f0e-9d4b-6f3c8e1a9b27");
+
+/// Grid cell (m) of [`BOX_LIGHT_GRID`].
+const BOX_GRID_CELL: f32 = 4.0;
+/// Boxes wider than this (m) don't extend [`BOX_LIGHT_GRID`].
+const BOX_GRID_MAX_EXTENT: f32 = 512.0;
+
+fn box_light_grid(boxes: &[GpuBoxLight]) -> Vec<u32> {
+    let bounds: Vec<([f32; 2], [f32; 2])> = boxes
+        .iter()
+        .map(|b| {
+            let (lo, hi) = bounds(ShadowedBox::new(b).corners.into_iter());
+            ([lo.x, lo.z], [hi.x, hi.z])
+        })
+        .collect();
+    let small = |(lo, hi): &&([f32; 2], [f32; 2])| {
+        (hi[0] - lo[0]).max(hi[1] - lo[1]) <= BOX_GRID_MAX_EXTENT
+    };
+    let region = bounds.iter().filter(small).fold(None, |r, (lo, hi)| {
+        let (rlo, rhi): ([f32; 2], [f32; 2]) = r.unwrap_or((*lo, *hi));
+        Some((
+            [rlo[0].min(lo[0]), rlo[1].min(lo[1])],
+            [rhi[0].max(hi[0]), rhi[1].max(hi[1])],
+        ))
+    });
+    crate::decals::xz_grid(&bounds, BOX_GRID_CELL, region)
+}
 
 /// One box light as the shader reads it (`BoxLight` in `game_lighting.wesl`).
 #[derive(Clone, Copy, Default, Debug)]

@@ -48,7 +48,7 @@ const MAX_CELLS: f32 = 512.0;
 /// Number of `vec4`s per decal record (`Decal` in `shaders/decals.wesl`).
 const RECORD_VEC4S: usize = 9;
 /// `u32`s in the grid header.
-const GRID_HEADER: usize = 8;
+pub(crate) const GRID_HEADER: usize = 8;
 
 pub fn enabled() -> bool {
     std::env::var_os("BG3_NO_DECALS").is_none()
@@ -280,14 +280,9 @@ fn record(d: &Decal, layer: usize, reflectance: f32) -> [[f32; 4]; RECORD_VEC4S]
     ]
 }
 
-/// World-space (Bevy x/z) grid over the decals' bounds: a header (origin x, origin z, 1/cell
-/// as f32 bits, cells along x and z, debug flag), then `(first, count)` per cell (row-major along x) into
-/// the index list that follows. Each cell lists the decals overlapping it in draw order.
+/// World-space (Bevy x/z) grid over the decals' bounds (see [`xz_grid`]); each cell lists the
+/// decals overlapping it in draw order.
 fn build_grid(decals: &[Decal], cell: f32) -> Vec<u32> {
-    let mut header = vec![0u32; GRID_HEADER];
-    if decals.is_empty() {
-        return header;
-    }
     // Bevy x = game x, Bevy z = −game z.
     let bounds: Vec<([f32; 2], [f32; 2])> = decals
         .iter()
@@ -296,18 +291,45 @@ fn build_grid(decals: &[Decal], cell: f32) -> Vec<u32> {
             ([min[0], -max[2]], [max[0], -min[2]])
         })
         .collect();
-    let lo = bounds
-        .iter()
-        .fold([f32::MAX; 2], |a, (b, _)| [a[0].min(b[0]), a[1].min(b[1])]);
-    let hi = bounds
-        .iter()
-        .fold([f32::MIN; 2], |a, (_, b)| [a[0].max(b[0]), a[1].max(b[1])]);
+    xz_grid(&bounds, cell, None)
+}
+
+/// A world-space (Bevy x/z) lookup grid over items with x/z bounds `(min, max)`: a header
+/// (origin x, origin z, 1/cell as f32 bits, cells along x and z, debug flag), then
+/// `(first, count)` per cell (row-major along x) into the index list that follows. Each cell
+/// lists the items overlapping it, in order. The grid covers `region` (default: every item),
+/// items are clipped to it, and cells grow past `cell` to keep at most [`MAX_CELLS`] per axis.
+/// Read by `decals.wesl` and `game_lighting.wesl` (box lights).
+pub(crate) fn xz_grid(
+    bounds: &[([f32; 2], [f32; 2])],
+    cell: f32,
+    region: Option<([f32; 2], [f32; 2])>,
+) -> Vec<u32> {
+    let mut header = vec![0u32; GRID_HEADER];
+    if bounds.is_empty() {
+        return header;
+    }
+    let (lo, hi) = region.unwrap_or_else(|| {
+        bounds
+            .iter()
+            .fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), (min, max)| {
+                (
+                    [lo[0].min(min[0]), lo[1].min(min[1])],
+                    [hi[0].max(max[0]), hi[1].max(max[1])],
+                )
+            })
+    });
     let cell = cell.max((hi[0] - lo[0]).max(hi[1] - lo[1]) / MAX_CELLS);
     let n = [0, 1].map(|k| (((hi[k] - lo[k]) / cell).floor() as u32 + 1).max(1));
     let mut lists: Vec<Vec<u32>> = vec![Vec::new(); (n[0] * n[1]) as usize];
     for (i, (min, max)) in bounds.iter().enumerate() {
-        let c0 = [0, 1].map(|k| (((min[k] - lo[k]) / cell).floor() as u32).min(n[k] - 1));
-        let c1 = [0, 1].map(|k| (((max[k] - lo[k]) / cell).floor() as u32).min(n[k] - 1));
+        if (0..2).any(|k| max[k] < lo[k] || min[k] > hi[k]) {
+            continue;
+        }
+        let cell_of =
+            |v: f32, k: usize| (((v.max(lo[k]) - lo[k]) / cell).floor() as u32).min(n[k] - 1);
+        let c0 = [0, 1].map(|k| cell_of(min[k], k));
+        let c1 = [0, 1].map(|k| cell_of(max[k], k));
         for z in c0[1]..=c1[1] {
             for x in c0[0]..=c1[0] {
                 lists[(z * n[0] + x) as usize].push(i as u32);

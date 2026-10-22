@@ -254,7 +254,9 @@ renders no point or spot shadow maps). Notes and approximations:
 - **Box lights** are exact, in the game's light loop: `lights::box_light` packs them like the
   engine into a storage buffer (`lights::BOX_LIGHTS`, bound at 120 by every game-shaded level and
   character material) and `game_lighting.wesl` evaluates `Illuminance_Direction` for every box
-  containing the pixel. Their shadows: a Bevy directional light gives the same kind of
+  containing the pixel. It finds the candidates in a 4 m world grid (`lights::BOX_LIGHT_GRID` at
+  121, a performance measure only: the game's clustered assignment does this per froxel; see
+  `docs/performance.md`). Their shadows: a Bevy directional light gives the same kind of
   orthographic map, so black directional lights carry them (`lights::spawn_box_shadow_carriers`;
   the shader finds the carrier by direction, boxes along one axis share it). Bevy allows ten
   directional lights, one being the sun, so the nine carriers go each frame to the directions

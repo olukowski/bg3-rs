@@ -334,7 +334,7 @@ fn main() -> Result<()> {
             } else {
                 default()
             },
-            ..default()
+            ..bench_window(args.bench.is_some())
         }),
         ..default()
     }))
@@ -526,6 +526,26 @@ fn play_characters(
             .join(", ")
     );
     Ok(out)
+}
+
+/// A benchmark's window: a fixed 1600×900 that a tiling window manager can't resize (equal
+/// minimum and maximum size; Hyprland floats such windows), so frame times compare across runs.
+fn bench_window(bench: bool) -> Window {
+    if !bench {
+        return Window::default();
+    }
+    let (w, h) = (1600.0, 900.0);
+    Window {
+        resolution: bevy::window::WindowResolution::new(w as u32, h as u32),
+        resizable: false,
+        resize_constraints: bevy::window::WindowResizeConstraints {
+            min_width: w,
+            min_height: h,
+            max_width: w,
+            max_height: h,
+        },
+        ..default()
+    }
 }
 
 /// Wait for assets to settle, save one screenshot, then exit once it's written.

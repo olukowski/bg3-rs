@@ -220,6 +220,7 @@ fn update_end(
     mut overlay: Query<(&mut Text, &Visibility), With<PerfOverlay>>,
     mut events: AssetChanges,
     mut exit: MessageWriter<AppExit>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     let now = Instant::now();
     if let Some(start) = state.update_start.take() {
@@ -238,7 +239,8 @@ fn update_end(
     }
     let pipelines = shared.0.lock().unwrap().pipelines;
     if let Some(seconds) = state.bench {
-        bench(&mut state, now, pipelines, seconds, &mut exit);
+        let size = window.single().map_or(UVec2::ZERO, |w| w.physical_size());
+        bench(&mut state, now, pipelines, seconds, size, &mut exit);
     }
 
     if now - state.window_start < Duration::from_secs(1) {
@@ -362,6 +364,7 @@ fn bench(
     now: Instant,
     pipelines: usize,
     seconds: f32,
+    size: UVec2,
     exit: &mut MessageWriter<AppExit>,
 ) {
     match state.bench_start {
@@ -388,8 +391,10 @@ fn bench(
                 let pct = |p: f32| f[((f.len() - 1) as f32 * p).round() as usize];
                 let mean = f.iter().sum::<f32>() / f.len() as f32;
                 eprintln!(
-                    "bench: {} frames in {seconds} s: mean {mean:.2} ms ({:.1} fps), median {:.2}, p95 {:.2}, p99 {:.2}, max {:.2} ms",
+                    "bench: {} frames in {seconds} s at {}×{}: mean {mean:.2} ms ({:.1} fps), median {:.2}, p95 {:.2}, p99 {:.2}, max {:.2} ms",
                     f.len(),
+                    size.x,
+                    size.y,
                     1000.0 / mean,
                     pct(0.5),
                     pct(0.95),

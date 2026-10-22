@@ -49,8 +49,53 @@ struct BoxLights {
 
 @if(!PREPASS_PIPELINE && BINDLESS)
 @group(constants::MATERIAL_BIND_GROUP) @binding(162) var<storage, read> box_light_arrays: binding_array<BoxLights>;
-@if(!PREPASS_PIPELINE && !BINDLESS)
+// The boxes by world cell (`lights::box_light_grid`, layout of `decals::xz_grid`).
+struct BoxLightGrid {
+    cells: array<u32>,
+}
+
+@if(!PREPASS_PIPELINE && BINDLESS)
+@group(constants::MATERIAL_BIND_GROUP) @binding(166) var<storage, read> box_light_grid_arrays: binding_array<BoxLightGrid>;
+@if(!PREPASS_PIPELINE && !BINDLESS) {
 @group(constants::MATERIAL_BIND_GROUP) @binding(120) var<storage, read> box_lights: BoxLights;
+@group(constants::MATERIAL_BIND_GROUP) @binding(121) var<storage, read> box_light_grid: BoxLightGrid;
+}
+
+@if(!PREPASS_PIPELINE)
+fn box_grid(i: u32) -> u32 {
+@if(BINDLESS)
+    return box_light_grid_arrays[ext_index(121u)].cells[i];
+@else
+    return box_light_grid.cells[i];
+}
+
+// The box lights that can contain `p`: (first, count) into the grid's index list, or with
+// `listed` false every box (outside the grid).
+struct BoxRange {
+    first: u32,
+    count: u32,
+    listed: bool,
+}
+
+@if(!PREPASS_PIPELINE)
+fn box_range(p: vec3<f32>) -> BoxRange {
+    var r = BoxRange(0u, box_light_count(), false);
+    let nx = box_grid(3u);
+    let nz = box_grid(4u);
+    if nx == 0u {
+        return r;
+    }
+    let origin = vec2(bitcast<f32>(box_grid(0u)), bitcast<f32>(box_grid(1u)));
+    let cell = floor((p.xz - origin) * bitcast<f32>(box_grid(2u)));
+    if cell.x < 0.0 || cell.y < 0.0 || cell.x >= f32(nx) || cell.y >= f32(nz) {
+        return r;
+    }
+    let c = 8u + 2u * (u32(cell.y) * nx + u32(cell.x));
+    r.first = box_grid(c);
+    r.count = box_grid(c + 1u);
+    r.listed = true;
+    return r;
+}
 
 @if(!PREPASS_PIPELINE)
 fn box_light_count() -> u32 {
@@ -381,9 +426,9 @@ fn game_lighting(in: pbr_types::PbrInput, sh: GameShading) -> vec3<f32> {
 
     // Box lights: constant direction and illuminance inside the box, faded at its faces
     // (`Illuminance_Direction`); those with `Shadow` take an orthographic shadow map.
-    let box_count = box_light_count();
-    for (var i = 0u; i < box_count; i += 1u) {
-        let b = box_light(i);
+    let boxes = box_range(p.xyz);
+    for (var k = 0u; k < boxes.count; k += 1u) {
+        let b = box_light(select(k, box_grid(boxes.first + k), boxes.listed));
         let u = vec3(
             dot(b.to_box[0], vec4(p.xyz, 1.0)),
             dot(b.to_box[1], vec4(p.xyz, 1.0)),

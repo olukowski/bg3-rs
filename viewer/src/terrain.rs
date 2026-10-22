@@ -139,6 +139,9 @@ pub struct TerrainExtension {
     /// The level's box lights (`lights::BOX_LIGHTS`), read by the shared game light loop.
     #[storage(120, read_only)]
     pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
+    /// The box lights by world cell (`lights::BOX_LIGHT_GRID`).
+    #[storage(121, read_only)]
+    pub box_light_grid: Handle<bevy::render::storage::ShaderBuffer>,
     /// Shared level decals, in the same binding range as `LevelExtension` and `DecalExtension`.
     #[storage(130, read_only)]
     pub decals: Handle<bevy::render::storage::ShaderBuffer>,
@@ -858,6 +861,7 @@ fn terrain_extension(
             flags: if bevy_lighting { FLAG_BEVY_LIGHTING } else { 0 },
         },
         box_lights: crate::lights::BOX_LIGHTS,
+        box_light_grid: crate::lights::BOX_LIGHT_GRID,
         decals: decals.decals.clone(),
         decal_grid: decals.grid.clone(),
         decal_albedo: decals.albedo.clone(),

@@ -70,6 +70,9 @@ pub struct CharacterExtension {
     /// The level's box lights (`lights::BOX_LIGHTS`), read by the game's light loop.
     #[storage(120, read_only, binding_array(162))]
     pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
+    /// The box lights by world cell (`lights::BOX_LIGHT_GRID`).
+    #[storage(121, read_only, binding_array(166))]
+    pub box_light_grid: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 impl From<&CharacterExtension> for CharacterUniform {
@@ -358,6 +361,7 @@ impl CharacterTemplates {
                 t6,
                 t7,
                 box_lights: crate::lights::BOX_LIGHTS,
+                box_light_grid: crate::lights::BOX_LIGHT_GRID,
             },
         })))
     }
