@@ -536,9 +536,23 @@ fn spec_round_trip() {
     c.appearance.eye_color = Some(g(810));
     c.appearance.set_visual("SyntheticExtra", Some(g(811)));
     c.appearance.set_material("SyntheticMaterial", Some(g(812)));
+    for (index, (kind, _, intensity)) in super::appearance::COLOR_PARAMETERS.iter().enumerate() {
+        c.appearance.set_color(kind, Some(g(820 + index as u128)));
+        if intensity.is_some() {
+            c.appearance.intensities.insert((*kind).into(), 0.35);
+        }
+    }
     let spec = c.to_spec();
     assert_eq!(CharacterChoice::from_spec(&spec), Ok(c));
     assert!(CharacterChoice::from_spec("race=nope").is_err());
+    for bad in [
+        "color=Unknown:00000000-0000-0000-0000-000000000001",
+        "intensity=Makeup:NaN",
+        "intensity=Makeup:1.1",
+        "intensity=HornColor:0.5",
+    ] {
+        assert!(CharacterChoice::from_spec(bad).is_err(), "{bad}");
+    }
 }
 
 /// The created character on a sim entity: sheet, tags, combat set-up.

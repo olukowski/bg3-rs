@@ -223,9 +223,8 @@ supply literal `Color` values, with no `MaterialPresetUUID`. They do **not** ide
 similarly named appearance-material entries: Tattoo and Makeup entries select patterns,
 and HairHighlight/Graying/LipsMakeup/HornColor/HornTipColor entries select default material
 presets. Filtering these preset selectors by colour-definition UUIDs would remove every
-option. All ten race lists are loaded, but only Skin/Hair/Eye currently have colour-choice
-slots; the other seven colour-parameter selectors are not implemented. Existing material
-pattern/default selectors remain available, as do Scar and Passive.
+option. All ten race lists have colour selectors. Literal colour UUIDs remain separate from
+material pattern/default UUIDs; Scar and Passive remain material selectors.
 
 Deep gnome defines its own skin, hair, eye, highlight, graying, makeup and tattoo palettes but
 no lips palette; rock and forest gnome define no palettes. Human has no skin list and its
@@ -237,6 +236,96 @@ no options for that colour category. Filtering, CLI name/UUID resolution, valida
 cycling and race-change pruning all use the same options. The install test verifies race
 Skin/Hair/Eye references against merged CC entry UUIDs. Deep gnome has 125 hair and 32 eye choices; its skin palette has 60 of the 542 merged
 entries and excludes `HUM_Neutral_-2` (Neutral Tone 1).
+
+### Literal colours and strengths (2026-10-22)
+
+`bg3x find` on a race palette UUID locates `Public/Shared/Lists/ColorDefinitions.lsx`
+(region `ColorDefinitions`, `root/ColorDefinition`). Each row has `UUID` (guid), `Name`
+(FixedString), `DisplayName` (TranslatedString handle/version), and `Color` (LSString,
+`#AARRGGBB`). There is no material preset, parameter name, strength or pattern index on
+these rows. The loader visits every module's copy and replaces rows by UUID in load order,
+as for the other CC resources. Names resolve through loca at CLI/UI display time.
+**Assumption:** RGB bytes divided by 255 are the material vector, with no additional sRGB
+conversion; the graph defaults are also byte-fraction values. Alpha is not assigned to
+these three-component material colour parameters. Malformed colour rows are excluded.
+
+The following mappings are supported by the named CC presets and material declarations in
+build 4.1.1.7631656. Paths below are relative to `Public/Shared/`.
+
+| Race list (`*/Object`) | Spec category | Colour parameter | Optional strength parameter |
+| --- | --- | --- | --- |
+| `HairHighlightColors` | `HairHighlight` | `Highlight_Color` | `Highlight_Intensity` (scalar) |
+| `HairGrayingColors` | `HairGraying` | `Hair_Graying_Color` | `Graying_Intensity` (scalar) |
+| `MakeupColors` | `Makeup` | `MakeupColor` | `MakeupIntensity` (scalar) |
+| `LipsMakeupColors` | `LipsMakeup` | `Lips_Makeup_Color` | `LipsMakeupIntensity` (scalar) |
+| `TattooColors` | `Tattoo` | `TattooColor` | `TattooIntensity` (vector) |
+| `HornColors` | `HornColor` | `NonSkinColor` | none found |
+| `HornTipColors` | `HornTipColor` | `NonSkinTipColor` | none found |
+
+`CharacterCreation/CharacterCreationAppearanceMaterials.lsx@MaterialType` distinguishes
+these categories from their colour lists; `MaterialPresetUUID` selects the pattern/default.
+In `Content/Assets/Characters/[PAK]_Shared_Materials/_merged.lsf`, the referenced
+`Hair_Highlight_Default` and `Lips_Makeup_Default` MaterialPresetBank entries name their
+colour and strength parameters in `Presets/{Vector,Scalar}Parameters@Parameter`, with
+`@Value` and `@Enabled`. `Hair_Graying_Default` has an empty preset; `CHAR_Hair` declares
+`Hair_Graying_Color` and `Graying_Intensity`. The existing character shader research
+establishes the hair/head parameter semantics. `MakeUpIndex` and `TattooIndex` are scalar
+atlas selectors supplied by the existing Makeup/Tattoo pattern presets, not colour UUIDs.
+`[PAK]_CC_Presets/_merged.lsf` includes a tattoo preset with a scalar `TattooIndex` and
+vector `TattooIntensity` (`Value/float4`), using the red channel. **Assumption:** the new
+single tattoo strength writes `[strength, 0, 0, 0]`; it does not set the other tattoo colours,
+body tattoo parameters, custom paint or dragonborn graph swaps.
+
+Saved `Mods/GustavDev/Story/PartyEditor/*.lsx` appearances have
+`FullDefinition/Appearance/MaterialSettings/MaterialSetting` attributes `Material` (guid),
+`Color` (guid), `Intensity` (float), `Metalness` (float), `Roughness` (float). Thus colour and
+strength are independent choices; `Color` references ColorDefinitions and `Material`
+references CC appearance-material rows. These rows are positional and do not name their
+category. No positional enum mapping is inferred here. The CC XAML library
+`Public/Game/GUI/Library/CCLib_k.xaml` binds the colour controls to
+`AppearanceTattoos`, `AppearanceMakeup`, `AppearanceLipsMakeup`, `AppearanceHairHighlights`,
+`AppearanceHairGraying` and their `ColorOptions`, including generic slider controls.
+Horn controls expose `AppearanceHornColor.ColorOptions` and
+`AppearanceHornTipColor.ColorOptions`; no dedicated horn strength parameter was found.
+**Assumption:** selectable strengths are finite normalized values 0..1; UI tenth steps
+and its Template choice are our presentation, not a verified original slider increment.
+Unspecified strengths and all seven unspecified literal colours preserve the template.
+Choosing a colour does not implicitly enable its layer: set a strength and, for tattoos
+or eye makeup, an appropriate existing pattern preset when needed.
+
+Tiefling `MaterialBank` entries in `Content/Assets/Characters/Tieflings/[PAK]_Male_Body/_merged.lsf`
+reference `Assets/Materials/Characters/CHAR_Horns.lsf` and declare `NonSkinColor` and
+`NonSkinTipColor` (`Vector3Parameters@ParameterName`, `@Value/float3`, `@IsColor`).
+The graph also declares `SkinApproxColor` and `SkinGradientHorn_MSK`. The shipped Metal
+entry `Shared_Characters_CHAR_Horns_ST_DEF_fragmentMain`, extracted with `bg3x metallib`
+and read with rustup's `llvm-dis`, confirms: interpolate base/tip tint using mask G,
+multiply the base texture, interpolate back to the untinted texture with mask B, then
+interpolate to `SkinApproxColor` with mask R. No strength multiplier is present.
+Only this opaque `CHAR_Horns` graph is handled; SSS/dissolve horn variants are unchanged.
+Only the listed colour parameters are assigned; beard-specific aliases are not inferred.
+
+The viewer evaluates that static horn albedo at each authored texture mip in
+`viewer/src/characters.rs`, retaining the existing StandardMaterial normal/physical maps.
+**Assumption/approximation:** bilinear mask resampling and filtering the baked colour
+instead of independently filtering each shader input are sufficient for this preview;
+8-bit output adds quantization. This is not a claim of full horn shader fidelity.
+The function `horn_mask_channels_select_base_tip_untinted_and_skin` checks the channel
+routing with synthetic values. Compiled shader output remains only in `.cache/`.
+
+Explicit CC colour and strength assignments are appended at the visual's own parameter
+layer, after template and chosen CC presets and after existing own parameters.
+**Assumption:** this last priority is the correct order for selected CC values; the existing
+preset-before-own-parameters engine evidence does not establish CC's relative priority.
+
+### Literal colour verification
+
+Synthetic tests cover ARGB decoding, inherited/replaced race palettes, unavailable GUID
+rejection, independent patterns and colours, spec round trips (including all seven colour
+slots and strengths), invalid strengths, and colour assignments following preset/own
+parameters. The ignored install test
+`cc::appearance::tests::tiefling_horn_color_spec_resolves_to_material_parameter` requires a
+non-empty tiefling horn palette, round-trips a chosen colour, validates it, and checks its
+resolved `NonSkinColor` assignment; it also checks every literal race palette reference.
 
 ### Defaults and application order
 
@@ -254,7 +343,7 @@ but does not override the race-filtered colour default.
 The engine's automatic selection rules for that field have not been observed.
 
 The sim retains `Appearance` inside `CreatedCharacter.choice`. The viewer receives resolved
-VisualBank IDs, attachment bones and material preset IDs. `ResolvedCharacter::apply_appearance`
+VisualBank IDs, attachment bones, material preset IDs and literal colour/strength assignments. `ResolvedCharacter::apply_appearance`
 replaces every existing part in a selected slot (or removes it for an explicit null visual),
 leaves unselected slots alone, then recomputes body masks. This happens before equipment
 layering, skeleton extension and material preparation, so existing skinned-part binding and
@@ -327,7 +416,8 @@ engine's complete missing-bone fallback remain unmodelled.
 
 Material application order: graph defaults → material instance → **all template presets** (including `ColorPreset`) →
 selected Skin, Hair, Eye presets → other chosen material presets in sorted category order →
-the character visual's enabled explicit parameters. Thus a chosen colour follows the template's
+the character visual's enabled explicit parameters → selected literal colours/strengths.
+Thus a chosen preset colour follows the template's
 preset of that category. The existing preset/explicit-parameter order is supported by
 `ls::VisualSetSlots::InitVisualSlots` (see `character-shaders.md`); the insertion point and
 ordering among CC selections are an **assumption**, not a runtime observation of CC. A null
@@ -337,17 +427,24 @@ limit of this initial material selection path.
 
 ### Spec, CLI and UI
 
-Old specs remain valid. New optional fields are `visual=<slot>:<CC entry UUID>` and
-`material=<category>:<CC entry UUID>`, repeated once for each chosen slot/category. Empty
+Old specs remain valid. Optional fields are `visual=<slot>:<CC entry UUID>`,
+`material=<category>:<CC entry UUID>`, `color=<category>:<ColorDefinition UUID>` and
+`intensity=<category>:<float>`, repeated once for each chosen slot/category. Empty
 appearance preserves the legacy spec representation. Validation rejects unknown IDs, wrong
 slots/categories and visuals outside the selected race/body/template/head filters.
 
 `bg3x cc --list` prints all applicable visual options and all material categories with display
 names and UUIDs. `--head`, `--hair`, `--beard`, `--skin`, `--hair-color`, `--eye-color` accept an allowed
-entry/resource UUID or a case-insensitive display-name substring. Other categories can be set
+entry/resource UUID or a case-insensitive display-name substring.
+`--hair-highlight`, `--hair-graying`, `--makeup`, `--lips`, `--tattoo-color`,
+`--horn-color`, `--horn-tip-color` accept a race-allowed ColorDefinition UUID or a
+case-insensitive display-name substring. `--list` prints these separately from material
+patterns, with their parameters and hex values. The five supported strengths have matching
+`--hair-highlight-intensity`, `--hair-graying-intensity`, `--makeup-intensity`,
+`--lips-intensity`, `--tattoo-intensity` flags. Other material categories can be set
 through the spec or the viewer's Appearance section. Each UI selector includes “Template”;
 explicit data “none” entries remain separate. Race/subrace/body or head changes clear visual
-choices that no longer apply. The screen scrolls with the mouse wheel.
+choices that no longer apply, including literal colours and strengths whose race palette disappears. The screen scrolls with the mouse wheel.
 
 Synthetic verification: `spec_round_trip`, appearance parsing/UUID replacement, filter and
 wrong-slot validation, explicit defaults/null visual resolution, CLI substring matching,
@@ -369,3 +466,23 @@ without the floating gap of an unremapped mesh, and the face/ears visibly change
 `.cache/shots/cc-default.png` captures the same avatar with its default template appearance.
 Both use `--frame Gnomes_Male_Deep_Player --frame-mode face --shot-after 10`.
 The captures/specs and all install-derived survey output remain gitignored.
+
+### Local verification of literal colours (2026-10-22)
+
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace`, and `cargo test --release -p bg3-sim -p bg3-world -- --ignored`
+pass, including the new tiefling horn test. `bg3x sim-replay --check` on the local
+`full-nautiloid.log` reports 12,197 agreements, 0 disagreements and 2 ungraded queries.
+
+Example (first stdout line is the viewer spec):
+
+```sh
+cargo run --release -p bg3x -- cc --race Tiefling --horn-color 'Ash 1' --lips Blue --lips-intensity 1 --spec
+```
+
+Captured that spec and the same race with defaults using `--play`,
+`--frame Tieflings_Male_Asmodeus_Player --frame-mode face --shot-after 10`:
+`.cache/shots/cc-colours.png` and `.cache/shots/cc-colours-default.png`.
+Opened both images: the chosen horn base becomes lighter/cream while retaining dark tips,
+and the lips become pale blue. Skin, clothing and the surrounding scene retain their colours.
+This is a viewer selection/application check, not an original-game colour fidelity comparison.

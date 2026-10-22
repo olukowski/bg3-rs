@@ -29,6 +29,24 @@ pub struct ParamAssignment {
     pub value: Vec<f32>,
 }
 
+/// Add CC literal colours/strengths at the visual's own-parameter layer.
+/// Assumption: explicit CC values follow existing own parameters (last assignment wins).
+// bg3: ColorDefinitions, MaterialSettings, ls::VisualSetSlots::ApplyCustomPresets (4.1.1.7631656).
+pub fn apply_cc_parameters(
+    overrides: &mut MaterialOverrides,
+    parameters: impl IntoIterator<Item = ParamAssignment>,
+) {
+    overrides.params.extend(
+        parameters
+            .into_iter()
+            .map(|p| crate::characters::ParamOverride {
+                parameter: p.parameter,
+                value: p.value,
+                enabled: true,
+            }),
+    );
+}
+
 /// Presets can reference further presets (`ColorPreset`, nested `MaterialPresets`); this bounds
 /// the recursion against cycles.
 const MAX_PRESET_DEPTH: usize = 4;
@@ -92,6 +110,31 @@ mod tests {
             preset: id.into(),
             force,
         }
+    }
+
+    #[test]
+    fn cc_colors_follow_presets_and_own_parameters() {
+        let mut ov = MaterialOverrides {
+            presets: vec![preset_ref("preset", false)],
+            params: vec![param("NonSkinColor", 0.1, true)],
+            ..Default::default()
+        };
+        let presets = HashMap::from([(
+            "preset".into(),
+            MaterialOverrides {
+                params: vec![param("NonSkinColor", 0.2, true)],
+                ..Default::default()
+            },
+        )]);
+        apply_cc_parameters(
+            &mut ov,
+            [ParamAssignment {
+                parameter: "NonSkinColor".into(),
+                value: vec![0.3, 0.4, 0.5],
+            }],
+        );
+        let values = assignments(&ov, &presets);
+        assert_eq!(values.last().unwrap().value, vec![0.3, 0.4, 0.5]);
     }
 
     #[test]
