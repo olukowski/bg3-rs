@@ -22,6 +22,7 @@ use bg3_rules::dice::RollDefinition;
 use bg3_rules::fields::{BoostEntry, parse_boosts};
 use bg3_vfs::Vfs;
 use bg3_vfs::modules::BASE_LOAD_ORDER;
+use bg3_world::unsheath::WeaponSet;
 
 use crate::guid::Guid;
 use crate::load::{LoadError, game_objects, guid_attr, parse, s};
@@ -239,6 +240,8 @@ pub struct CombatData {
     pub armors: HashMap<String, ArmorDef>,
     /// Equipment set → groups of item stats names.
     pub equipment_sets: HashMap<String, Vec<Vec<String>>>,
+    /// Equipment set → its `initialweaponset`.
+    pub initial_weapon_sets: HashMap<String, WeaponSet>,
     pub spell_sets: HashMap<String, Vec<String>>,
     pub spells: HashMap<String, SpellDef>,
     /// `Boosts` of `StatusData` entries.
@@ -365,6 +368,7 @@ impl CombatData {
             weapons: HashMap::new(),
             armors: HashMap::new(),
             equipment_sets: HashMap::new(),
+            initial_weapon_sets: HashMap::new(),
             spell_sets: HashMap::new(),
             spells: HashMap::new(),
             status_boosts: HashMap::new(),
@@ -550,6 +554,10 @@ impl CombatData {
         }
         for e in stats.equipment.iter() {
             self.equipment_sets.insert(e.name.clone(), e.groups.clone());
+            self.initial_weapon_sets.insert(
+                e.name.clone(),
+                WeaponSet::from_initial(e.initial_weapon_set.as_deref()),
+            );
         }
         for s in stats.spell_sets.iter() {
             self.spell_sets.insert(s.name.clone(), s.spells.clone());

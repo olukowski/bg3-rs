@@ -192,6 +192,8 @@ pub struct CcData {
     pub passive_conditions: HashMap<String, String>,
     /// Equipment sets: the first entry of each `add equipmentgroup`.
     pub equipment_sets: HashMap<String, Vec<String>>,
+    /// Equipment sets' `initialweaponset`.
+    pub initial_weapon_sets: HashMap<String, bg3_world::unsheath::WeaponSet>,
     pub items: HashMap<String, CcItem>,
     /// Spells that exist (`SpellData` names), to drop list entries the stats don't define.
     pub spells: std::collections::HashSet<String>,
@@ -494,6 +496,10 @@ impl CcData {
         for e in stats.equipment.iter() {
             let firsts = e.groups.iter().filter_map(|g| g.first().cloned()).collect();
             self.equipment_sets.insert(e.name.clone(), firsts);
+            self.initial_weapon_sets.insert(
+                e.name.clone(),
+                bg3_world::unsheath::WeaponSet::from_initial(e.initial_weapon_set.as_deref()),
+            );
         }
         for o in stats.entries() {
             let ty = o.type_name.as_deref().unwrap_or("");

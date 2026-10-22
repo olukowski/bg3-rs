@@ -279,7 +279,7 @@ impl Sim {
         let unsheath = bg3_world::unsheath::state_from_sheathing(
             &def.sheathing,
             self.unsheath_state(who),
-            self.uses_ranged_set(who),
+            self.weapon_set(who),
         );
         self.set_unsheath(who, unsheath);
         self.combat_event(CombatEvent::SpellCast {

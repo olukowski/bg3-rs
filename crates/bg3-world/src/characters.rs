@@ -375,6 +375,13 @@ pub const WALK_PEACE: &str = "0532ad73-988e-4b70-bb96-434bb2532bad";
 /// Blueprint variable holding the idle animation type.
 pub const IDLE_BLUEPRINT_VARIABLE: &str = "IDLE_DesiredStillShortName";
 
+/// Simple name (`ShortNames.lsx` `Name`) of the standing combat idle. **Assumption**: the
+/// character blueprint switches its idle (`IDLE_DesiredStillShortName`) to this type while the
+/// weapons are drawn in a fight; its compiled logic was not interpreted. The reference
+/// screenshot of Lae'zel in the imp fight shows the pose of her `2HS_IDLE_Still_Combat_01`
+/// clip, not the peace idle.
+pub const IDLE_STILL_COMBAT: &str = "IDLE_Still_Combat_01";
+
 /// Named combat clips used by the viewer. Selection is a presentation approximation, not
 /// the original animation blueprint's weapon/spell/direction state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1339,7 +1346,7 @@ add equipment entry "camp"
     #[test]
     #[ignore = "needs BG3 install"]
     fn weapons_sheath_on_the_back_and_select_weapon_subsets() {
-        use crate::unsheath::{UnsheathState, WeaponSlot, placement, subset_for_state};
+        use crate::unsheath::{UnsheathState, WeaponSet, WeaponSlot, placement, subset_for_state};
         let Ok(install) = bg3_install::Install::locate() else {
             eprintln!("skipping: no BG3 install found");
             return;
@@ -1362,9 +1369,40 @@ add equipment entry "camp"
         let w = &banks.weapons;
         assert!(w.equipment_types.len() > 30 && w.animation_sets.len() > 30);
 
-        // Lae'zel: versatile longsword alone in the melee set, a shortbow in the ranged set.
+        // Lae'zel: versatile longsword alone in the melee set, a shortbow in the ranged set;
+        // she starts on the melee set.
         let items = resolve_equipment("EQ_Laezel", race, &stats, &templates, &banks);
         let weapons = weapon_items(&items);
+        let set = WeaponSet::from_initial(
+            stats
+                .equipment
+                .get("EQ_Laezel")
+                .unwrap()
+                .initial_weapon_set
+                .as_deref(),
+        );
+        assert_eq!(set, WeaponSet::Melee);
+        let shown = |slot, state| {
+            let i = weapons.iter().find(|i| i.slot == slot).unwrap();
+            placement(w, i, &weapons)
+                .shown(state, set)
+                .and_then(|a| a.bone.clone())
+        };
+        // Only the active (melee) set is on her back; the bow appears only when drawn.
+        assert_eq!(
+            shown(WeaponSlot::MeleeMain, UnsheathState::Sheathed).as_deref(),
+            Some("Dummy_Sheath_Upper_R")
+        );
+        assert_eq!(shown(WeaponSlot::RangedMain, UnsheathState::Sheathed), None);
+        assert_eq!(shown(WeaponSlot::RangedMain, UnsheathState::Melee), None);
+        assert_eq!(
+            shown(WeaponSlot::RangedMain, UnsheathState::Ranged).as_deref(),
+            Some("Dummy_L_Hand")
+        );
+        assert_eq!(
+            shown(WeaponSlot::MeleeMain, UnsheathState::Ranged).as_deref(),
+            Some("Dummy_Sheath_Upper_R")
+        );
         let bone = |slot, state| {
             let i = weapons.iter().find(|i| i.slot == slot).unwrap();
             placement(w, i, &weapons).for_state(state).clone()
@@ -1404,6 +1442,48 @@ add equipment entry "camp"
                 );
             }
         }
+        // Drawn: the weapon subset's combat idle (the pose of the imp-fight reference shot).
+        let combat_idle = c
+            .animation_in_subset(&banks, melee, &simple_names[IDLE_STILL_COMBAT])
+            .unwrap();
+        assert!(
+            combat_idle
+                .name
+                .contains("GTY_F_Rig_2HS_IDLE_Still_Combat_01"),
+            "{}",
+            combat_idle.name
+        );
+
+        // A versatile battleaxe alone keeps the plain bones (the two-handed grip, left hand);
+        // beside a shield it uses the versatile (one-handed, right hand) bones.
+        let type_id = |name: &str| {
+            w.equipment_types
+                .values()
+                .find(|t| t.name == name)
+                .map(|t| t.id.as_str())
+                .unwrap()
+        };
+        let axe = crate::unsheath::WeaponItem {
+            slot: WeaponSlot::MeleeMain,
+            equipment_type: Some(type_id("Battleaxe")),
+            two_handed: false,
+            versatile: true,
+        };
+        let shield = crate::unsheath::WeaponItem {
+            slot: WeaponSlot::MeleeOff,
+            equipment_type: Some(type_id("Shield")),
+            two_handed: false,
+            versatile: false,
+        };
+        let alone = placement(w, &axe, &[axe]);
+        assert_eq!(alone.unsheathed.bone.as_deref(), Some("Dummy_L_Hand"));
+        let beside = placement(w, &axe, &[axe, shield]);
+        assert_eq!(beside.unsheathed.bone.as_deref(), Some("Dummy_R_Hand"));
+        assert_eq!(beside.unsheathed.source, "Dummy_Attachment_Versatile");
+        assert_eq!(
+            subset_for_state(w, UnsheathState::Melee, &[axe]),
+            w.animation_subset("Generic2H", "Unarmed1H")
+        );
 
         // The CC cleric: mace on the back, the shield hidden until drawn.
         let human = templates

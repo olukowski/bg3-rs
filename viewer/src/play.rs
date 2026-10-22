@@ -65,6 +65,8 @@ pub struct Started {
     pub avatar_template: Guid,
     /// Actual CC result, including class/race starting items (read from the sim).
     pub avatar_equipment: Vec<String>,
+    /// Active weapon set of each character presence (`Sim::weapon_set`), by id.
+    pub weapon_sets: HashMap<String, bg3_world::unsheath::WeaponSet>,
     pub level: String,
     pub presences: Vec<Presence>,
     /// Items with use actions (`Sim::item_use_actions`): clicking them uses them.
@@ -213,6 +215,11 @@ fn game_thread(
             .get(&started.avatar)
             .map(|c| c.equipment.clone())
             .unwrap_or_default(),
+        weapon_sets: last
+            .iter()
+            .filter(|p| p.kind == bg3_sim::EntityKind::Character)
+            .map(|p| (p.id.to_string(), game.sim.weapon_set(p.id)))
+            .collect(),
         level: started.level,
         presences: last.clone(),
         usable_items,
