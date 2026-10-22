@@ -1,6 +1,7 @@
 //! Level loading for the viewer.
 
 use anyhow::Result;
+use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureUsages;
 use bg3_vfs::Vfs;
@@ -129,6 +130,15 @@ pub fn spawn_level(
             .visual_id(obj)
             .filter(|_| obj.draws_visual(&level.templates))
             .and_then(|v| uploaded.get(v));
+        // Decals project onto objects that receive them (`RecieveDecal`).
+        let receives = level
+            .templates
+            .receives_decals(obj, level.level.receive_decal.get(&obj.id).copied());
+        let decal_tag = if receives {
+            crate::decals::RECEIVES_DECALS
+        } else {
+            0
+        };
         if parts.is_some() || !placeholders.0 {
             // Without meshes the entity still carries the object's id and position (item
             // picking, story visibility).
@@ -141,7 +151,11 @@ pub fn spawn_level(
                 ))
                 .with_children(|parent| {
                     for (mesh, mat) in parts.into_iter().flatten() {
-                        parent.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone())));
+                        parent.spawn((
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(mat.clone()),
+                            MeshTag::new(decal_tag),
+                        ));
                     }
                 });
             continue;

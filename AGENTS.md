@@ -110,7 +110,10 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `--no-follow` keeps the camera at `--camera` during combat (close-up shots);
   `BG3_STANDARD_CHARACTERS=1` draws characters without the character shaders and
   `BG3_STANDARD_LEVEL=1` level surfaces on Bevy's `StandardMaterial` (A/B checks);
-  `BG3_NO_BLOOM=1` turns the game's bloom off.
+  `BG3_NO_BLOOM=1` turns the game's bloom off. Level decals are projected onto receivers in the
+  level/terrain shaders (`docs/research/decals.md`): `BG3_NO_DECALS=1` turns them off,
+  `BG3_DECAL_DEBUG=1` lists them and paints a checker of each decal box, `BG3_DECAL_SIZE=N` sets
+  the base colour texture-array size (default 1024).
   `--play --cc` opens a character creation screen first (Start re-runs the viewer with
   `--character <spec>`; default character: the trace's deep gnome cleric).
   `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled

@@ -9,6 +9,7 @@ mod cc_ui;
 mod char_materials;
 mod characters;
 mod combat_ui;
+mod decals;
 mod dialog;
 mod fly_camera;
 mod fog;
@@ -241,6 +242,7 @@ fn main() -> Result<()> {
         &level.templates,
         lights.lighting.fog_phase,
     );
+    let decals = decals::LevelDecals::load(&vfs, &args.level, &level);
     let probes = probes::LevelProbes::load(
         &vfs,
         &args.level,
@@ -291,6 +293,7 @@ fn main() -> Result<()> {
     .add_plugins(characters::CharactersPlugin)
     .add_plugins(char_materials::CharacterMaterialsPlugin)
     .add_plugins(level_materials::LevelMaterialsPlugin)
+    .add_plugins(decals::DecalsPlugin)
     .add_plugins(sss::SssPlugin)
     .add_plugins(post::GamePostPlugin)
     .add_plugins(bloom::GameBloomPlugin)
@@ -302,6 +305,7 @@ fn main() -> Result<()> {
     .insert_resource(lights)
     .insert_resource(probes)
     .insert_resource(fog)
+    .insert_resource(decals)
     .insert_resource(materials)
     .insert_resource(characters)
     .insert_resource(level::ShowPlaceholders(args.placeholders))
@@ -315,7 +319,8 @@ fn main() -> Result<()> {
     .add_systems(
         Startup,
         (
-            materials::upload,
+            decals::upload,
+            materials::upload.after(decals::upload),
             level::spawn_level.after(materials::upload),
             terrain::spawn_terrain,
             lights::spawn_lights,

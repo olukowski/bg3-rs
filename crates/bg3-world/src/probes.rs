@@ -204,6 +204,8 @@ mod tests {
                 character: None,
                 probe: Some(ProbeProps::read(&base)),
                 fog: None,
+                decal: None,
+                receive_decal: None,
             },
         );
         let capture = Node::new("CaptureDesc")

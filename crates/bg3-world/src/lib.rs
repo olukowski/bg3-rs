@@ -7,6 +7,7 @@ pub mod appearance;
 pub mod atmosphere;
 pub mod banks;
 pub mod characters;
+pub mod decals;
 pub mod fog;
 pub mod level;
 pub mod lights;

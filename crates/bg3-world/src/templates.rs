@@ -30,6 +30,10 @@ pub struct RootTemplate {
     pub probe: Option<crate::probes::ProbeProps>,
     /// Fog volume fields set on this template (`fogVolume` templates only).
     pub fog: Option<crate::fog::FogProps>,
+    /// Decal fields set on this template (`decal` templates only).
+    pub decal: Option<crate::decals::DecalProps>,
+    /// `RecieveDecal` (sic), if this template sets it.
+    pub receive_decal: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -94,6 +98,26 @@ impl RootTemplates {
         }
         false
     }
+
+    /// Whether decals project onto a level object: its own `RecieveDecal` (`own`, from
+    /// [`crate::Level::receive_decal`]), else the first template up the chain that sets it,
+    /// else true (the field's default in `ls::GameObjectTemplate::Visit`). The renderer passes
+    /// it to the object's G-buffer pass as `_ObjectReceiveDecal`.
+    // bg3: ls::GameObjectTemplate::Visit (4.1.1.7631656)
+    pub fn receives_decals(&self, obj: &crate::LevelObject, own: Option<bool>) -> bool {
+        if let Some(b) = own {
+            return b;
+        }
+        let mut current = obj.template.as_deref().and_then(|t| self.get(t));
+        for _ in 0..32 {
+            let Some(t) = current else { break };
+            if let Some(b) = t.receive_decal {
+                return b;
+            }
+            current = t.parent.as_deref().and_then(|p| self.get(p));
+        }
+        true
+    }
 }
 
 impl RootTemplates {
@@ -123,6 +147,7 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
                 (kind == "character").then(|| crate::characters::CharacterProps::read(n));
             let probe = (kind == "lightProbe").then(|| crate::probes::ProbeProps::read(n));
             let fog = (kind == "fogVolume").then(|| crate::fog::FogProps::read(n));
+            let decal = (kind == "decal").then(|| crate::decals::DecalProps::read(n));
             Some(RootTemplate {
                 id: str_attr(n, "MapKey")?,
                 name: str_attr(n, "Name").unwrap_or_default(),
@@ -139,6 +164,8 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
                 character,
                 probe,
                 fog,
+                decal,
+                receive_decal: n.attr("RecieveDecal").and_then(|v| v.as_bool()),
             })
         })
 }
@@ -163,6 +190,8 @@ mod tests {
             character: None,
             probe: None,
             fog: None,
+            decal: None,
+            receive_decal: None,
         }
     }
 
@@ -209,6 +238,16 @@ mod tests {
         let t = templates();
         assert!(object("scenery", "helper", Some(false)).draws_visual(&t));
         assert!(!object("scenery", "wall", Some(true)).draws_visual(&t));
+    }
+
+    #[test]
+    fn receive_decal_defaults_to_true_and_inherits() {
+        let mut t = templates();
+        t.templates.get_mut("helper").unwrap().receive_decal = Some(false);
+        assert!(t.receives_decals(&object("scenery", "wall", None), None));
+        assert!(!t.receives_decals(&object("scenery", "slider", None), None));
+        assert!(t.receives_decals(&object("scenery", "slider", None), Some(true)));
+        assert!(t.receives_decals(&object("scenery", "missing", None), None));
     }
 
     #[test]

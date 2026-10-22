@@ -14,6 +14,7 @@ use bevy::asset::{embedded_asset, load_embedded_asset};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 use bg3_material::ResolvedMaterial;
 use bg3_material::character::sss::DiffusionProfile;
@@ -58,6 +59,18 @@ pub struct LevelExtension {
     #[texture(107)]
     #[sampler(108)]
     pub sss_map: Option<Handle<Image>>,
+    /// Level decals (`decals.rs`, `shaders/decals.wesl`), shared by every level material.
+    #[storage(110, read_only)]
+    pub decals: Handle<ShaderBuffer>,
+    #[storage(111, read_only)]
+    pub decal_grid: Handle<ShaderBuffer>,
+    #[texture(112, dimension = "2d_array")]
+    #[sampler(113)]
+    pub decal_albedo: Option<Handle<Image>>,
+    #[texture(114, dimension = "2d_array")]
+    pub decal_normal: Option<Handle<Image>>,
+    #[texture(115, dimension = "2d_array")]
+    pub decal_physical: Option<Handle<Image>>,
 }
 
 impl MaterialExtension for LevelExtension {
@@ -77,18 +90,20 @@ pub fn enabled() -> bool {
 
 pub struct LevelMaterialsPlugin;
 
-/// Keeps the shared lighting module (imported by `character.wesl` and `level.wesl`) loaded.
+/// Keeps the shared lighting module (imported by `character.wesl` and `level.wesl`) and the
+/// decal module (imported by `level.wesl`) loaded.
 #[derive(Resource)]
 #[allow(dead_code)]
-struct GameLightingLibrary(Handle<Shader>);
+struct GameLightingLibrary(Handle<Shader>, Handle<Shader>);
 
 impl Plugin for LevelMaterialsPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "shaders/game_lighting.wesl");
         embedded_asset!(app, "shaders/level.wesl");
+        embedded_asset!(app, "shaders/decals.wesl");
         let library: Handle<Shader> = load_embedded_asset!(app, "shaders/game_lighting.wesl");
-        app.insert_resource(GameLightingLibrary(library))
-            .init_resource::<LevelGameMaterials>()
+        let decals: Handle<Shader> = load_embedded_asset!(app, "shaders/decals.wesl");
+        app.insert_resource(GameLightingLibrary(library, decals))
             .add_plugins(MaterialPlugin::<LevelMaterial>::default())
             .add_systems(Last, swap_level_materials);
     }
@@ -149,12 +164,20 @@ pub fn plan(
 }
 
 /// The game-shaded material per level `StandardMaterial`.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct LevelGameMaterials {
     by_standard: HashMap<AssetId<StandardMaterial>, Handle<LevelMaterial>>,
+    decals: crate::decals::DecalBindings,
 }
 
 impl LevelGameMaterials {
+    pub fn new(decals: crate::decals::DecalBindings) -> Self {
+        Self {
+            by_standard: HashMap::new(),
+            decals,
+        }
+    }
+
     /// Build the game-shaded counterpart of `standard` (the material built for the plan's
     /// material). `glow` and `physical` are the standard plan's glow and physical maps.
     #[allow(clippy::too_many_arguments)]
@@ -215,6 +238,11 @@ impl LevelGameMaterials {
                 detail_normal_map,
                 glow_map: glow,
                 sss_map,
+                decals: self.decals.decals.clone(),
+                decal_grid: self.decals.grid.clone(),
+                decal_albedo: self.decals.albedo.clone(),
+                decal_normal: self.decals.normal.clone(),
+                decal_physical: self.decals.physical.clone(),
             },
         });
         self.by_standard.insert(standard_handle.id(), handle);
@@ -224,12 +252,13 @@ impl LevelGameMaterials {
 /// Put the game-shaded material on every entity spawned with a level `StandardMaterial`.
 fn swap_level_materials(
     mut commands: Commands,
-    game: Res<LevelGameMaterials>,
+    game: Option<Res<LevelGameMaterials>>,
     spawned: Query<
         (Entity, &MeshMaterial3d<StandardMaterial>),
         Added<MeshMaterial3d<StandardMaterial>>,
     >,
 ) {
+    let Some(game) = game else { return };
     if game.by_standard.is_empty() || !enabled() {
         return;
     }

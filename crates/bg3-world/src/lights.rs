@@ -801,6 +801,8 @@ mod tests {
             character: None,
             probe: None,
             fog: None,
+            decal: None,
+            receive_decal: None,
         }
     }
 

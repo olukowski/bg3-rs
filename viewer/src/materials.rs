@@ -401,6 +401,7 @@ pub fn upload(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut level_materials: ResMut<Assets<crate::level_materials::LevelMaterial>>,
+    decals: Res<crate::decals::DecalBindings>,
 ) {
     let handles: Vec<Option<Handle<Image>>> = std::mem::take(&mut prepared.images)
         .into_iter()
@@ -410,7 +411,7 @@ pub fn upload(
     let mut out = LevelMaterials::default();
     let char_plans = std::mem::take(&mut prepared.char_plans);
     let mut char_templates = crate::char_materials::CharacterTemplates::default();
-    let mut game = crate::level_materials::LevelGameMaterials::default();
+    let mut game = crate::level_materials::LevelGameMaterials::new(decals.clone());
     for (id, plan) in std::mem::take(&mut prepared.plans) {
         let m = &plan.material;
         if m.invisible {
