@@ -397,6 +397,12 @@ pub(crate) fn receive(
 }
 
 impl Dialogs {
+    pub(crate) fn character_name<'a>(&'a self, root: &'a CharacterRoot) -> &'a str {
+        Guid::parse(&root.id)
+            .and_then(|id| self.names.get(&id))
+            .map_or(root.name.as_str(), String::as_str)
+    }
+
     fn text(&self, t: &Option<bg3_dialog::model::TextLine>) -> Option<String> {
         t.as_ref()
             .and_then(|t| self.loca.text(&t.handle))
@@ -679,7 +685,7 @@ fn talk_on_start(
     let name = talk.0.take().unwrap_or_default().to_lowercase();
     match roots
         .iter()
-        .find(|r| r.name.to_lowercase().contains(&name))
+        .find(|r| crate::characters::name_matches(&r.name, &name))
         .and_then(|r| Guid::parse(&r.id).map(|id| (id, r)))
     {
         Some((id, r)) => {
@@ -689,7 +695,7 @@ fn talk_on_start(
         None => match link
             .usable_items
             .iter()
-            .find(|(_, n)| n.to_lowercase().contains(&name))
+            .find(|(_, n)| crate::characters::name_matches(n, &name))
         {
             // Or an item with use actions (as if clicked).
             Some((&id, n)) => {

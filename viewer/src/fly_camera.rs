@@ -7,8 +7,11 @@ pub struct FlyCameraPlugin;
 
 impl Plugin for FlyCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<CombatCamera>()
-            .add_systems(Update, fly.after(crate::combat_ui::animate));
+        app.init_resource::<CombatCamera>().add_systems(
+            Update,
+            fly.after(crate::combat_ui::animate)
+                .run_if(not(resource_exists::<crate::framing::FrameTarget>)),
+        );
     }
 }
 

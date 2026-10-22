@@ -211,7 +211,7 @@ fn select_character(
             let name = name.to_lowercase();
             roots
                 .iter()
-                .find(|(_, r, _)| r.name.to_lowercase().contains(&name))
+                .find(|(_, r, _)| crate::characters::name_matches(&r.name, &name))
         }
         None => roots
             .iter()

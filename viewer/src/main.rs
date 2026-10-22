@@ -9,6 +9,7 @@ mod characters;
 mod combat_ui;
 mod dialog;
 mod fly_camera;
+mod framing;
 mod level;
 mod lights;
 mod materials;
@@ -75,6 +76,20 @@ struct Args {
     /// keeps running meanwhile).
     #[arg(long)]
     shot_after: Option<f32>,
+    /// With `--play`: frame the front of a character (case-insensitive name substring).
+    #[arg(long, requires = "play")]
+    frame: Option<String>,
+    /// Frame the whole body or a face close-up.
+    #[arg(long, value_enum, default_value_t = framing::FrameMode::Body, requires = "frame")]
+    frame_mode: framing::FrameMode,
+    /// Orbit the framing camera around the character's vertical axis, in degrees.
+    #[arg(
+        long,
+        default_value_t = 0.0,
+        allow_hyphen_values = true,
+        requires = "frame"
+    )]
+    frame_yaw: f32,
     /// With `--play`: jump to the deck fight's set-up (Lae'zel recruited, the party placed in
     /// the imp room) instead of walking there; the fight starts when the imps notice you.
     #[arg(long)]
@@ -187,12 +202,15 @@ fn main() -> Result<()> {
         None
     };
     // The play camera starts behind the avatar (BG3 space) unless placed explicitly.
-    let avatar_at = play.as_ref().and_then(|(_, s)| {
-        s.presences
-            .iter()
-            .find(|p| p.id == s.avatar)
-            .map(|p| Vec3::from_array(p.position))
-    });
+    let avatar_at = play
+        .as_ref()
+        .filter(|_| args.frame.is_none())
+        .and_then(|(_, s)| {
+            s.presences
+                .iter()
+                .find(|p| p.id == s.avatar)
+                .map(|p| Vec3::from_array(p.position))
+        });
     let extra = match &play {
         Some((_, started)) => play_characters(&vfs, &level, started)?,
         None => Vec::new(),
@@ -291,12 +309,31 @@ fn main() -> Result<()> {
     if let Some(dialog) = dialog {
         app.add_plugins(dialog);
     }
-    if args.no_follow {
+    if let Some(name) = args.frame {
+        app.insert_resource(framing::FrameTarget::new(
+            name,
+            args.frame_mode,
+            args.frame_yaw,
+        ))
+        .add_systems(
+            PostUpdate,
+            framing::hide_ui
+                .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+        )
+        .add_systems(
+            PostUpdate,
+            framing::frame_character
+                .after(bevy::camera::visibility::VisibilitySystems::CalculateBounds)
+                .after(bevy::transform::TransformSystems::Propagate)
+                .before(bevy::camera::visibility::VisibilitySystems::UpdateFrusta),
+        );
+    }
+    if args.no_follow || app.world().contains_resource::<framing::FrameTarget>() {
         app.insert_resource(fly_camera::CombatCamera::disabled());
     }
     if let Some(path) = args.shot {
         app.insert_resource(ShotRequest(path, args.shot_after))
-            .add_systems(Update, take_screenshot);
+            .add_systems(Last, take_screenshot);
     }
     app.run();
     Ok(())
@@ -356,6 +393,7 @@ pub(crate) fn take_screenshot(
     mut commands: Commands,
     request: Res<ShotRequest>,
     time: Res<Time>,
+    mut framing: Option<ResMut<framing::FrameTarget>>,
     mut frame: Local<u32>,
     mut taken: Local<Option<u32>>,
     mut exit: MessageWriter<AppExit>,
@@ -364,9 +402,12 @@ pub(crate) fn take_screenshot(
     *frame += 1;
     let due = match request.1 {
         Some(secs) => *frame >= 60 && time.elapsed_secs() >= secs,
-        None => *frame == 60,
+        None => *frame >= 60,
     };
-    if due && taken.is_none() {
+    if due && taken.is_none() && framing.as_ref().is_none_or(|f| f.ready) {
+        if let Some(f) = framing.as_mut() {
+            f.captured = true;
+        }
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(request.0.clone()));
@@ -374,5 +415,31 @@ pub(crate) fn take_screenshot(
     }
     if taken.is_some_and(|t| *frame == t + 30) {
         exit.write(AppExit::Success);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn framing_arguments_require_play_and_accept_modes_and_negative_yaw() {
+        assert!(Args::try_parse_from(["viewer", "--frame", "Lae"]).is_err());
+        assert!(Args::try_parse_from(["viewer", "--frame-mode", "face"]).is_err());
+        assert!(Args::try_parse_from(["viewer", "--frame-yaw", "45"]).is_err());
+        assert!(Args::try_parse_from(["viewer", "--shot", "synthetic.png"]).is_ok());
+        assert!(
+            Args::try_parse_from([
+                "viewer",
+                "--play",
+                "--frame",
+                "Lae",
+                "--frame-mode",
+                "face",
+                "--frame-yaw",
+                "-45",
+            ])
+            .is_ok()
+        );
     }
 }

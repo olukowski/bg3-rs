@@ -685,6 +685,11 @@ pub fn skinned_mesh(m: &bg3_gr2::Mesh, skeleton: &Skeleton) -> (Mesh, Vec<String
 /// An animation with its `(joint index, track index)` bindings.
 pub type BoundClip = (Arc<PreparedAnimation>, Vec<(usize, usize)>);
 
+/// Shared CLI name matching for `--player`, `--talk` and `--frame`.
+pub fn name_matches(name: &str, substring: &str) -> bool {
+    name.to_lowercase().contains(&substring.to_lowercase())
+}
+
 /// Root entity of a spawned level character.
 #[derive(Component)]
 pub struct CharacterRoot {
@@ -803,6 +808,7 @@ pub fn spawn_characters(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     templates: Option<Res<crate::char_materials::CharacterTemplates>>,
+    framing: Option<Res<crate::framing::FrameTarget>>,
     mut char_materials: ResMut<Assets<crate::char_materials::CharacterMaterial>>,
 ) {
     let fallback = materials.add(Color::srgb(0.75, 0.6, 0.55));
@@ -868,6 +874,9 @@ pub fn spawn_characters(
                     Transform::default(),
                     ChildOf(root),
                 ));
+                if framing.is_some() {
+                    e.insert(bevy::camera::visibility::DynamicSkinnedMeshBounds);
+                }
                 material.insert(&mut e);
             } else {
                 let parent = part
