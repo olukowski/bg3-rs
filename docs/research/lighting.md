@@ -510,6 +510,8 @@ ambient term (unexposed, fading with depth) is dropped. Not reproduced: groups a
 (Bevy adds volumes), noise, the ambient's variation inside a volume and its band-1 term, the
 distant probe's harmonics (0 where no probe covers), the phase for local lights, per-light
 `ScatteringScale`, box lights in the fog. `BG3_NO_FOG=1` turns fog off.
+The ray march takes one step per 0.5 m inside a volume (4–64 steps; Bevy's fixed 64 patched for
+performance, `docs/performance.md`); the game's froxel resolution is not read.
 
 ## Background
 

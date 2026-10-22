@@ -39,7 +39,18 @@ pub struct FogAmbientPlugin;
 const VOLUMETRIC_FOG: &str = "embedded://bevy_pbr/volumetric_fog/volumetric_fog.wesl";
 
 /// (Bevy's text, replacement); every one must match once or more.
-const FOG_PATCHES: [(&str, &str); 3] = [
+const FOG_PATCHES: [(&str, &str); 5] = [
+    // Steps by the ray's length inside the volume (`FOG_STEP_M`), at most `step_count`: Bevy
+    // takes `step_count` steps however short the ray (performance only, see
+    // `docs/performance.md`).
+    (
+        "let step_count = volumetric_fog.step_count;",
+        "var step_count = volumetric_fog.step_count;",
+    ),
+    (
+        "let inv_step_count = 1.0 / f32(step_count);",
+        "step_count = clamp(u32(ceil(ray_length_view * FOG_STEPS_PER_M)), 4u, step_count);\n    let inv_step_count = 1.0 / f32(step_count);",
+    ),
     (
         "var accumulated_color = exp(-ray_length_view * (absorption + scattering)) * ambient_color *\n        ambient_intensity;",
         "var accumulated_color = vec3(0.0);",
@@ -73,6 +84,10 @@ fn patch_fog_shader(mut patch: ResMut<FogShaderPatch>, mut shaders: ResMut<Asset
         return;
     };
     patch.1 = true;
+    let steps_per_m = std::env::var("BG3_FOG_STEP_M")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(FOG_STEP_M);
     let mut source = shader.source.as_str().to_string();
     for (from, to) in FOG_PATCHES {
         if !source.contains(from) {
@@ -81,10 +96,18 @@ fn patch_fog_shader(mut patch: ResMut<FogShaderPatch>, mut shaders: ResMut<Asset
         }
         source = source.replace(from, to);
     }
+    // The step rate as a literal (a module constant can't precede the shader's imports).
+    let source = source.replace(
+        "FOG_STEPS_PER_M",
+        &format!("{:?}", 1.0 / steps_per_m.max(1e-3)),
+    );
     if let Some(mut shader) = shaders.get_mut(&patch.0) {
         shader.source = bevy::shader::Source::Wesl(source.into());
     }
 }
+
+/// Fog ray-march step (m) for rays shorter than `step_count` of them; `BG3_FOG_STEP_M` overrides.
+const FOG_STEP_M: f32 = 0.5;
 
 /// Resolution of the baked edge-fade textures.
 const DENSITY_RES: u32 = 16;

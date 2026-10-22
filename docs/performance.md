@@ -177,6 +177,16 @@ The main opaque pass goes from 5.8–6.2 to 2.9–3.2 ms in the combat view and 
 6.3–7.9 ms in the deck view. Remaining GPU time (combat): shadow passes 4.0 ms, opaque 3.0,
 volumetric fog 2.3; the wide view spends 7.1–7.2 ms in volumetric fog.
 
+**Fog steps by ray length.** Bevy's volumetric fog ray-marches `step_count` (64) steps for every
+pixel of every fog volume, however short the ray inside it (the Nautiloid has 35 volumes, many of
+them thin slabs). `fog::FogAmbientPlugin` patches the shader to take one step per 0.5 m of ray
+(`FOG_STEP_M`, `BG3_FOG_STEP_M` overrides), at least 4 and at most 64. Wide view: fog 7.1–7.2 →
+2.0–2.2 ms, frame 18.0–18.6 → 13.0–13.5 ms; start pod: fog 5.6 → 1.4 ms, frame 16.4 → 11.9 ms
+(1600×900). The fog's cost barely depends on the volumetric local lights (−0.8 ms without them)
+or the sun's shadow lookups. Images: ≤ 5 pixels of 1.44 M differ by more than 1 % from 64 fixed
+steps, in the wide view and in a view through the dense red slab over the deck
+(`--camera=-30,20,-380 --look-at=-50,12,-410`), the same as between two runs.
+
 Bevy 0.20 caveat: an `ExtendedMaterial`'s layout makes the base bindless whenever the base
 supports it, even when the extension can't be (here: no buffer binding arrays), which gives an
 invalid layout. Vulkan with descriptor indexing and Metal with tier 2 argument buffers have both,
@@ -206,6 +216,8 @@ animation 1.3–1.6, skin extraction 0.9) and runs in parallel with the render w
 - `BG3_BOX_SHADOW_CASCADES=1`: box light shadows on Bevy's four camera cascades, with casters
   culled to the boxes (`cull_box_shadow_casters`), instead of one map per box. Sharper near the
   camera, 10–25 % slower; the look before this change.
+- `BG3_FOG_STEP_M=<m>`: fog ray-march step length (default 0.5; a tiny value gives Bevy's fixed
+  64 steps).
 - `BG3_NO_BINDLESS=1`: no texture or buffer binding arrays, so every material is its own bind
   group and batch set (the state before bindless level and character materials).
 - `BG3_NO_SUN_SHADOWS=1`, `BG3_NO_BOX_SHADOWS=1`, `BG3_NO_BOX_LIGHTS=1`, `BG3_NO_FOG=1`, `BG3_NO_BLOOM=1`,
