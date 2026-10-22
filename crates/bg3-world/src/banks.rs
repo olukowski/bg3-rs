@@ -54,6 +54,10 @@ pub struct VisualResource {
     pub vertex_color_mask_slots: Vec<String>,
     pub supports_vertex_color_mask: bool,
     pub needs_skeleton_remap: bool,
+    /// `SkeletonSlot`: visuals naming the same slot share one skeleton. Heads register
+    /// slot `1` with their face rig; beards name slot `1` to pose against it.
+    // bg3: ls::Visual::GetOrCreateSkeletonSlot (4.1.1.7631656)
+    pub skeleton_slot: Option<String>,
 }
 
 impl VisualResource {
@@ -266,6 +270,7 @@ fn read_visual(n: &Node) -> VisualResource {
             .attr("NeedsSkeletonRemap")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        skeleton_slot: str_attr(n, "SkeletonSlot"),
         supports_vertex_color_mask: n
             .attr("SupportsVertexColorMask")
             .and_then(|v| v.as_bool())

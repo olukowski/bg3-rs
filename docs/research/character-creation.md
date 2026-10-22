@@ -269,20 +269,61 @@ part the source GR2 inverse-bind matrices remapped by name. This computes target
 world pose × source inverse bind for each binding. Non-remapped visuals keep the existing
 assembly path; no offsets or scales are invented.
 
-Original evidence: focused LLVM disassembly of
-`gr::GrannyMeshBinding::RemapToSkeleton` (0x105b7a210) and
-`gr::GrannyMeshBinding::UpdatePose` (0x105b7a688), reference build 4.1.1.7631656.
-The remapped path copies target bone/socket world transforms into the source pose and
-builds an indexed composite buffer using the source skeleton; missing bones can resolve
-through `ls::Skeleton::GetSocketWorldTransform`. The socket path is visible around
-0x105b7a7b0–0x105b7a824 and composite-buffer call at 0x105b7aa90. Local assembly and resource
-surveys stay in `.cache/cc-survey/`. REA/Ghidra startup timed out, so no pseudocode result
-was used. `shared_cc_mesh_binds_to_target_socket_with_source_inverse_bind` checks the
-matrix path using synthetic rigs, and `skeleton_bank_reads_fixed_hair_socket` tests parsing.
+Remapped meshes are often authored on another race's rig: every CC beard offered to dwarves,
+gnomes and halflings is a human or githyanki beard (`BEARD_HUM_M_Short_D` binds at y ≈ 1.7 m;
+a male dwarf's `Head_M` is at 1.32 m), and shared long hair carries spring/braid chains that
+no body skeleton has. Their bones resolve in this order (`Skeleton::extend_remapped`):
+
+1. The avatar's skeleton so far (body bones, sockets, bones added by non-remapped visuals).
+2. The rig of the visual owning the mesh's `SkeletonSlot`. Beards (`SkeletonSlot` `1`) bind
+   `beard_*` face-rig bones, which exist only in the head's skeleton; the head visual
+   registers slot `1` (`SkeletonSlot` `1` on head VisualBank resources, whose GR2 skeleton
+   and `SkeletonBank` GR2 carry the same `beard_*` bones at the head's height). Those bones
+   are placed at the head rig's bind pose. Visuals owning a slot are therefore assembled
+   before all remapped ones.
+3. The mesh's own GR2 rig (braid chains), placed at the bone's bind offset from its own
+   parent under the remapped parent (a `Socket_Hair_*` or a face bone), not at the source
+   rig's model-space height.
+
+Skinning then uses target world × source inverse bind for each binding, so a human beard
+vertex follows the dwarf's jaw bone and a human-height braid hangs from the dwarf's hair
+socket. Before this, the beard bones and braid chains were taken from the source rig in model
+space: a dwarf's beard rendered 0.4 m above his face and long hair/braids floated above the
+head, while socket-bound hair (Rover's Tumble on a deep gnome) looked right.
+
+Original evidence (reference build 4.1.1.7631656): `gr::GrannyVisualTemplate::InitInstance`
+builds each visual's own skeleton from its GR2 (`gr::GrannySkeleton::Init`,
+`ls::Visual::SetBaseSkeleton`) and calls `gr::GrannyMeshBinding::RemapToSkeleton` for its
+meshes; `ls::Visual::AddAttachment` and `SetBaseSkeleton` call
+`ls::Visual::GetOrCreateSkeletonSlot(FixedString, Visual*, Skeleton*)`, i.e. attached visuals
+are tied together through named skeleton slots (call sites found by disassembling the thin
+arm64 slice). The remapped path in `gr::GrannyMeshBinding::UpdatePose` (0x105b7a688) copies
+target bone/socket world transforms into the source pose and builds an indexed composite
+buffer using the source skeleton; missing bones can resolve through
+`ls::Skeleton::GetSocketWorldTransform` (0x105b7a7b0–0x105b7a824, composite buffer at
+0x105b7aa90). **Assumption:** a source bone that maps to nothing keeps its authored bind-local
+offset under its remapped parent (the usual Granny local-pose behaviour; not traced at
+runtime). REA/Ghidra was not used for pseudocode; local surveys stay in `.cache/`.
+
+Verification: synthetic `remapped_source_chain_keeps_local_offset_under_target_socket`,
+`remapped_bone_prefers_the_skeleton_slot_rig`,
+`shared_cc_mesh_binds_to_target_socket_with_source_inverse_bind` and
+`skeleton_bank_reads_fixed_hair_socket`; install test
+`dwarf_cc_hair_and_beard_bind_on_the_head` (bg3-viewer, ignored) resolves
+`Dwarves_Male_Hill_Player` with `HAIR_DWR_M_Braids_Long_B_Spring` and `BEARD_HUM_M_Short_D`
+and checks the skinned bind-pose vertices against `Head_M` (the old path put the beard at
+y 1.68–1.81 m and fails it). A local survey skinning every remapped Hair/Beard visual on male
+hill dwarf, female gnome, male halfling, male human and female half-orc bodies went from
+67/79/79/2/4 outliers (mean > 0.3 m from `Head_M` or top > 0.35 m above it) to 2/2/2/1/2; the
+remainder are goblin-only or Orin's hair, which CC does not offer these races. Captures:
+`.cache/shots/dwarf-before-face.png` / `dwarf-after-face.png` (Mineshaft beard),
+`dwarf-braid-old-side.png` / `dwarf-braid-new-side.png` (Innkeep Braid + Glorious
+Muttonchops), `halfling-braid-new-side.png`, `gnome-rover-new-face.png`.
+
 The implementation currently handles fixed sockets (zero constraint masks and no
-`BoneConstraint`), which cover the inspected hair bindings. Constrained sockets, full
-socket overrides by head/other skeleton slots, and the engine's complete missing-bone
-fallback remain unmodelled; other body/style combinations still need visual comparison.
+`BoneConstraint`), which cover the inspected hair bindings. Constrained sockets, the
+`SkeletonSlot` `Hair` used by two hair visuals, socket overrides by head skeletons, and the
+engine's complete missing-bone fallback remain unmodelled.
 
 Material application order: graph defaults → material instance → **all template presets** (including `ColorPreset`) →
 selected Skin, Hair, Eye presets → other chosen material presets in sorted category order →
@@ -302,7 +343,7 @@ appearance preserves the legacy spec representation. Validation rejects unknown 
 slots/categories and visuals outside the selected race/body/template/head filters.
 
 `bg3x cc --list` prints all applicable visual options and all material categories with display
-names and UUIDs. `--head`, `--hair`, `--skin`, `--hair-color`, `--eye-color` accept an allowed
+names and UUIDs. `--head`, `--hair`, `--beard`, `--skin`, `--hair-color`, `--eye-color` accept an allowed
 entry/resource UUID or a case-insensitive display-name substring. Other categories can be set
 through the spec or the viewer's Appearance section. Each UI selector includes “Template”;
 explicit data “none” entries remain separate. Race/subrace/body or head changes clear visual

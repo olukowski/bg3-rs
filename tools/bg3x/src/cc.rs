@@ -60,6 +60,8 @@ pub struct Args {
     #[arg(long)]
     pub hair: Option<String>,
     #[arg(long)]
+    pub beard: Option<String>,
+    #[arg(long)]
     pub skin: Option<String>,
     #[arg(long)]
     pub hair_color: Option<String>,
@@ -275,7 +277,7 @@ pub fn run(a: Args) -> Result<()> {
     if choice.subclass.is_none() {
         choice.subclass = cc.level1_subclasses(choice.class).first().copied();
     }
-    for (slot, query) in [("Head", &a.head), ("Hair", &a.hair)] {
+    for (slot, query) in [("Head", &a.head), ("Hair", &a.hair), ("Beard", &a.beard)] {
         if let Some(query) = query {
             let options = cc.appearance_options(&choice, slot);
             let id = find_appearance(
