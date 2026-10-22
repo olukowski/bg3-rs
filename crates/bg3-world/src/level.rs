@@ -6,7 +6,7 @@ use bg3_lsf::Node;
 use bg3_vfs::Vfs;
 use bg3_vfs::modules::BASE_LOAD_ORDER;
 
-use crate::{Error, Result, parse, str_attr};
+use crate::{Error, Result, RootTemplates, parse, str_attr};
 
 /// Object kinds stored as per-level `_merged.lsf` directories.
 pub const OBJECT_DIRS: &[&str] = &["Scenery", "Items", "Characters"];
@@ -40,11 +40,23 @@ pub struct LevelObject {
     pub template: Option<String>,
     /// Instance-level visual override, if any.
     pub visual_template: Option<String>,
+    /// Instance-level `IsBlocker` override, if set (see [`LevelObject::draws_visual`]).
+    pub is_blocker: Option<bool>,
     pub transform: Transform,
     /// Character fields set on the object itself (`character` objects only).
     pub character: Option<crate::characters::CharacterProps>,
     /// Module the (winning) definition came from.
     pub module: String,
+}
+
+impl LevelObject {
+    /// Whether the game gives this object a visual. Scenery whose `IsBlocker` is set (the
+    /// invisible blocker, camera slider and fade helper templates) gets only a bound from its
+    /// visual resource, no visual: it blocks movement, the camera or picking but isn't drawn.
+    // bg3: ecl::EntityManager::LoadEntity (4.1.1.7631656)
+    pub fn draws_visual(&self, templates: &RootTemplates) -> bool {
+        !(self.kind == "scenery" && templates.is_blocker(self))
+    }
 }
 
 #[derive(Debug)]
@@ -139,6 +151,7 @@ fn read_objects<'a>(
                 kind,
                 template: str_attr(n, "TemplateName"),
                 visual_template: str_attr(n, "VisualTemplate"),
+                is_blocker: n.attr("IsBlocker").and_then(|v| v.as_bool()),
                 transform: n.child("Transform").map(read_transform).unwrap_or_default(),
                 module: module.to_owned(),
             })
@@ -250,5 +263,114 @@ mod tests {
             scenery.len(),
             "every scenery object should resolve to a GR2 or an effect"
         );
+    }
+
+    #[test]
+    #[ignore = "needs BG3 install"]
+    fn nautiloid_blockers_are_helpers_without_visuals() {
+        let Ok(install) = bg3_install::Install::locate() else {
+            eprintln!("skipping: BG3 install not found");
+            return;
+        };
+        let vfs = Vfs::from_install(&install).unwrap();
+        let level = Level::load(&vfs, "TUT_Avernus_C").unwrap();
+        let templates = RootTemplates::load(&vfs).unwrap();
+        let banks = crate::ResourceBanks::load(&vfs).unwrap();
+        let hidden: Vec<&LevelObject> = level
+            .objects
+            .iter()
+            .filter(|o| !o.draws_visual(&templates))
+            .collect();
+        // 100+ invisible blockers, camera sliders and fade helpers on the Nautiloid.
+        assert!(hidden.len() > 80, "{} hidden", hidden.len());
+        for o in &hidden {
+            assert_eq!(o.kind, "scenery", "{}", o.name);
+            // Their meshes carry the engine's default or a helper material: no art.
+            let visual = o
+                .visual_template
+                .as_deref()
+                .or_else(|| templates.visual_for(o.template.as_deref()?))
+                .and_then(|v| banks.visuals.get(v))
+                .unwrap_or_else(|| panic!("{} has no visual", o.name));
+            for m in &visual.objects {
+                let name = m
+                    .material_id
+                    .as_deref()
+                    .and_then(|id| banks.materials.get(id))
+                    .map_or("", |m| m.name.as_str());
+                assert!(
+                    name.starts_with("Engine_Default") || name.starts_with("Helper_"),
+                    "{}: {name}",
+                    o.name
+                );
+            }
+        }
+        // Real scenery is untouched: the deck floor keeps its visual.
+        assert!(
+            level
+                .objects
+                .iter()
+                .filter(|o| o
+                    .name
+                    .starts_with("WALL_MF_Nautiloid_Exterior_A_Deck_Platform"))
+                .all(|o| o.draws_visual(&templates))
+        );
+    }
+
+    #[test]
+    #[ignore = "needs BG3 install"]
+    fn nautiloid_undrawn_meshes_are_cloth_simulation_meshes() {
+        let Ok(install) = bg3_install::Install::locate() else {
+            eprintln!("skipping: BG3 install not found");
+            return;
+        };
+        let vfs = Vfs::from_install(&install).unwrap();
+        let level = Level::load(&vfs, "TUT_Avernus_C").unwrap();
+        let templates = RootTemplates::load(&vfs).unwrap();
+        let banks = crate::ResourceBanks::load(&vfs).unwrap();
+        let mut visuals: Vec<&str> = level
+            .objects
+            .iter()
+            .filter(|o| o.draws_visual(&templates))
+            .filter_map(|o| {
+                o.visual_template
+                    .as_deref()
+                    .or_else(|| templates.visual_for(o.template.as_deref()?))
+            })
+            .collect();
+        visuals.sort_unstable();
+        visuals.dedup();
+        let mut undrawn = Vec::new();
+        for id in visuals {
+            let Some(visual) = banks.visuals.get(id) else {
+                continue;
+            };
+            let Some(path) = visual.source_file.as_deref() else {
+                continue;
+            };
+            let Ok(scene) = bg3_gr2::Scene::from_bytes(&vfs.read(path).unwrap()) else {
+                continue;
+            };
+            let meshes: Vec<&bg3_gr2::Mesh> = visual
+                .objects
+                .iter()
+                .filter(|o| o.lod == 0)
+                .filter_map(|o| scene.meshes.iter().find(|m| m.name == o.mesh_name()))
+                .collect();
+            for mesh in meshes.iter().filter(|m| !m.is_drawn()) {
+                // A cloth simulation sheet; the cloth it drives is a separate, drawn mesh.
+                assert!(mesh.name.contains("Cloth"), "{}", mesh.name);
+                assert!(
+                    meshes.iter().any(|m| m.is_drawn()),
+                    "{}: nothing drawn",
+                    visual.name
+                );
+                undrawn.push(mesh.name.clone());
+            }
+        }
+        undrawn.sort();
+        undrawn.dedup();
+        eprintln!("{} undrawn meshes: {undrawn:?}", undrawn.len());
+        assert!(!undrawn.is_empty());
     }
 }

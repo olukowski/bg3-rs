@@ -810,3 +810,26 @@ fn synthetic_animation_decodes() {
     v.curve.sample(0.25, &mut out);
     assert!((out[0] - 0.5).abs() < 1e-6);
 }
+
+#[test]
+fn proxies_occluders_and_cloth_physics_meshes_are_not_drawn() {
+    let props = |flags| MeshProperties {
+        flags,
+        ..Default::default()
+    };
+    assert!(props([0, 0, 0, 0]).is_drawn());
+    // Rigid, skinned, coloured: drawn.
+    assert!(props([0x20 | 0x10 | 0x08, 0, 0, 0]).is_drawn());
+    assert!(!props([MeshProperties::MESH_PROXY, 0, 0, 0]).is_drawn());
+    assert!(!props([MeshProperties::OCCLUDER, 0, 0, 0]).is_drawn());
+    // Cloth: the simulation mesh is hidden, the meshes it drives are drawn.
+    assert!(!props([MeshProperties::CLOTH | 0x08, 0, 0x100, 0]).is_drawn());
+    assert!(props([MeshProperties::CLOTH | 0x08, 0, 0, 0]).is_drawn());
+    assert!(props([MeshProperties::CLOTH, 0, 0x200, 0]).is_drawn());
+    // The cloth-kind bits only count on cloth meshes.
+    assert!(props([0, 0, 0x100, 0]).is_drawn());
+    let mut mesh = Mesh::default();
+    assert!(mesh.is_drawn());
+    mesh.properties = Some(props([MeshProperties::OCCLUDER, 0, 0, 0]));
+    assert!(!mesh.is_drawn());
+}

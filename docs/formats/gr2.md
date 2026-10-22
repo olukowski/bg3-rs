@@ -176,6 +176,15 @@ binds materials elsewhere); `MaterialBindings[].Material` is null.
   ExtendedData, LodDistance, IsImpostor`), `LSMVersion` (3), and optional `Rigid`, `Cloth`,
   `Spring`, `Occluder`, `MeshProxy`, `LOD` ints.
 
+  `Flags[0]` bits as the game reads them (`gr::FactoryGr2::Parse`, 4.1.1.7631656; names follow
+  LSLib's `DivinityModelFlag`): `0x01` MeshProxy (the mesh becomes an `rf::ModelProxy`, no
+  renderable model), `0x02` Cloth, `0x08` HasColor, `0x10` Skinned, `0x20` Rigid, `0x40` Spring,
+  `0x80` Occluder (only an `rf::OcclusionModel` is built). On cloth meshes `Flags[2] & 0x300`
+  says which cloth mesh it is: `0x100` (ClothPhysics) is the flat simulation sheet, whose
+  renderable object `ls::RenderableObjectTemplate::CreateInstance` creates without its drawn
+  bit; `0` is the visible cloth the simulation drives. `bg3_gr2::MeshProperties::is_drawn`
+  implements this (see `docs/research/level-structure.md`, "What the game doesn't draw").
+
 Almost every mesh uses 16-bit indices (143,450 vs 157 32-bit) and a single topology group;
 32 meshes have morph targets.
 

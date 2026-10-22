@@ -1190,6 +1190,7 @@ add equipment entry "camp"
             kind: "character".into(),
             template: None,
             visual_template: None,
+            is_blocker: None,
             transform: Default::default(),
             module: String::new(),
             character: Some(CharacterProps {

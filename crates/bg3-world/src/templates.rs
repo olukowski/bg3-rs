@@ -15,6 +15,9 @@ pub struct RootTemplate {
     pub parent: Option<String>,
     pub visual_template: Option<String>,
     pub physics_template: Option<String>,
+    /// `IsBlocker`, if this template sets it (scenery helpers: invisible blockers, camera
+    /// sliders, fade proxies).
+    pub is_blocker: Option<bool>,
     /// Worn visuals and per-item race fallback overrides (`Equipment` child).
     pub equipment: Option<crate::characters::EquipmentVisuals>,
     /// Light fields set on this template (`light` / `CombinedLight` templates only).
@@ -65,6 +68,26 @@ impl RootTemplates {
         }
         None
     }
+
+    /// `IsBlocker` of a level object: its own value, else the first template up the
+    /// `ParentTemplateId` chain that sets it, else false.
+    ///
+    /// Template fields are value/is-set pairs (`eoc::SceneryTemplate::Visit`); an unset field
+    /// takes the parent's value, as for [`RootTemplates::visual_for`].
+    pub fn is_blocker(&self, obj: &crate::LevelObject) -> bool {
+        if let Some(b) = obj.is_blocker {
+            return b;
+        }
+        let mut current = obj.template.as_deref().and_then(|t| self.get(t));
+        for _ in 0..32 {
+            let Some(t) = current else { break };
+            if let Some(b) = t.is_blocker {
+                return b;
+            }
+            current = t.parent.as_deref().and_then(|p| self.get(p));
+        }
+        false
+    }
 }
 
 pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = RootTemplate> + '_ {
@@ -84,6 +107,7 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
                 parent: str_attr(n, "ParentTemplateId"),
                 visual_template: str_attr(n, "VisualTemplate"),
                 physics_template: str_attr(n, "PhysicsTemplate"),
+                is_blocker: n.attr("IsBlocker").and_then(|v| v.as_bool()),
                 equipment: n
                     .child("Equipment")
                     .map(crate::characters::EquipmentVisuals::read),
@@ -91,4 +115,77 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = Root
                 character,
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LevelObject;
+
+    fn template(id: &str, parent: Option<&str>, is_blocker: Option<bool>) -> RootTemplate {
+        RootTemplate {
+            id: id.into(),
+            name: id.into(),
+            kind: "scenery".into(),
+            parent: parent.map(Into::into),
+            visual_template: Some(format!("{id}_visual")),
+            physics_template: None,
+            is_blocker,
+            equipment: None,
+            light: None,
+            character: None,
+        }
+    }
+
+    fn object(kind: &str, template: &str, is_blocker: Option<bool>) -> LevelObject {
+        LevelObject {
+            id: "obj".into(),
+            name: "obj".into(),
+            kind: kind.into(),
+            template: Some(template.into()),
+            visual_template: None,
+            is_blocker,
+            transform: Default::default(),
+            character: None,
+            module: String::new(),
+        }
+    }
+
+    fn templates() -> RootTemplates {
+        let list = [
+            template("base", None, None),
+            template("helper", Some("base"), Some(true)),
+            // Sets nothing itself: inherits `helper`'s blocker flag.
+            template("slider", Some("helper"), None),
+            template("unblocked", Some("helper"), Some(false)),
+            template("wall", Some("base"), None),
+        ];
+        RootTemplates {
+            templates: list.into_iter().map(|t| (t.id.clone(), t)).collect(),
+        }
+    }
+
+    #[test]
+    fn blocker_scenery_has_no_visual() {
+        let t = templates();
+        assert!(!object("scenery", "helper", None).draws_visual(&t));
+        assert!(!object("scenery", "slider", None).draws_visual(&t));
+        assert!(object("scenery", "unblocked", None).draws_visual(&t));
+        assert!(object("scenery", "wall", None).draws_visual(&t));
+        assert!(object("scenery", "missing", None).draws_visual(&t));
+    }
+
+    #[test]
+    fn instance_is_blocker_overrides_the_template() {
+        let t = templates();
+        assert!(object("scenery", "helper", Some(false)).draws_visual(&t));
+        assert!(!object("scenery", "wall", Some(true)).draws_visual(&t));
+    }
+
+    #[test]
+    fn blocker_rule_is_scenery_only() {
+        // `IsBlocker` on items (e.g. the Nautiloid's rigged tentacles set it to false) doesn't
+        // take part in the scenery visual rule.
+        assert!(object("item", "helper", None).draws_visual(&templates()));
+    }
 }

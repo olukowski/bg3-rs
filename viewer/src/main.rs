@@ -1,7 +1,8 @@
 //! `bg3-viewer` — fly through BG3 levels.
 //!
 //! Current state: level objects rendered with their LOD0 GR2 meshes and textured materials
-//! (`materials.rs`); objects without a mesh (effects, …) are shown as small boxes.
+//! (`materials.rs`); objects without a drawn mesh (effects, …) are shown as small boxes with
+//! `--placeholders`.
 
 mod cc_ui;
 mod char_materials;
@@ -49,6 +50,9 @@ struct Args {
     /// Hide level objects, leaving terrain and lights.
     #[arg(long)]
     terrain_only: bool,
+    /// Draw small boxes for level objects without a drawn mesh (effects, unresolved visuals).
+    #[arg(long)]
+    placeholders: bool,
     /// Run this dialog in an on-screen panel (resource name, e.g. `TUT_Lab_TrappedDevourer`).
     #[arg(long)]
     dialog: Option<String>,
@@ -254,6 +258,7 @@ fn main() -> Result<()> {
     .insert_resource(lights)
     .insert_resource(materials)
     .insert_resource(characters)
+    .insert_resource(level::ShowPlaceholders(args.placeholders))
     .insert_resource(CameraStart {
         position: args
             .camera
@@ -368,6 +373,7 @@ fn play_characters(
                 kind: "character".into(),
                 template: Some(started.avatar_template.to_string()),
                 visual_template: None,
+                is_blocker: None,
                 transform: bg3_world::Transform::default(),
                 character: None,
                 module: String::new(),

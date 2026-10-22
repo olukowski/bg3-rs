@@ -26,6 +26,7 @@ impl VisualMeshes {
             .level
             .objects
             .iter()
+            .filter(|o| o.draws_visual(&level.templates))
             .filter_map(|o| level.visual_id(o))
             .filter(|v| level.banks.visuals.contains_key(*v))
             .collect();
@@ -62,13 +63,18 @@ fn convert_visual(
     let data = vfs.read(path).map_err(|e| e.to_string())?;
     let scene = bg3_gr2::Scene::from_bytes(&data).map_err(|e| format!("{path}: {e}"))?;
     let mut out = Vec::new();
+    let mut matched = false;
     for obj in visual.objects.iter().filter(|o| o.lod == 0) {
         let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) else {
             continue;
         };
-        out.push((to_bevy_mesh(mesh), obj.material_id.clone()));
+        matched = true;
+        // Proxies, occluders and cloth simulation meshes aren't drawn.
+        if mesh.is_drawn() {
+            out.push((to_bevy_mesh(mesh), obj.material_id.clone()));
+        }
     }
-    if out.is_empty() {
+    if !matched {
         return Err(format!("{path}: no LOD0 meshes matched"));
     }
     Ok(out)

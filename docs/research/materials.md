@@ -107,6 +107,9 @@ before the modules.
   (`Base_SSS_AlphaTested`), shadow planes.
 - 4 have neither: `Helper_Color*` flat colours, the invisible overlay, and
   `Engine_Default_Mesh_Lit_Opaque` (engine placeholder on 100 meshes; its maps are unnamed inputs).
+  It is an ordinary lit opaque graph with shipped compiled shaders, so nothing in the material
+  hides those meshes: they are scenery blockers and cloth simulation meshes, which the game
+  doesn't draw for other reasons (`level-structure.md`, "What the game doesn't draw").
 - 34 shader graphs in total. `Helper_Invisible*` / `*_Invisible_*` graphs are helper geometry the
   game doesn't draw; the viewer skips them.
 - The `VFX_Model_*` graphs glow from a vertex-colour mask unless `_Use_GlowMap_InsteadOfVCMask`

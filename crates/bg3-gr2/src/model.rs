@@ -112,6 +112,30 @@ pub struct MeshProperties {
     pub is_impostor: bool,
 }
 
+impl MeshProperties {
+    /// `flags[0]`: the mesh is a proxy (`rf::ModelProxy`), not a renderable model.
+    pub const MESH_PROXY: u32 = 0x01;
+    /// `flags[0]`: the mesh is cloth (simulated or skinned to a simulation).
+    pub const CLOTH: u32 = 0x02;
+    /// `flags[0]`: the mesh is an occluder (`rf::OcclusionModel`), not a renderable model.
+    pub const OCCLUDER: u32 = 0x80;
+    /// `flags[2]` bits that say which cloth mesh this is; [`Self::CLOTH_PHYSICS`] is the
+    /// simulation mesh.
+    pub const CLOTH_KIND_MASK: u32 = 0x300;
+    pub const CLOTH_PHYSICS: u32 = 0x100;
+
+    /// Whether the game draws this mesh. Proxies and occluders get no renderable model, and
+    /// the cloth simulation mesh's renderable object is created without its drawn flag (the
+    /// visible cloth is a separate mesh driven by it).
+    // bg3: gr::FactoryGr2::Parse, ls::RenderableObjectTemplate::CreateInstance (4.1.1.7631656)
+    pub fn is_drawn(&self) -> bool {
+        let [kind, _, cloth, _] = self.flags;
+        let cloth_physics =
+            kind & Self::CLOTH != 0 && cloth & Self::CLOTH_KIND_MASK == Self::CLOTH_PHYSICS;
+        kind & (Self::MESH_PROXY | Self::OCCLUDER) == 0 && !cloth_physics
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Mesh {
     pub name: String,
@@ -142,6 +166,14 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// Whether the game draws this mesh ([`MeshProperties::is_drawn`]; meshes without
+    /// Larian properties are drawn).
+    pub fn is_drawn(&self) -> bool {
+        self.properties
+            .as_ref()
+            .is_none_or(MeshProperties::is_drawn)
+    }
+
     pub fn vertex_count(&self) -> usize {
         self.positions.len()
     }

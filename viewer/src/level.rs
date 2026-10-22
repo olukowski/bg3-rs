@@ -12,6 +12,11 @@ use crate::meshes::VisualMeshes;
 #[derive(Component)]
 pub struct ObjectId(pub String);
 
+/// `--placeholders`: draw a small box for each level object without a drawn mesh (effects,
+/// objects whose visual didn't resolve). Off by default: the game draws nothing there.
+#[derive(Resource, Default)]
+pub struct ShowPlaceholders(pub bool);
+
 /// A mesh and its material, ready to spawn.
 type MeshPart = (Handle<Mesh>, Handle<StandardMaterial>);
 
@@ -71,6 +76,7 @@ pub fn spawn_level(
     mut visual_meshes: ResMut<VisualMeshes>,
     level_materials: Res<crate::materials::LevelMaterials>,
     characters: Option<Res<crate::characters::LevelCharacters>>,
+    placeholders: Res<ShowPlaceholders>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -116,7 +122,15 @@ pub fn spawn_level(
         if characters.as_ref().is_some_and(|c| c.handles(&obj.id)) {
             continue; // drawn by `characters.rs`
         }
-        if let Some(parts) = level.visual_id(obj).and_then(|v| uploaded.get(v)) {
+        // Scenery blockers get no visual in the game; an empty list means none of the
+        // visual's meshes is drawn.
+        let parts = level
+            .visual_id(obj)
+            .filter(|_| obj.draws_visual(&level.templates))
+            .and_then(|v| uploaded.get(v));
+        if parts.is_some() || !placeholders.0 {
+            // Without meshes the entity still carries the object's id and position (item
+            // picking, story visibility).
             commands
                 .spawn((
                     Name::new(obj.name.clone()),
@@ -125,7 +139,7 @@ pub fn spawn_level(
                     Visibility::default(),
                 ))
                 .with_children(|parent| {
-                    for (mesh, mat) in parts {
+                    for (mesh, mat) in parts.into_iter().flatten() {
                         parent.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone())));
                     }
                 });
