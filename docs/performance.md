@@ -20,7 +20,8 @@ fidelity or cost for A/B checks.
     driver's ISA) than on Metal.
 - `--bench <seconds>` waits until loading has settled (≥ 5 s and no pipeline created for 1 s),
   measures that long, prints `bench: N frames …: mean, median, p95, p99, max` and exits. It asks
-  for no vsync (`AutoNoVsync`). **macOS** still paces a window to the display (120 Hz on the M5
+  for no vsync (`AutoNoVsync`) and keeps rendering when the window is unfocused (Bevy would
+  throttle it to 60 Hz). **macOS** still paces a window to the display (120 Hz on the M5
   Pro: an empty view benches at exactly 8.33 ms), so Mac frame times are refresh-quantised.
   Compare medians and treat differences below one refresh interval as noise.
 - `BG3_PERF_PASSES=1` (with `--fps`) logs every render diagnostic each second (nested passes,
@@ -122,11 +123,43 @@ render thread (22 ms; the main app waits ~14 ms of each frame for it):
 | everything else | ~3 |
 
 All three scale with **multidrawable batch sets × views**. `BG3_PERF_PASSES=1` logs the binned
-phases: the main view has 54 opaque + 6 alpha-mask batch sets, the 13 shadow views 1224 (sun
-cascades 429/305/183/128, the two box carriers in use 121/58). A level material is not bindless,
-so each material is its own batch set (its own bind group) in every shadow view it is cast into,
-and each set costs buffer writes, a bind group, a bin-unpacking dispatch and a multi-draw per
-view and frame. The sun's far cascades cover most of the level (`ShadowFarPlane` = 100 m).
+phases: the main view had 54 opaque + 6 alpha-mask batch sets, the 13 shadow views 1224 (sun
+cascades 429/305/183/128, the two box carriers in use 121/58). A batch set is keyed by pipeline,
+material bind group and mesh slabs. `StandardMaterial` declares a prepass shader, so Bevy treats
+every `ExtendedMaterial<StandardMaterial, _>` as reading its material in the shadow pass and
+never takes the depth-only path that would drop the bind group from the key. Our extensions
+weren't bindless, so every material was its own batch set in every shadow view it is cast into:
+in the largest sun cascade ~250 sets were character materials (one per body part) and ~280
+level materials. The sun's far cascades cover most of the level (`ShadowFarPlane` = 100 m).
+
+**Fix: bindless level and character materials.** Both extensions are now bindless (the
+uniform as a struct-level `data` array, maps in Bevy's binding arrays, the shared box-light,
+decal and surface buffers as storage-buffer binding arrays). One index table layout
+(`range(100..148)` at binding 160) serves both, so the shared shader modules find their buffers
+through `shaders/material_slot.wesl` whichever material they shade; terrain keeps the plain
+bindings. The largest shadow view went from 534 to 23 batch sets. `BG3_NO_BINDLESS=1` turns
+binding arrays off. Images: 2–28 of 1.95 M pixels differ by more than 1 % in the Lae'zel, imp,
+deck and wide shots (float rounding).
+
+| View (same session, alternating) | `BG3_NO_BINDLESS=1` | Bindless | GPU busy |
+|------|------|------|------|
+| Combat set-up | 24.5–25.1 ms | 15.0–15.1 ms | 85 % → 98 % |
+| Wide deck view | 31.8–32.5 ms | 24.9–25.9 ms | 96 % → 99 % |
+| Start pod (`--play`) | 24.8–26.4 ms | 22.5–23.1 ms | 96 % → 99 % |
+
+All three views are now GPU-bound. Render graph CPU time fell from 9–10 to 3–4 ms. Wide and
+start pod were 23.5 and 17.7 ms earlier in the day with the binary from before the change
+(30.9 and 26.4 ms in this session): run-to-run conditions, not the change. Since this change
+`--fps` reports GPU times for the main passes (why they were missing before is not known). Combat
+view: main opaque pass 5.4 ms, shadow passes
+4.1, volumetric fog 3.0, bin unpacking and uniform allocation 1.6.
+
+Bevy 0.20 caveat: an `ExtendedMaterial`'s layout makes the base bindless whenever the base
+supports it, even when the extension can't be (here: no buffer binding arrays), which gives an
+invalid layout. Vulkan with descriptor indexing and Metal with tier 2 argument buffers have both,
+and `level_materials::check_binding_arrays` stops with a message otherwise.
+
+Before the fix:
 
 A/B, combat view (means; GPU = busy %):
 
@@ -150,6 +183,8 @@ animation 1.3–1.6, skin extraction 0.9) and runs in parallel with the render w
 - `BG3_BOX_SHADOW_CASCADES=1`: box light shadows on Bevy's four camera cascades, with casters
   culled to the boxes (`cull_box_shadow_casters`), instead of one map per box. Sharper near the
   camera, 10–25 % slower; the look before this change.
+- `BG3_NO_BINDLESS=1`: no texture or buffer binding arrays, so every material is its own bind
+  group and batch set (the state before bindless level and character materials).
 - `BG3_NO_SUN_SHADOWS=1`, `BG3_NO_BOX_SHADOWS=1`, `BG3_NO_BOX_LIGHTS=1`, `BG3_NO_FOG=1`, `BG3_NO_BLOOM=1`,
   `BG3_NO_SSS=1`, `BG3_STANDARD_LEVEL=1`, `BG3_STANDARD_CHARACTERS=1`, `BG3_BEVY_POST=1`,
   `BG3_NO_ANIM=1`: A/B switches for attributing costs (they change the image).

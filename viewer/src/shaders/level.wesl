@@ -36,6 +36,10 @@ import bg3_viewer::shaders::game_lighting::{GameShading, game_lighting};
 import bg3_viewer::shaders::decals::{DecalSurface, apply_decals};
 @if(!PREPASS_PIPELINE)
 import bg3_viewer::shaders::surfaces::apply_surfaces;
+@if(BINDLESS)
+import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
+@if(BINDLESS)
+import bg3_viewer::shaders::material_slot::{ext_index, set_slot};
 
 struct LevelUniform {
     // Shading model (bits 0–2), FLAG_* above.
@@ -68,7 +72,12 @@ const SSS_THICKNESS_MAP: u32 = 1u;
 const SSS_RADIUS_MASK: u32 = 2u;
 const SSS_PHYSICAL_ALPHA: u32 = 3u;
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> lu: LevelUniform;
+// Without bindless the uniform and maps sit at 100–108; with it (`material_slot.wesl`) the
+// uniform is an element of one array (161) and the maps are in Bevy's binding arrays.
+@if(BINDLESS)
+@group(constants::MATERIAL_BIND_GROUP) @binding(161) var<storage> level_uniforms: array<LevelUniform>;
+@if(!BINDLESS) {
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> level_uniform: LevelUniform;
 // Micro detail map (R occlusion, G roughness), micro detail normal map (BC5 like every normal
 // map here), glow map, subsurface input (thickness map, SSS mask or the physical map).
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var detail_map: texture_2d<f32>;
@@ -79,6 +88,33 @@ const SSS_PHYSICAL_ALPHA: u32 = 3u;
 @group(constants::MATERIAL_BIND_GROUP) @binding(106) var glow_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(107) var sss_map: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(108) var sss_sampler: sampler;
+}
+
+// The material's uniform, loaded by `fragment`.
+var<private> lu: LevelUniform;
+
+const DETAIL_MAP: u32 = 101u;
+const DETAIL_NORMAL_MAP: u32 = 103u;
+const GLOW_MAP: u32 = 105u;
+const SSS_MAP: u32 = 107u;
+
+// Map `map` (its non-bindless binding; the sampler is the next binding) at `uv`.
+fn level_map(map: u32, uv: vec2<f32>) -> vec4<f32> {
+@if(BINDLESS)
+    return textureSample(
+        bindless_textures_2d[ext_index(map)],
+        bindless_samplers_filtering[ext_index(map + 1u)],
+        uv,
+    );
+@else {
+    switch map {
+        case DETAIL_MAP: { return textureSample(detail_map, detail_sampler, uv); }
+        case DETAIL_NORMAL_MAP: { return textureSample(detail_normal_map, detail_normal_sampler, uv); }
+        case GLOW_MAP: { return textureSample(glow_map, glow_sampler, uv); }
+        default: { return textureSample(sss_map, sss_sampler, uv); }
+    }
+}
+}
 
 fn spow(x: f32, y: f32) -> f32 { return pow(max(abs(x), 1e-4), y); }
 
@@ -97,7 +133,7 @@ fn glow(uv: vec2<f32>, instance_index: u32, world: vec3<f32>, time: f32) -> vec4
     if kind == 0u {
         return vec4(0.0);
     }
-    let gm = textureSample(glow_map, glow_sampler, uv).rgb;
+    let gm = level_map(GLOW_MAP, uv).rgb;
     let c = lu.v[2].rgb;
     let mult = lu.v[2].w;
     let use_gm = clamp(floor(lu.v[3].x), 0.0, 1.0);
@@ -145,6 +181,12 @@ fn fragment(
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
     var in = vertex_output;
+@if(BINDLESS) {
+    set_slot(in.instance_index);
+    lu = level_uniforms[ext_index(100u)];
+}
+@else
+    lu = level_uniform;
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     // Geometric specular anti-aliasing input: the normal's screen-space change.
     let dn_x = dpdx(pbr_input.N);
@@ -165,7 +207,7 @@ fn fragment(
         let origin = mesh_functions::get_world_from_local(in.instance_index)[3].xyz;
         let scale = length(in.world_position.xyz - origin) / max(length(local), 1e-6);
         let duv = uv * scale * lu.v[0].y;
-        let dm = textureSample(detail_map, detail_sampler, duv);
+        let dm = level_map(DETAIL_MAP, duv);
         pbr_input.diffuse_occlusion *= clamp(spow(dm.r, lu.v[0].w), 0.0, 1.0);
         pbr_input.material.perceptual_roughness = clamp(
             pbr_input.material.perceptual_roughness + lu.v[1].x * (1.0 - dm.g), 0.0, 1.0);
@@ -173,7 +215,7 @@ fn fragment(
         // The detail normal's tangent-plane part (strength × its x and binormal components)
         // added to the main normal; formed after Bevy's normal mapping, which is the same for an
         // orthonormal tangent frame.
-        let dn = textureSample(detail_normal_map, detail_normal_sampler, duv).rg * 2.0 - 1.0;
+        let dn = level_map(DETAIL_NORMAL_MAP, duv).rg * 2.0 - 1.0;
         let tbn = calculate_tbn_mikktspace(pbr_input.world_normal, in.world_tangent);
         var d = lu.v[0].z * (dn.x * tbn[0] + dn.y * tbn[1]);
         if (pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_DOUBLE_SIDED_BIT) != 0u && !is_front {
@@ -184,11 +226,11 @@ fn fragment(
     }
     let sss = lu.subsurface;
     if sss == SSS_THICKNESS_MAP {
-        thickness = clamp(textureSample(sss_map, sss_sampler, uv).r, 0.0, 1.0);
+        thickness = clamp(level_map(SSS_MAP, uv).r, 0.0, 1.0);
     } else if sss == SSS_RADIUS_MASK {
-        sss_amount = clamp(lu.v[1].y * textureSample(sss_map, sss_sampler, uv).r, 0.0, 1.0);
+        sss_amount = clamp(lu.v[1].y * level_map(SSS_MAP, uv).r, 0.0, 1.0);
     } else if sss == SSS_PHYSICAL_ALPHA {
-        thickness = clamp(textureSample(sss_map, sss_sampler, uv).a, 0.0, 1.0);
+        thickness = clamp(level_map(SSS_MAP, uv).a, 0.0, 1.0);
     }
     pbr_input.material.emissive = glow(uv, in.instance_index, in.world_position.xyz, view_bindings::globals.time);
 }

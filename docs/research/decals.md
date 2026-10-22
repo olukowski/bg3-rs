@@ -140,6 +140,10 @@ same material-group bindings: 130 decal records, 131 cell grid, 132 albedo array
 sampler, 134 normal array, 135 physical array. The shared declarations live in `decals.wesl`,
 imported by each receiving shader. The viewer-wide binding audit leaves terrain's 100–110
 inputs (including `base_ramp` at 110) and the shared box-light buffer at 120 untouched.
+Level materials are bindless where the device has buffer binding arrays: the two buffers are
+then binding arrays at 163 and 164, the maps in Bevy's texture arrays, all found through the
+material's index table (`shaders/material_slot.wesl`, `docs/performance.md`); terrain and the
+decal extension keep the plain bindings.
 
 Exact: the data and inheritance, box size and projection, uv convention, draw order, distance
 and angle fades, alpha, the normal rotation, and which material channels are written.

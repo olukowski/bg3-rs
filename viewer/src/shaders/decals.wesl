@@ -9,6 +9,11 @@
 // bg3: Engine_Materials_Engine_Default_Decal_Deferred_ST_DEF_fragmentMain (Materials.metallib,
 // 4.1.1.7631656), ls::DecalObject::PrepareDraw (4.1.1.7631656)
 
+@if(BINDLESS)
+import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d_array};
+@if(BINDLESS)
+import bg3_viewer::shaders::material_slot::ext_index;
+
 struct Decal {
     // Game world → unit box (inside within ±½).
     local_from_world: mat4x4<f32>,
@@ -22,15 +27,69 @@ struct Decal {
     props: vec4<f32>,
 }
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(130) var<storage, read> decals: array<Decal>;
+// Bindless (`material_slot.wesl`): the buffers are arrays of the slab's buffers and the maps sit
+// in Bevy's binding arrays; the accessors below hide the difference.
+struct Decals {
+    decals: array<Decal>,
+}
+struct DecalGrid {
+    cells: array<u32>,
+}
+@if(BINDLESS) {
+@group(constants::MATERIAL_BIND_GROUP) @binding(163) var<storage, read> decal_arrays: binding_array<Decals>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(164) var<storage, read> decal_grid_arrays: binding_array<DecalGrid>;
+}
+@else {
+@group(constants::MATERIAL_BIND_GROUP) @binding(130) var<storage, read> decals: Decals;
 // Header (origin x, origin z, 1/cell as f32 bits, cells x, cells z, debug tint), (first, count)
 // per cell,
 // then the decal indices.
-@group(constants::MATERIAL_BIND_GROUP) @binding(131) var<storage, read> decal_grid: array<u32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(131) var<storage, read> decal_grid: DecalGrid;
 @group(constants::MATERIAL_BIND_GROUP) @binding(132) var decal_albedo: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(133) var decal_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(134) var decal_normal: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(135) var decal_physical: texture_2d_array<f32>;
+}
+
+fn decal(i: u32) -> Decal {
+@if(BINDLESS)
+    return decal_arrays[ext_index(130u)].decals[i];
+@else
+    return decals.decals[i];
+}
+
+fn grid(i: u32) -> u32 {
+@if(BINDLESS)
+    return decal_grid_arrays[ext_index(131u)].cells[i];
+@else
+    return decal_grid.cells[i];
+}
+
+const DECAL_ALBEDO: u32 = 132u;
+const DECAL_NORMAL: u32 = 134u;
+const DECAL_PHYSICAL: u32 = 135u;
+
+// Decal map `map` (its non-bindless binding, `DECAL_*`).
+fn decal_map(map: u32, uv: vec2<f32>, layer: i32, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+@if(BINDLESS)
+    return textureSampleGrad(
+        bindless_textures_2d_array[ext_index(map)],
+        bindless_samplers_filtering[ext_index(133u)],
+        uv,
+        layer,
+        dx,
+        dy,
+    );
+@else {
+    if map == DECAL_ALBEDO {
+        return textureSampleGrad(decal_albedo, decal_sampler, uv, layer, dx, dy);
+    }
+    if map == DECAL_NORMAL {
+        return textureSampleGrad(decal_normal, decal_sampler, uv, layer, dx, dy);
+    }
+    return textureSampleGrad(decal_physical, decal_sampler, uv, layer, dx, dy);
+}
+}
 
 const HALF_PI: f32 = 1.5707964;
 // The angle fade's slope: 1 / 0.17.
@@ -75,19 +134,19 @@ fn apply_decals(
     dpy: vec3<f32>,
 ) -> DecalSurface {
     var s = s_in;
-    let nx = decal_grid[3];
-    let nz = decal_grid[4];
+    let nx = grid(3);
+    let nz = grid(4);
     if nx == 0u {
         return s;
     }
-    let origin = vec2(bitcast<f32>(decal_grid[0]), bitcast<f32>(decal_grid[1]));
-    let cell = floor((world.xz - origin) * bitcast<f32>(decal_grid[2]));
+    let origin = vec2(bitcast<f32>(grid(0)), bitcast<f32>(grid(1)));
+    let cell = floor((world.xz - origin) * bitcast<f32>(grid(2)));
     if cell.x < 0.0 || cell.y < 0.0 || cell.x >= f32(nx) || cell.y >= f32(nz) {
         return s;
     }
     let c = GRID_HEADER + 2u * (u32(cell.y) * nx + u32(cell.x));
-    let first = decal_grid[c];
-    let count = decal_grid[c + 1u];
+    let first = grid(c);
+    let count = grid(c + 1u);
     if count == 0u {
         return s;
     }
@@ -107,12 +166,12 @@ fn apply_decals(
     var n = n_received;
 
     for (var k = 0u; k < count; k++) {
-        let d = decals[decal_grid[first + k]];
+        let d = decal(grid(first + k));
         let local = (d.local_from_world * vec4(p, 1.0)).xyz;
         if any(abs(local) > vec3(0.5)) {
             continue;
         }
-        if decal_grid[5] != 0u {
+        if grid(5) != 0u {
             // `BG3_DECAL_DEBUG=1`: a checker of the box's local x (red) and z (green) quarters.
             let q = step(vec2(0.5), fract(local.xz * 4.0 + 0.5));
             s.albedo = vec3(q.x, q.y, 1.0);
@@ -142,14 +201,14 @@ fn apply_decals(
         let duv_x = vec2(lx.x, -lx.z) * d.tiling.xy;
         let duv_y = vec2(ly.x, -ly.z) * d.tiling.xy;
         let layer = i32(d.axis_x.w + 0.5);
-        let base = textureSampleGrad(decal_albedo, decal_sampler, uv, layer, duv_x, duv_y);
+        let base = decal_map(DECAL_ALBEDO, uv, layer, duv_x, duv_y);
         let alpha = min(base.a, clamp(angle, 0.0, 1.0));
         if alpha <= 0.0 {
             continue;
         }
 
         // Normal map: X in A, out-of-plane in B (along the decal's up axis), Y in G (along −Z).
-        let nm = textureSampleGrad(decal_normal, decal_sampler, uv, layer, duv_x, duv_y);
+        let nm = decal_map(DECAL_NORMAL, uv, layer, duv_x, duv_y);
         var tn = vec3(nm.a, nm.b, nm.g) * 2.0 - 1.0;
         tn.z = -tn.z;
         tn = normalize(tn);
@@ -163,7 +222,7 @@ fn apply_decals(
         n = normalize(mix(n, n_out, fade));
 
         let a = clamp(d.props.w * alpha * fade, 0.0, 1.0);
-        let ph = textureSampleGrad(decal_physical, decal_sampler, uv, layer, duv_x, duv_y);
+        let ph = decal_map(DECAL_PHYSICAL, uv, layer, duv_x, duv_y);
         s.albedo = mix(s.albedo, clamp(base.rgb, vec3(0.0), vec3(1.0)), a);
         s.roughness = mix(s.roughness, clamp(ph.g, 0.0, 1.0), a);
         s.reflectance = mix(s.reflectance, clamp(d.axis_y.w, 0.0, 1.0), a);

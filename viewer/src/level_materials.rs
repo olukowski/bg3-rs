@@ -43,10 +43,14 @@ pub struct LevelUniform {
     pub v: [Vec4; LEVEL_UNIFORM_LEN],
 }
 
-/// The extension's bindings (see the shader).
+/// The extension's bindings (see the shader). Bindless where the device has buffer binding
+/// arrays: one batch set per pipeline instead of one per material in every view
+/// (`docs/performance.md`); the shared buffers become binding arrays at 162–165 and the index
+/// table covers 100..148 like the character extension's (`shaders/material_slot.wesl`).
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[data(100, LevelUniform, binding_array(161))]
+#[bindless(index_table(range(100..148), binding(160)))]
 pub struct LevelExtension {
-    #[uniform(100)]
     pub uniform: LevelUniform,
     #[texture(101)]
     #[sampler(102)]
@@ -61,12 +65,12 @@ pub struct LevelExtension {
     #[sampler(108)]
     pub sss_map: Option<Handle<Image>>,
     /// The level's box lights (`lights::BOX_LIGHTS`), read by the game's light loop.
-    #[storage(120, read_only)]
+    #[storage(120, read_only, binding_array(162))]
     pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
     /// Level decals (`decals.rs`, `shaders/decals.wesl`), shared by every level material.
-    #[storage(130, read_only)]
+    #[storage(130, read_only, binding_array(163))]
     pub decals: Handle<ShaderBuffer>,
-    #[storage(131, read_only)]
+    #[storage(131, read_only, binding_array(164))]
     pub decal_grid: Handle<ShaderBuffer>,
     #[texture(132, dimension = "2d_array")]
     #[sampler(133)]
@@ -77,7 +81,7 @@ pub struct LevelExtension {
     pub decal_physical: Option<Handle<Image>>,
     /// Surfaces (`surfaces.rs`, `shaders/surfaces.wesl`): the fixed `surfaces::SURFACE_*`
     /// handles, shared by every level material.
-    #[storage(140, read_only)]
+    #[storage(140, read_only, binding_array(165))]
     pub surface_params: Handle<ShaderBuffer>,
     #[texture(141, sample_type = "float", filterable = false)]
     pub surface_mask: Handle<Image>,
@@ -92,6 +96,12 @@ pub struct LevelExtension {
     pub surface_normal: Handle<Image>,
     #[texture(147, dimension = "2d_array")]
     pub surface_physical: Handle<Image>,
+}
+
+impl From<&LevelExtension> for LevelUniform {
+    fn from(e: &LevelExtension) -> Self {
+        e.uniform.clone()
+    }
 }
 
 impl MaterialExtension for LevelExtension {
@@ -111,8 +121,9 @@ pub fn enabled() -> bool {
 
 pub struct LevelMaterialsPlugin;
 
-/// Keeps the shared lighting module (imported by `character.wesl` and `level.wesl`) and the
-/// decal module (imported by the level and terrain shaders) loaded.
+/// Keeps the shared lighting module (imported by `character.wesl` and `level.wesl`), the
+/// decal module (imported by the level and terrain shaders) and the bindless slot module
+/// (`material_slot.wesl`) loaded.
 #[derive(Resource)]
 #[allow(dead_code)]
 struct GameLightingLibrary(Handle<Shader>, Handle<Shader>, Handle<Shader>);

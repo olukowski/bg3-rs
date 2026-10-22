@@ -11,12 +11,22 @@
 // 4.1.1.7631656), ecl::SurfaceDeferredRenderer::UpdateCell / ::DrawSurface (4.1.1.7631656)
 
 import bg3_viewer::shaders::decals::{DecalSurface, rotate_euler, mirror};
+@if(BINDLESS)
+import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d, bindless_textures_2d_array};
+@if(BINDLESS)
+import bg3_viewer::shaders::material_slot::ext_index;
 
 // [0] first cell column x, z, texture width, height; [1] enabled, fade distance;
 // then 4 per surface type: (texture layer or −1, Tilling_WarpNoise, Intensity, Tilling),
 // (Edge_Width, Edge_Range, MinOpacity, Normal_Intensity), (Color_Intensity, Reflectance,
 // normal blending, opacity), (EdgeColor, 0).
-@group(constants::MATERIAL_BIND_GROUP) @binding(140) var<storage, read> surface_params: array<vec4<f32>>;
+struct SurfaceParams {
+    params: array<vec4<f32>>,
+}
+@if(BINDLESS)
+@group(constants::MATERIAL_BIND_GROUP) @binding(165) var<storage, read> surface_param_arrays: binding_array<SurfaceParams>;
+@if(!BINDLESS) {
+@group(constants::MATERIAL_BIND_GROUP) @binding(140) var<storage, read> surface_params: SurfaceParams;
 // Per cell: R type, G second type, B amount, A second amount (the game's `_SurfaceMask`).
 @group(constants::MATERIAL_BIND_GROUP) @binding(141) var surface_mask: texture_2d<f32>;
 // Per cell: the AI grid height (m).
@@ -26,6 +36,58 @@ import bg3_viewer::shaders::decals::{DecalSurface, rotate_euler, mirror};
 @group(constants::MATERIAL_BIND_GROUP) @binding(145) var surface_noise: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(146) var surface_normal: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(147) var surface_physical: texture_2d_array<f32>;
+}
+
+// Accessors for both binding modes (`material_slot.wesl`), by non-bindless binding.
+fn param(i: u32) -> vec4<f32> {
+@if(BINDLESS)
+    return surface_param_arrays[ext_index(140u)].params[i];
+@else
+    return surface_params.params[i];
+}
+
+const SURFACE_MASK: u32 = 141u;
+const SURFACE_HEIGHT: u32 = 142u;
+
+fn cell_texel(map: u32, t: vec2<i32>) -> vec4<f32> {
+@if(BINDLESS)
+    return textureLoad(bindless_textures_2d[ext_index(map)], t, 0);
+@else {
+    if map == SURFACE_MASK {
+        return textureLoad(surface_mask, t, 0);
+    }
+    return textureLoad(surface_height, t, 0);
+}
+}
+
+const SURFACE_BASE: u32 = 143u;
+const SURFACE_NOISE: u32 = 145u;
+const SURFACE_NORMAL: u32 = 146u;
+const SURFACE_PHYSICAL: u32 = 147u;
+
+fn surface_map(map: u32, uv: vec2<f32>, layer: i32, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+@if(BINDLESS)
+    return textureSampleGrad(
+        bindless_textures_2d_array[ext_index(map)],
+        bindless_samplers_filtering[ext_index(144u)],
+        uv,
+        layer,
+        dx,
+        dy,
+    );
+@else {
+    if map == SURFACE_BASE {
+        return textureSampleGrad(surface_base, surface_sampler, uv, layer, dx, dy);
+    }
+    if map == SURFACE_NOISE {
+        return textureSampleGrad(surface_noise, surface_sampler, uv, layer, dx, dy);
+    }
+    if map == SURFACE_NORMAL {
+        return textureSampleGrad(surface_normal, surface_sampler, uv, layer, dx, dy);
+    }
+    return textureSampleGrad(surface_physical, surface_sampler, uv, layer, dx, dy);
+}
+}
 
 const SURFACE_HALF_PI: f32 = 1.5707964;
 const CELL: f32 = 0.5;
@@ -47,12 +109,12 @@ fn mask_at(t: vec2<i32>, size: vec2<i32>) -> vec4<f32> {
     if any(t < vec2(0)) || any(t >= size) {
         return vec4(0.0);
     }
-    return textureLoad(surface_mask, t, 0);
+    return cell_texel(SURFACE_MASK, t);
 }
 
 fn height_at(t: vec2<i32>, size: vec2<i32>) -> f32 {
     let c = clamp(t, vec2(0), size - 1);
-    return textureLoad(surface_height, c, 0).r;
+    return cell_texel(SURFACE_HEIGHT, c).r;
 }
 
 // This type's amount in a cell: amount × (type matches), for both pairs.
@@ -72,7 +134,7 @@ struct Coverage {
 
 // Coverage of type `ty` at game-space position `q` (x, z), bilinear between cell centres.
 fn coverage(q: vec2<f32>, ty: f32) -> Coverage {
-    let header = surface_params[0];
+    let header = param(0);
     let size = vec2<i32>(header.zw);
     // Texel space: texel i's centre at i + ½.
     let t = q / CELL - header.xy - 0.5;
@@ -109,8 +171,8 @@ fn apply_surfaces(
     dpy: vec3<f32>,
 ) -> DecalSurface {
     var s = s_in;
-    let header = surface_params[0];
-    if surface_params[1].x == 0.0 {
+    let header = param(0);
+    if param(1).x == 0.0 {
         return s;
     }
     let p = mirror(world);
@@ -145,14 +207,14 @@ fn apply_surfaces(
     if count == 0u {
         return s;
     }
-    if surface_params[1].z != 0.0 {
+    if param(1).z != 0.0 {
         s.albedo = vec3(0.0, 0.0, 1.0);
     }
 
     let gx = mirror(dpx);
     let gy = mirror(dpy);
     let distance = length((p - mirror(camera)).xz);
-    let fade_distance = surface_params[1].y;
+    let fade_distance = param(1).y;
     if distance >= fade_distance {
         return s;
     }
@@ -163,13 +225,13 @@ fn apply_surfaces(
     for (var k = 0u; k < count; k++) {
         let ty = types[k];
         let at = HEADER + 4u * u32(ty);
-        let p0 = surface_params[at];
+        let p0 = param(at);
         if p0.x < 0.0 {
             continue;
         }
-        let p1 = surface_params[at + 1u];
-        let p2 = surface_params[at + 2u];
-        let edge_color = surface_params[at + 3u].xyz;
+        let p1 = param(at + 1u);
+        let p2 = param(at + 2u);
+        let edge_color = param(at + 3u).xyz;
         let layer = i32(p0.x + 0.5);
         // **Assumption**: the material's texture coordinates start at the subgrid's origin in
         // the game; here at the world origin (same tiling, another phase).
@@ -180,10 +242,10 @@ fn apply_surfaces(
         let dn_y = gy.xz / p0.y;
         let du_x = gx.xz / p0.w;
         let du_y = gy.xz / p0.w;
-        let base = textureSampleGrad(surface_base, surface_sampler, uv, layer, du_x, du_y);
+        let base = surface_map(SURFACE_BASE, uv, layer, du_x, du_y);
         // Edge warp: the noise's RG scaled by Intensity around 0, pulled towards ½ where the
         // base colour is transparent.
-        let noise = textureSampleGrad(surface_noise, surface_sampler, uv_noise, layer, dn_x, dn_y).rg;
+        let noise = surface_map(SURFACE_NOISE, uv_noise, layer, dn_x, dn_y).rg;
         var warp = noise * p0.z - p0.z * 0.5;
         warp = mix(warp, vec2(0.5), clamp(1.0 - base.a, 0.0, 1.0) * 0.25);
         let cov = coverage(p.xz + warp, ty);
@@ -192,7 +254,7 @@ fn apply_surfaces(
         }
         // Off the AI grid's height by more than 0.1 m: fades out over 2.5 cm.
         let height_fade = 1.0 - smooth01((abs(cov.h - p.y) - 0.1) * 40.0);
-        if surface_params[1].z != 0.0 {
+        if param(1).z != 0.0 {
             // `BG3_SURFACE_DEBUG=1`: red = coverage, green = height fade, blue = a candidate.
             s.albedo = vec3(cov.c, height_fade, 1.0);
             continue;
@@ -216,11 +278,11 @@ fn apply_surfaces(
             vec3(0.0),
             vec3(1.0),
         );
-        let ph = textureSampleGrad(surface_physical, surface_sampler, uv, layer, du_x, du_y);
+        let ph = surface_map(SURFACE_PHYSICAL, uv, layer, du_x, du_y);
         // Normal map (X in A, out-of-plane in B, Y in G along −Z), towards up by
         // Normal_Intensity, applied to the receiver as a rotation (as the level decals).
         // *Approximate*: no animated wave normals, the receiver's normal as the base.
-        let nm = textureSampleGrad(surface_normal, surface_sampler, uv, layer, du_x, du_y);
+        let nm = surface_map(SURFACE_NORMAL, uv, layer, du_x, du_y);
         var tn = vec3(nm.a, nm.b, nm.g) * 2.0 - 1.0;
         tn.z = -tn.z;
         let up = vec3(0.0, 1.0, 0.0);
