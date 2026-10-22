@@ -631,10 +631,10 @@ blueprint has the variables for it (`IDLE_DesiredStillShortName`, `ATT_CombatSho
 `ShortNames.lsx`), falling back to the peace idle. The blueprint's compiled logic was not
 interpreted: it is a state machine in a bytecode `CodePage`. In that clip the sword is held
 low in the right hand with the blade angled up behind her and the left hand free, as in the
-imp-fight reference (`laezel.png`). The second reference (`laezel-combat.png`: left hand on
-the hip, blade upright by the right shoulder) is probably another frame of the idle or one
-of the `IDLE_Random_Combat_*` / `IDLE_Neutral_Combat_*` clips the blueprint mixes in. Those
-are not played.
+imp-fight references (`laezel.png`, `laezel-combat.png`). The apparent "left hand on the hip"
+in `laezel-combat.png` is the camera angle: our clip seen from a similar angle looks the same
+(checked by the user). The `IDLE_Random_Combat_*` / `IDLE_Neutral_Combat_*` clips the
+blueprint mixes in are not played.
 
 The viewer resolves the idle, run and combat clips per drawn state with the existing set
 order (**assumption**, see "Combat clips"). It swaps them in on `CombatEvent::Unsheathed`. A
@@ -680,8 +680,8 @@ Screenshots (local, `.cache/shots/`):
 **Reference screenshots (Lae'zel, local, `.cache/reference/`, never committed):**
 
 - `laezel.png` and `laezel-combat.png` were taken in the imp fight. The sword is drawn, held
-  in the right hand low by the hip with the blade up. The left hand is free (in front of her
-  belly, or on her hip). There is no bow. This is the `Sword2H` combat idle, not a one-handed
+  in the right hand low by the hip with the blade up. The left hand is free in front of her
+  belly (it only looks like it rests on her hip from that camera angle). There is no bow. This is the `Sword2H` combat idle, not a one-handed
   pairing. The earlier "one-handed, so the versatile assumption is wrong" reading mixed up the
   grip with the pose. The engine's pairing for a lone versatile weapon *is* two-handed (see
   above).
