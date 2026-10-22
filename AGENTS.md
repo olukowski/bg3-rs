@@ -111,6 +111,8 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `BG3_STANDARD_CHARACTERS=1` draws characters without the character shaders and
   `BG3_STANDARD_LEVEL=1` level surfaces on Bevy's `StandardMaterial` (A/B checks);
   `BG3_NO_BLOOM=1` turns the game's bloom off.
+  `BG3_BOX_SHADOW_CASCADES=1` puts box light shadows on Bevy's camera cascades instead of one
+  map per box (sharper near the camera, slower; `docs/performance.md`).
   `--play --cc` opens a character creation screen first (Start re-runs the viewer with
   `--character <spec>`; default character: the trace's deep gnome cleric).
   `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled
@@ -126,6 +128,10 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `F` toggles combat camera auto-follow; WASD/QE or right-mouse look cancels the current
   turn's pan, with following resumed on the next turn.
   `--combat-test` jumps to the imp fight's set-up, `--combat-autoplay` lets the AI play the party.
+  `F3` toggles a performance overlay (FPS, CPU main/render times, GPU pass times where the
+  backend has timestamp queries, shadow maps, pipelines created and assets changed in the last
+  second); `--fps` starts with it shown and logs it every second; `--bench <secs>` measures frame
+  times after warm-up and exits. Benchmark commands and findings: `docs/performance.md`.
 - Scratch output goes in `.cache/` only.
 - Thin arm64 slices for REA/Ghidra (it can't open the universal binary):
   `lipo -thin arm64 -output .cache/bin/bg3-arm64 "<app>/Contents/MacOS/Baldur's Gate 3"`.
@@ -163,6 +169,7 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
 ## Docs map
 
 - `docs/roadmap.md` — milestones and current focus.
+- `docs/performance.md` — viewer benchmarks, frame-time findings, performance switches.
 - `docs/architecture.md` — planned crate layout and layering.
 - `docs/adr/` — architecture decision records. Add one for any decision that's hard to reverse.
 - `docs/formats/` — our own write-ups of file formats (in our words, with credits to prior art).

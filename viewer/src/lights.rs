@@ -583,15 +583,22 @@ fn box_light(l: &Light, scale: f32) -> GpuBoxLight {
 }
 
 /// Box lights with `Shadow` are shadowed in the game with an orthographic map along the
-/// light's axis (`DoClusteredLight` input: the shadow matrix's first three rows, no
-/// perspective divide). A Bevy directional light gives the same kind of map, so shadowed box
-/// lights get black directional lights that only render shadow maps; the light loop finds a
-/// box light's carrier by direction (`game_lighting.wesl`), so boxes along one axis share it.
-/// The game shadows every shadowed box light; Bevy allows ten directional lights, one of which
-/// is the sun, so [`assign_box_shadow_carriers`] gives the nine carriers to the directions of
-/// the shadowed boxes nearest the camera (further ones go unshadowed). Approximations: Bevy fits
-/// cascades to the camera, the game fits its map to the box; the biases and filtering are
-/// Bevy's.
+/// light's axis that covers the box (`DoClusteredLight` input: the shadow matrix's first three
+/// rows, no perspective divide). A Bevy directional light renders the same kind of map, so
+/// shadowed box lights get black directional lights that only render shadow maps; the light
+/// loop finds a box light's carrier by direction (`game_lighting.wesl`), so boxes along one
+/// axis share it. The game shadows every shadowed box light; Bevy allows ten directional lights,
+/// one of which is the sun, so [`assign_box_shadow_carriers`] gives the carriers to the
+/// directions of the shadowed boxes in view nearest the camera (further ones go unshadowed).
+///
+/// Each carrier renders one map fitted to its boxes ([`fit_box_shadow_cascades`]), as the game
+/// does: shadow culling then draws only what lies in (or towards the light from) the boxes.
+/// Carriers stay shadow-enabled, an unused one with an empty map, so the shadow map array never
+/// changes size as the camera moves. `BG3_BOX_SHADOW_CASCADES=1` gives the carriers Bevy's four
+/// cascades over the camera instead, with casters culled to the boxes
+/// ([`cull_box_shadow_casters`]): sharper near the camera, 10–25 % slower (A/B checks).
+/// Approximations: the map resolution is Bevy's directional one (the game's local light shadow
+/// tiles, `ls::LocalLightShadowStage`, are not read); biases and filtering are Bevy's.
 ///
 /// bg3: ls::ClusteredAssignmentStage::SetDirectionLightData (ShadowDataIndex_VolShadow_Shadow),
 /// ClusteredLighting_* (4.1.1.7631656)
@@ -603,53 +610,120 @@ fn spawn_box_shadow_carriers(commands: &mut Commands, boxes: &[GpuBoxLight], far
     let shadowed: Vec<ShadowedBox> = boxes
         .iter()
         .filter(|b| b.direction_shadow.w > 0.5)
-        .map(|b| ShadowedBox {
-            to_box: b.to_box,
-            size: b.size,
-            direction: b.direction_shadow.truncate(),
-        })
+        .map(ShadowedBox::new)
         .collect();
     if shadowed.is_empty() {
         return;
     }
-    for _ in 0..MAX_BOX_SHADOW_CARRIERS {
+    let mut directions: Vec<Vec3> = Vec::new();
+    for b in &shadowed {
+        if !directions
+            .iter()
+            .any(|d| d.dot(b.direction) > BOX_SHADOW_MATCH)
+        {
+            directions.push(b.direction);
+        }
+    }
+    let carriers = directions.len().min(MAX_BOX_SHADOW_CARRIERS);
+    let unused = unused_direction(&directions);
+    let camera_cascades = std::env::var_os("BG3_BOX_SHADOW_CASCADES").is_some();
+    eprintln!(
+        "lights: {} shadowed box lights along {} directions, {carriers} shadow carriers ({})",
+        shadowed.len(),
+        directions.len(),
+        if camera_cascades {
+            "camera cascades"
+        } else {
+            "one map per box"
+        }
+    );
+    for _ in 0..carriers {
         commands.spawn((
             Name::new("box light shadow"),
-            BoxShadowCarrier,
+            BoxShadowCarrier::default(),
             DirectionalLight {
                 color: Color::BLACK,
                 illuminance: 0.0,
-                shadow_maps_enabled: false,
+                shadow_maps_enabled: true,
                 ..default()
             },
-            // Bevy's cascades, as for the sun (the game fits one map to the box).
+            // Shadows end at the sun's shadow distance from the camera, as the sun's do.
             bevy::light::CascadeShadowConfigBuilder {
+                num_cascades: if camera_cascades { 4 } else { 1 },
                 maximum_distance: far_plane,
                 ..default()
             }
             .build(),
-            Transform::default(),
+            carrier_transform(unused, None),
         ));
     }
     commands.insert_resource(BoxShadows {
         boxes: shadowed,
         far_plane,
+        unused,
+        camera_cascades,
     });
+}
+
+/// A carrier shining along −`towards`, its map's up along `up` (default: world up).
+fn carrier_transform(towards: Vec3, up: Option<Vec3>) -> Transform {
+    let up = up.unwrap_or(if towards.y.abs() > 0.99 {
+        Vec3::X
+    } else {
+        Vec3::Y
+    });
+    Transform::default().looking_to(-towards, up)
 }
 
 /// Directional lights left to box light shadows next to the sun.
 const MAX_BOX_SHADOW_CARRIERS: usize = 9;
 
-#[derive(Component)]
-pub struct BoxShadowCarrier;
+/// A carrier's boxes (indices into [`BoxShadows`]); empty when unused.
+#[derive(Component, Default, PartialEq)]
+pub struct BoxShadowCarrier {
+    boxes: Vec<usize>,
+}
+
+impl BoxShadowCarrier {
+    /// Whether the carrier shadows any box this frame.
+    pub fn in_use(&self) -> bool {
+        !self.boxes.is_empty()
+    }
+}
 
 struct ShadowedBox {
     to_box: [Vec4; 3],
     size: Vec3,
     direction: Vec3,
+    /// The box's local +Y (Bevy space), to align its map with the box.
+    up: Vec3,
+    /// The eight corners (Bevy space).
+    corners: [Vec3; 8],
+    /// Box coordinates (0–1) to Bevy space.
+    world_from_box: bevy::math::Affine3A,
 }
 
 impl ShadowedBox {
+    fn new(b: &GpuBoxLight) -> Self {
+        let to_box = Mat4::from_cols(b.to_box[0], b.to_box[1], b.to_box[2], Vec4::W).transpose();
+        let from_box = to_box.inverse();
+        let corners = std::array::from_fn(|i| {
+            from_box.transform_point3(Vec3::new(
+                (i & 1) as f32,
+                ((i >> 1) & 1) as f32,
+                ((i >> 2) & 1) as f32,
+            ))
+        });
+        Self {
+            to_box: b.to_box,
+            size: b.size,
+            direction: b.direction_shadow.truncate(),
+            up: from_box.transform_vector3(Vec3::Y).normalize_or(Vec3::Y),
+            corners,
+            world_from_box: bevy::math::Affine3A::from_mat4(from_box),
+        }
+    }
+
     /// Distance (m) from a Bevy-space point to the box (0 inside).
     fn distance(&self, p: Vec3) -> f32 {
         let p = p.extend(1.0);
@@ -666,53 +740,238 @@ impl ShadowedBox {
 pub struct BoxShadows {
     boxes: Vec<ShadowedBox>,
     far_plane: f32,
+    /// A direction no shadowed box has, for unused carriers.
+    unused: Vec3,
+    /// `BG3_BOX_SHADOW_CASCADES`: Bevy's camera cascades instead of one map per box.
+    camera_cascades: bool,
 }
 
+/// A direction further than [`BOX_SHADOW_MATCH`] from all of `directions`.
+fn unused_direction(directions: &[Vec3]) -> Vec3 {
+    (0..64)
+        .map(|i| {
+            let (s, c) = (i as f32 * 2.399_963).sin_cos();
+            let y = -1.0 + (i as f32 + 0.5) / 32.0;
+            let r = (1.0 - y * y).sqrt();
+            Vec3::new(r * c, y, r * s)
+        })
+        .find(|u| directions.iter().all(|d| d.dot(*u) < 0.999))
+        .unwrap_or(Vec3::NEG_Y)
+}
+
+/// The viewer's camera, not a carrier.
+type ViewCamera = (
+    With<crate::fly_camera::FlyCamera>,
+    Without<BoxShadowCarrier>,
+);
+
 /// Point the shadow carriers along the shadowed box lights nearest the camera (one per
-/// direction, boxes beyond the shadow distance skipped); unused carriers render no shadows.
+/// direction) and give each the boxes along its direction; unused carriers point along
+/// [`BoxShadows::unused`]. Boxes the camera can't see (outside its frustum, or beyond the shadow
+/// distance) are skipped: none of their pixels is drawn. Runs after the camera's frustum is
+/// updated and sets the carriers' global transforms itself (they have no parent), so the
+/// cascades built next follow this frame's view. Writes only on change.
 pub fn assign_box_shadow_carriers(
     shadows: Option<Res<BoxShadows>>,
-    cameras: Query<&GlobalTransform, With<crate::fly_camera::FlyCamera>>,
-    mut carriers: Query<(&mut DirectionalLight, &mut Transform), With<BoxShadowCarrier>>,
+    cameras: Query<(&GlobalTransform, &bevy::camera::primitives::Frustum), ViewCamera>,
+    mut carriers: Query<(&mut BoxShadowCarrier, &mut Transform, &mut GlobalTransform)>,
 ) {
-    let (Some(shadows), Some(camera)) = (shadows, cameras.iter().next()) else {
+    let (Some(shadows), Some((camera, frustum))) = (shadows, cameras.iter().next()) else {
         return;
     };
     let eye = camera.translation();
-    let mut near: Vec<(f32, Vec3)> = shadows
+    let unit = bevy::camera::primitives::Aabb {
+        center: Vec3A::splat(0.5),
+        half_extents: Vec3A::splat(0.5),
+    };
+    let mut near: Vec<(f32, usize)> = shadows
         .boxes
         .iter()
-        .map(|b| (b.distance(eye), b.direction))
-        .filter(|(d, _)| *d <= shadows.far_plane)
+        .enumerate()
+        .map(|(i, b)| (b.distance(eye), i))
+        .filter(|&(d, i)| {
+            d <= shadows.far_plane
+                && frustum.intersects_obb(&unit, &shadows.boxes[i].world_from_box, true, true)
+        })
         .collect();
-    near.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut directions: Vec<Vec3> = Vec::new();
-    for (_, d) in near {
-        if directions.len() < MAX_BOX_SHADOW_CARRIERS
-            && !directions.iter().any(|e| e.dot(d) > BOX_SHADOW_MATCH)
+    near.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    // (direction, boxes along it, nearest first)
+    let mut groups: Vec<(Vec3, Vec<usize>)> = Vec::new();
+    for (_, i) in near {
+        let b = &shadows.boxes[i];
+        match groups
+            .iter()
+            .position(|g| g.0.dot(b.direction) > BOX_SHADOW_MATCH)
         {
-            directions.push(d);
+            Some(g) => groups[g].1.push(i),
+            None if groups.len() < MAX_BOX_SHADOW_CARRIERS => groups.push((b.direction, vec![i])),
+            None => {}
         }
     }
-    for (i, (mut light, mut transform)) in carriers.iter_mut().enumerate() {
-        match directions.get(i) {
-            Some(d) => {
-                let up = if d.y.abs() > 0.99 { Vec3::X } else { Vec3::Y };
-                let target = Transform::default().looking_to(-*d, up);
-                if transform.rotation != target.rotation {
-                    *transform = target;
-                }
-                if !light.shadow_maps_enabled {
-                    light.shadow_maps_enabled = true;
-                }
+    for (i, (mut carrier, mut transform, mut global)) in carriers.iter_mut().enumerate() {
+        let (target, mut boxes) = match groups.get_mut(i) {
+            Some((d, boxes)) => {
+                // One map per box: aligned with the nearest box, for the most texels on it.
+                let up = (!shadows.camera_cascades).then(|| shadows.boxes[boxes[0]].up);
+                (carrier_transform(*d, up), std::mem::take(boxes))
             }
-            None => {
-                if light.shadow_maps_enabled {
-                    light.shadow_maps_enabled = false;
-                }
+            None => (carrier_transform(shadows.unused, None), Vec::new()),
+        };
+        boxes.sort_unstable();
+        if transform.rotation != target.rotation {
+            *transform = target;
+            *global = GlobalTransform::from(target);
+        }
+        if carrier.boxes != boxes {
+            carrier.boxes = boxes;
+        }
+    }
+}
+
+/// Replace each carrier's cascade (Bevy fits it to the camera) with an orthographic projection
+/// over its boxes in the carrier's frame; an unused carrier gets a 1 m map 100 km below the
+/// level, which nothing falls in. Runs after Bevy builds the cascades and before it derives
+/// the culling frusta from them.
+pub fn fit_box_shadow_cascades(
+    shadows: Option<Res<BoxShadows>>,
+    map: Res<bevy::light::DirectionalLightShadowMap>,
+    mut carriers: Query<(
+        &GlobalTransform,
+        &BoxShadowCarrier,
+        &mut bevy::light::Cascades,
+    )>,
+) {
+    let Some(shadows) = shadows.filter(|s| !s.camera_cascades) else {
+        return;
+    };
+    let far_away = [Vec3::splat(-0.5), Vec3::splat(0.5)].map(|c| c - Vec3::Y * 1.0e5);
+    for (transform, carrier, mut cascades) in &mut carriers {
+        let points: Vec<Vec3> = if carrier.boxes.is_empty() {
+            far_away.to_vec()
+        } else {
+            carrier
+                .boxes
+                .iter()
+                .flat_map(|&i| shadows.boxes[i].corners)
+                .collect()
+        };
+        let cascade = box_cascade(transform.rotation(), &points, map.size as f32);
+        for view in cascades.cascades.values_mut() {
+            view.clear();
+            view.push(cascade.clone());
+        }
+    }
+}
+
+/// An orthographic, reverse-Z shadow cascade along the light (`rotation`'s −Z) that covers
+/// `points`, with `size` texels a side, texel-snapped.
+fn box_cascade(rotation: Quat, points: &[Vec3], size: f32) -> bevy::light::cascade::Cascade {
+    let world_from_light = Mat4::from_quat(rotation);
+    let light_from_world = world_from_light.transpose();
+    let (lo, hi) = bounds(points.iter().map(|p| light_from_world.transform_point3(*p)));
+    // Two texels of margin around the box; whole texels keep the projection stable.
+    let extent = (hi - lo).truncate().max(Vec2::splat(0.01));
+    let texel = extent / (size - 4.0);
+    let centre = ((lo + hi).truncate() * 0.5 / texel).floor() * texel;
+    let half = (extent * 0.5 + 2.0 * texel).extend(0.0);
+    let (lo, hi) = (
+        (centre.extend(lo.z - 0.01)) - half,
+        (centre.extend(hi.z + 0.01)) + half,
+    );
+    let clip_from_cascade = ortho_clip_from_light(lo - hi.with_xy(centre), hi - hi.with_xy(centre));
+    let cascade_from_world = Mat4::from_translation(-centre.extend(hi.z)) * light_from_world;
+    bevy::light::cascade::Cascade {
+        world_from_cascade: world_from_light * Mat4::from_translation(centre.extend(hi.z)),
+        clip_from_cascade,
+        clip_from_world: clip_from_cascade * cascade_from_world,
+        texel_size: texel.max_element(),
+    }
+}
+
+/// Limit each carrier cascade's shadow casters to its boxes (`BG3_BOX_SHADOW_CASCADES`): the
+/// culling frustum becomes the cascade's, narrowed (in the light's frame) to the boxes'
+/// footprint across the light and cut at their far face; casters towards the light stay (Bevy
+/// doesn't cull at the near plane and clamps their depth). The projection is untouched, so the
+/// map is the same where it matters. Cascades that miss every box, and unused carriers, cull
+/// everything. Runs after Bevy derives the frusta from the cascades and before it culls.
+pub fn cull_box_shadow_casters(
+    shadows: Option<Res<BoxShadows>>,
+    mut carriers: Query<(
+        &GlobalTransform,
+        &BoxShadowCarrier,
+        &bevy::light::Cascades,
+        &mut bevy::camera::primitives::CascadesFrusta,
+    )>,
+) {
+    let Some(shadows) = shadows.filter(|s| s.camera_cascades) else {
+        return;
+    };
+    for (transform, carrier, cascades, mut frusta) in &mut carriers {
+        let light_from_world = Mat4::from_quat(transform.rotation()).transpose();
+        // The boxes' bounds in the light's frame (+Z towards the light).
+        let boxes = (!carrier.boxes.is_empty()).then(|| {
+            bounds(
+                carrier
+                    .boxes
+                    .iter()
+                    .flat_map(|&i| shadows.boxes[i].corners)
+                    .map(|p| light_from_world.transform_point3(p)),
+            )
+        });
+        for (view, view_frusta) in frusta.frusta.iter_mut() {
+            let Some(view_cascades) = cascades.cascades.get(view) else {
+                continue;
+            };
+            for (frustum, cascade) in view_frusta.iter_mut().zip(view_cascades) {
+                let world_from_clip = cascade.clip_from_world.inverse();
+                let (lo, hi) = bounds((0..8).map(|i| {
+                    let ndc = Vec3::new(
+                        if i & 1 == 0 { -1.0 } else { 1.0 },
+                        if i & 2 == 0 { -1.0 } else { 1.0 },
+                        (i >> 2) as f32,
+                    );
+                    light_from_world.transform_point3(world_from_clip.project_point3(ndc))
+                }));
+                let culled = boxes.and_then(|(blo, bhi)| {
+                    let lo = lo.max(blo);
+                    let hi = hi.min(bhi).with_z(hi.z);
+                    (lo.x < hi.x && lo.y < hi.y && lo.z < hi.z).then_some((lo, hi))
+                });
+                // Nothing to draw: a 1 m volume 100 km below the level.
+                let (lo, hi) = culled.unwrap_or_else(|| {
+                    let p = light_from_world.transform_point3(Vec3::NEG_Y * 1.0e5);
+                    (p - 0.5, p + 0.5)
+                });
+                let clip = ortho_clip_from_light(lo, hi) * light_from_world;
+                frustum.0 = bevy::shape::ViewFrustum::from_clip_from_world(&clip);
             }
         }
     }
+}
+
+/// Component-wise bounds of `points`.
+fn bounds(points: impl Iterator<Item = Vec3>) -> (Vec3, Vec3) {
+    points.fold(
+        (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+        |(lo, hi), p| (lo.min(p), hi.max(p)),
+    )
+}
+
+/// An orthographic, reverse-Z projection of the light-frame box `lo..hi` (looking along −Z).
+fn ortho_clip_from_light(lo: Vec3, hi: Vec3) -> Mat4 {
+    let size = (hi - lo).max(Vec3::splat(1e-3));
+    let centre = (lo + hi) * 0.5;
+    Mat4::from_cols(
+        Vec4::new(2.0 / size.x, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 2.0 / size.y, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, 1.0 / size.z, 0.0),
+        Vec4::new(
+            -2.0 * centre.x / size.x,
+            -2.0 * centre.y / size.y,
+            1.0 - hi.z / size.z,
+            1.0,
+        ),
+    )
 }
 
 /// Directions closer than this (cosine) share a shadow carrier; the shader uses the same test.
@@ -992,17 +1251,77 @@ mod box_light_tests {
     }
 
     #[test]
+    fn ortho_clip_maps_the_light_box_to_reverse_z_ndc() {
+        let (lo, hi) = (Vec3::new(-2.0, 1.0, -30.0), Vec3::new(4.0, 3.0, -10.0));
+        let clip = ortho_clip_from_light(lo, hi);
+        assert!((clip.project_point3(lo) - Vec3::new(-1.0, -1.0, 0.0)).length() < 1e-5);
+        assert!((clip.project_point3(hi) - Vec3::new(1.0, 1.0, 1.0)).length() < 1e-5);
+        // A frustum from it keeps points inside and rejects those beside or beyond the box.
+        let f = bevy::shape::ViewFrustum::from_clip_from_world(&clip);
+        let inside = bevy::camera::primitives::Aabb {
+            center: Vec3A::new(1.0, 2.0, -20.0),
+            half_extents: Vec3A::splat(0.1),
+        };
+        let beside = bevy::camera::primitives::Aabb {
+            center: Vec3A::new(6.0, 2.0, -20.0),
+            ..inside
+        };
+        let beyond = bevy::camera::primitives::Aabb {
+            center: Vec3A::new(1.0, 2.0, -40.0),
+            ..inside
+        };
+        let id = bevy::math::Affine3A::IDENTITY;
+        let frustum = bevy::camera::primitives::Frustum(f);
+        assert!(frustum.intersects_obb(&inside, &id, false, true));
+        assert!(!frustum.intersects_obb(&beside, &id, false, true));
+        assert!(!frustum.intersects_obb(&beyond, &id, false, true));
+    }
+
+    #[test]
+    fn box_cascade_covers_the_box_in_reverse_z() {
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let b = ShadowedBox::new(&box_light(&light([0.0, h, 0.0, h]), 1.0));
+        let rotation = carrier_transform(b.direction, Some(b.up)).rotation;
+        let c = box_cascade(rotation, &b.corners, 2048.0);
+        for p in b.corners {
+            let ndc = c.clip_from_world.project_point3(p);
+            assert!(ndc.x.abs() < 1.0 && ndc.y.abs() < 1.0, "{ndc}");
+            assert!((0.0..=1.0).contains(&ndc.z), "{ndc}");
+        }
+        // Aligned with the box: 2 × 4 m across, 2048 texels with two of margin each side.
+        assert!((c.texel_size - 4.0 / 2044.0).abs() < 1e-6);
+        assert!((2.0 / c.clip_from_cascade.y_axis.y - 2048.0 * c.texel_size).abs() < 1e-4);
+        // The source face (towards the light) is near (z ≈ 1), the far face far (z ≈ 0).
+        let source = Vec3::from_array(space::vec3([10.0, 2.0, -5.0]));
+        let far = Vec3::from_array(space::vec3([20.0, 2.0, -5.0]));
+        assert!(c.clip_from_world.project_point3(source).z > 0.99);
+        assert!(c.clip_from_world.project_point3(far).z < 0.01);
+        // `world_from_cascade` and `clip_from_cascade` compose to `clip_from_world`.
+        let composed = c.clip_from_cascade * c.world_from_cascade.inverse();
+        assert!(composed.abs_diff_eq(c.clip_from_world, 1e-4));
+    }
+
+    #[test]
+    fn unused_direction_matches_no_box() {
+        let dirs = [Vec3::Y, Vec3::NEG_Y, Vec3::X, Vec3::new(0.0, -0.6, 0.8)];
+        let u = unused_direction(&dirs);
+        assert!((u.length() - 1.0).abs() < 1e-4);
+        assert!(dirs.iter().all(|d| d.dot(u) < BOX_SHADOW_MATCH));
+    }
+
+    #[test]
     fn rotated_box_follows_the_light_axis() {
         // 90° about Y: local +Z is BG3 +X.
         let h = std::f32::consts::FRAC_1_SQRT_2;
         let b = box_light(&light([0.0, h, 0.0, h]), 1.0);
         assert!((coords(&b, [15.0, 2.0, -5.0]) - Vec3::new(0.5, 0.5, 0.5)).length() < 1e-4);
         assert!((b.direction_shadow.truncate() - Vec3::NEG_X).length() < 1e-4);
-        let shadowed = ShadowedBox {
-            to_box: b.to_box,
-            size: b.size,
-            direction: Vec3::NEG_X,
-        };
+        let shadowed = ShadowedBox::new(&b);
+        assert!((shadowed.direction - Vec3::NEG_X).length() < 1e-4);
+        // The corners span the box: the source face at BG3 x = 10, the far face at x = 20.
+        let x = shadowed.corners.map(|c| c.x);
+        assert!((x.iter().copied().fold(f32::MAX, f32::min) - 10.0).abs() < 1e-3);
+        assert!((x.iter().copied().fold(f32::MIN, f32::max) - 20.0).abs() < 1e-3);
         let inside = Vec3::from_array(space::vec3([15.0, 2.0, -5.0]));
         let beyond = Vec3::from_array(space::vec3([23.0, 2.0, -5.0]));
         assert!(shadowed.distance(inside) < 1e-4);
