@@ -609,24 +609,19 @@ Screenshots (local, `.cache/shots/`):
   `--no-follow --camera=-42.3,4.2,-400.6` / `--camera=-37.8,4.2,-396.3` with
   `--look-at=-40.05,3.7,-398.43`.
 
-**Known discrepancy:** in the reference screenshot Lae'zel's sheathed longsword lies on the
-other diagonal: grip down by her right hip, blade up behind her left shoulder. We show the
-grip up at her right shoulder and the blade down towards her left hip. Our placement follows
-the data exactly:
-
-- The mace and the longsword share the model convention (business end along −Z).
-- Both resolve to `Dummy_Sheath_Upper_R` with source `Dummy_Sheath`.
-- The idle clips key that bone at its rest pose.
-- The mace matches its reference.
-
-Something weapon- or type-specific that we do not apply is therefore still unidentified.
+**Reference screenshot (Lae'zel):** it was taken during the imp fight, so her longsword is
+drawn, not sheathed; the earlier "other diagonal" discrepancy was a misreading. It does show her
+holding the longsword **one-handed** (grip in the right hand by her hip, blade angled up behind
+her, left hand free), whereas we pick the versatile (two-handed) pairing and its clips when the
+other hand is empty. That is evidence against the "versatile means the other hand is empty"
+**assumption**; how the engine decides the versatile grip is not yet read.
 
 ## Open
 
 - Character shaders: what remains open is listed in `character-shaders.md`.
 - Sheathing: the state arbitration (`EPriority`, the other causes), weapon sets, script
-  overrides, sheathe/unsheathe animations, the alternative (rage) grip, and Lae'zel's
-  longsword orientation (see "Drawn and sheathed weapons").
+  overrides, sheathe/unsheathe animations, the alternative (rage) grip, and when the
+  versatile (two-handed) grip applies (the reference shows Lae'zel one-handed).
 - Helmet hair, camp-outfit switching and automatic visual attachments.
 - Facial animation and physics/cloth for the extra mesh bones.
 - Initial death/lying poses for scenery corpses (combat deaths now animate).
