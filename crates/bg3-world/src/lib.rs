@@ -7,6 +7,7 @@ pub mod appearance;
 pub mod atmosphere;
 pub mod banks;
 pub mod characters;
+pub mod curve;
 pub mod fog;
 pub mod level;
 pub mod lights;
@@ -14,6 +15,7 @@ pub mod probes;
 pub mod templates;
 pub mod terrain;
 pub mod terrain_albedo;
+pub mod terrain_shading;
 pub mod trigger;
 pub mod unsheath;
 

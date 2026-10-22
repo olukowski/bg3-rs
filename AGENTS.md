@@ -111,6 +111,10 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `BG3_STANDARD_CHARACTERS=1` draws characters without the character shaders and
   `BG3_STANDARD_LEVEL=1` level surfaces on Bevy's `StandardMaterial` (A/B checks);
   `BG3_NO_BLOOM=1` turns the game's bloom off.
+  Terrain uses the game's terrain shader (`viewer/src/shaders/terrain.wesl`, see
+  `docs/research/terrain.md`); `BG3_STANDARD_TERRAIN=1` draws the earlier baked base colour on
+  `StandardMaterial` and `BG3_TERRAIN_BEVY_LIGHTING=1` lights the game's terrain inputs with
+  Bevy's PBR (A/B checks).
   `--play --cc` opens a character creation screen first (Start re-runs the viewer with
   `--character <spec>`; default character: the trace's deep gnome cleric).
   `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled

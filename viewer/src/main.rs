@@ -291,6 +291,7 @@ fn main() -> Result<()> {
     .add_plugins(characters::CharactersPlugin)
     .add_plugins(char_materials::CharacterMaterialsPlugin)
     .add_plugins(level_materials::LevelMaterialsPlugin)
+    .add_plugins(terrain::TerrainPlugin)
     .add_plugins(sss::SssPlugin)
     .add_plugins(post::GamePostPlugin)
     .add_plugins(bloom::GameBloomPlugin)

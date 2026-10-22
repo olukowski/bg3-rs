@@ -15,6 +15,7 @@ use bg3_lsf::Node;
 use bg3_vfs::Vfs;
 use bg3_vfs::modules::BASE_LOAD_ORDER;
 
+use crate::curve::FCurve;
 use crate::level::read_transform;
 use crate::{Result, Transform, parse, str_attr};
 
@@ -199,14 +200,39 @@ impl TerrainPatch {
 }
 
 /// A terrain brush layer used by a terrain (`TerrainLayers/TerrainLayer`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct TerrainLayer {
     /// `TerrainBrushBank` resource ID.
     pub brush: String,
+    /// `ParamOverrides1` / `ParamOverrides2`: per-terrain values for some brush parameters,
+    /// used where `ParamOverridesMask` has the parameter's bit (see
+    /// `terrain_shading::LayerParams::new`).
+    pub overrides: [[f32; 4]; 2],
+    pub override_mask: u32,
 }
 
+/// A base layer (`TerrainBaseLayers/TerrainBaseLayer`): the brush that shows where the painted
+/// layers leave weight over, with a height and a slope curve that split it between two base
+/// layers.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TerrainBaseLayer {
+    /// `TerrainBrushResourceId`; one of the terrain's layers in the reference build.
+    pub brush: String,
+    /// `Curves/Curve[0]`: weight over local height.
+    pub height_curve: FCurve,
+    /// `Curves/Curve[1]`: weight over slope (degrees from level).
+    pub slope_curve: FCurve,
+}
+
+/// `Visual/HeightTransition` when the object doesn't set it.
+// bg3: eoc::TerrainTemplate::Visit (4.1.1.7631656)
+pub const DEFAULT_HEIGHT_TRANSITION: f32 = 0.2;
+/// `Visual/CurvesResolution` when the object doesn't set it.
+// bg3: eoc::TerrainTemplate::Visit (4.1.1.7631656)
+pub const DEFAULT_CURVES_RESOLUTION: u32 = 256;
+
 /// A terrain object from `Terrains/_merged.lsf`, plus its assembled heightfield.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Terrain {
     pub id: String,
     pub name: String,
@@ -216,6 +242,12 @@ pub struct Terrain {
     pub cells: [usize; 2],
     /// Brush IDs, in `TerrainLayers` order.
     pub layers: Vec<TerrainLayer>,
+    /// `TerrainBaseLayers` (0–2 in the reference build).
+    pub base_layers: Vec<TerrainBaseLayer>,
+    /// `Visual/HeightTransition`: the height blend's transition width.
+    pub height_transition: f32,
+    /// `Visual/CurvesResolution`: texels of the base layer curve ramp.
+    pub curves_resolution: u32,
     /// Row-major heights of the whole terrain, `(cells[0] + 1) × (cells[1] + 1)`.
     pub heights: Vec<f32>,
     /// One bit per cell (row stride `cells[0]`), set where the terrain has a hole.
@@ -316,8 +348,38 @@ fn read_terrain_object(n: &Node, module: &str) -> Option<Terrain> {
         .into_iter()
         .flat_map(|l| l.children_named("TerrainLayer"))
         .filter_map(|l| {
+            let vec4 = |name: &str| {
+                l.attr(name)
+                    .and_then(|v| v.components())
+                    .filter(|c| c.len() == 4)
+                    .map_or([0.0; 4], |c| {
+                        [c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32]
+                    })
+            };
             Some(TerrainLayer {
                 brush: str_attr(l, "TerrainBrushResource")?,
+                overrides: [vec4("ParamOverrides1"), vec4("ParamOverrides2")],
+                override_mask: l
+                    .attr("ParamOverridesMask")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as u32,
+            })
+        })
+        .collect();
+    let base_layers = n
+        .child("TerrainBaseLayers")
+        .into_iter()
+        .flat_map(|l| l.children_named("TerrainBaseLayer"))
+        .filter_map(|b| {
+            let mut curves = b
+                .child("Curves")
+                .into_iter()
+                .flat_map(|c| c.children_named("Curve"))
+                .map(FCurve::read);
+            Some(TerrainBaseLayer {
+                brush: str_attr(b, "TerrainBrushResourceId")?,
+                height_curve: curves.next().unwrap_or_default(),
+                slope_curve: curves.next().unwrap_or_default(),
             })
         })
         .collect();
@@ -328,6 +390,15 @@ fn read_terrain_object(n: &Node, module: &str) -> Option<Terrain> {
         transform: n.child("Transform").map(read_transform).unwrap_or_default(),
         cells: [size("Width")?, size("Height")?],
         layers,
+        base_layers,
+        height_transition: visual
+            .attr("HeightTransition")
+            .and_then(|v| v.as_f64())
+            .map_or(DEFAULT_HEIGHT_TRANSITION, |v| v as f32),
+        curves_resolution: visual
+            .attr("CurvesResolution")
+            .and_then(|v| v.as_i64())
+            .map_or(DEFAULT_CURVES_RESOLUTION, |v| v as u32),
         heights: Vec::new(),
         holes: Vec::new(),
         weights: Vec::new(),
@@ -389,7 +460,9 @@ pub fn load_level_terrains_modules(
     Ok(out)
 }
 
-/// A `TerrainBrushBank` resource: the material of one terrain texture layer.
+/// A `TerrainBrushBank` resource: the material of one terrain texture layer. Defaults (for
+/// attributes a resource leaves out) are the engine's.
+// bg3: ls::TerrainBrushResource::TerrainBrushResource / ::Visit (4.1.1.7631656)
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerrainBrush {
     pub id: String,
@@ -398,13 +471,61 @@ pub struct TerrainBrush {
     pub base_color_map: Option<String>,
     pub normal_map: Option<String>,
     pub physical_map: Option<String>,
+    pub detail_normal_map: Option<String>,
+    /// Height blend: the base colour map's alpha is a height, sharpened by `height_contrast`
+    /// and scaled/offset by `height_scale`/`height_offset`; texels below `alpha_threshold`
+    /// drop out (see `terrain_shading`).
+    pub height_scale: f32,
+    pub height_offset: f32,
+    pub height_contrast: f32,
+    pub alpha_threshold: f32,
     /// UV tiling (texture repeats per world unit).
     pub tiling: f32,
-    pub material_type: u8,
-    pub is_black_brush: bool,
-    /// `GradientMidHeightColor`, used by brushes with `UseHeightGradient`.
-    pub gradient_mid_color: Option<[f32; 3]>,
+    pub detail_normal_scale: f32,
+    pub detail_normal_tiling: f32,
+    /// Height gradient (`UseHeightGradient`): world heights and colours of the tint.
+    pub gradient_height_bottom: f32,
+    pub gradient_height_mid_point: f32,
+    pub gradient_height_top: f32,
+    pub gradient_roughness_reach: f32,
+    pub gradient_roughness_power: f32,
+    pub gradient_bottom_color: [f32; 3],
+    pub gradient_mid_color: [f32; 3],
+    pub use_detail_normal_map: bool,
     pub use_height_gradient: bool,
+    pub is_black_brush: bool,
+    pub material_type: u8,
+}
+
+impl Default for TerrainBrush {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            base_color_map: None,
+            normal_map: None,
+            physical_map: None,
+            detail_normal_map: None,
+            height_scale: 3.5,
+            height_offset: 0.0,
+            height_contrast: 1.0,
+            alpha_threshold: 0.0,
+            tiling: 0.25,
+            detail_normal_scale: 0.6,
+            detail_normal_tiling: 0.0278,
+            gradient_height_bottom: -0.25,
+            gradient_height_mid_point: 0.1,
+            gradient_height_top: 10.5,
+            gradient_roughness_reach: 0.4,
+            gradient_roughness_power: 5.0,
+            gradient_bottom_color: [0.139, 0.154, 0.111],
+            gradient_mid_color: [0.639, 0.494, 0.28],
+            use_detail_normal_map: true,
+            use_height_gradient: false,
+            is_black_brush: false,
+            material_type: 0,
+        }
+    }
 }
 
 /// Terrain brushes from every bank file under `Public/<Module>/Content/` that has a
@@ -430,27 +551,50 @@ pub fn load_terrain_brushes(vfs: &Vfs) -> Result<HashMap<String, TerrainBrush>> 
 }
 
 pub fn read_terrain_brushes(res: &bg3_lsf::Resource) -> Vec<TerrainBrush> {
-    let f = |n: &Node, name: &str| n.attr(name).and_then(|v| v.as_f64());
-    let b = |n: &Node, name: &str| n.attr(name).and_then(|v| v.as_bool()).unwrap_or(false);
     res.region("TerrainBrushBank")
         .into_iter()
         .flat_map(|n| n.children_named("Resource"))
         .filter_map(|n| {
+            let d = TerrainBrush::default();
+            let f = |name: &str, default: f32| {
+                n.attr(name)
+                    .and_then(|v| v.as_f64())
+                    .map_or(default, |v| v as f32)
+            };
+            let b = |name: &str, default: bool| {
+                n.attr(name).and_then(|v| v.as_bool()).unwrap_or(default)
+            };
+            let rgb = |name: &str, default: [f32; 3]| {
+                n.attr(name)
+                    .and_then(|v| v.components())
+                    .filter(|c| c.len() == 3)
+                    .map_or(default, |c| [c[0] as f32, c[1] as f32, c[2] as f32])
+            };
             Some(TerrainBrush {
                 id: str_attr(n, "ID")?,
                 name: str_attr(n, "Name").unwrap_or_default(),
                 base_color_map: str_attr(n, "BaseColorMap"),
                 normal_map: str_attr(n, "NormalMap"),
                 physical_map: str_attr(n, "PhysicalMap"),
-                tiling: f(n, "Tiling").unwrap_or(1.0) as f32,
+                detail_normal_map: str_attr(n, "DetailNormalMap"),
+                height_scale: f("HeightScale", d.height_scale),
+                height_offset: f("HeightOffset", d.height_offset),
+                height_contrast: f("HeightContrast", d.height_contrast),
+                alpha_threshold: f("AlphaThreshold", d.alpha_threshold),
+                tiling: f("Tiling", d.tiling),
+                detail_normal_scale: f("DetailNormalScale", d.detail_normal_scale),
+                detail_normal_tiling: f("DetailNormalTiling", d.detail_normal_tiling),
+                gradient_height_bottom: f("GradientHeightBottom", d.gradient_height_bottom),
+                gradient_height_mid_point: f("GradientHeightMidPoint", d.gradient_height_mid_point),
+                gradient_height_top: f("GradientHeightTop", d.gradient_height_top),
+                gradient_roughness_reach: f("GradientRoughnessReach", d.gradient_roughness_reach),
+                gradient_roughness_power: f("GradientRoughnessPower", d.gradient_roughness_power),
+                gradient_bottom_color: rgb("GradientBottomHeightColor", d.gradient_bottom_color),
+                gradient_mid_color: rgb("GradientMidHeightColor", d.gradient_mid_color),
+                use_detail_normal_map: b("UseDetailNormalMap", d.use_detail_normal_map),
+                use_height_gradient: b("UseHeightGradient", d.use_height_gradient),
+                is_black_brush: b("IsBlackBrush", d.is_black_brush),
                 material_type: n.attr("MaterialType").and_then(|v| v.as_i64()).unwrap_or(0) as u8,
-                is_black_brush: b(n, "IsBlackBrush"),
-                gradient_mid_color: n
-                    .attr("GradientMidHeightColor")
-                    .and_then(|v| v.components())
-                    .filter(|c| c.len() == 3)
-                    .map(|c| [c[0] as f32, c[1] as f32, c[2] as f32]),
-                use_height_gradient: b(n, "UseHeightGradient"),
             })
         })
         .collect()
@@ -583,13 +727,12 @@ mod tests {
             template: None,
             transform: Transform::default(),
             cells: [66, 2],
-            layers: vec![TerrainLayer { brush: "g".into() }],
-            heights: vec![],
-            holes: vec![],
-            weights: vec![],
-            patches: 0,
-            errors: vec![],
+            layers: vec![TerrainLayer {
+                brush: "g".into(),
+                ..Default::default()
+            }],
             module: "M".into(),
+            ..Default::default()
         };
         t.assemble(&[
             TerrainPatch::parse(&a).unwrap(),
