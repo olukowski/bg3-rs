@@ -199,6 +199,7 @@ pub struct CharacterChoice {
     /// `AbilityDistributionPresets` entry (see [`CcData::complete`]).
     pub abilities: [i32; 6],
     pub picks: Vec<Pick>,
+    pub appearance: super::appearance::Appearance,
 }
 
 /// An open choice of a level-1 progression.
@@ -564,6 +565,7 @@ impl CcData {
         {
             choice.subrace = Some(s.id);
         }
+        self.complete_appearance(choice);
         let subs = self.level1_subclasses(choice.class);
         if choice.subclass.is_none()
             && let Some(s) = subs.first()
@@ -648,6 +650,31 @@ impl CcData {
     // they check (by name); the checks themselves are ours (4.1.1.7631656).
     pub fn validate(&self, choice: &CharacterChoice) -> Vec<CcError> {
         let mut errs = Vec::new();
+        for (slot, id) in choice.appearance.visuals() {
+            if !self
+                .appearance_options(choice, &slot)
+                .iter()
+                .any(|v| v.id == id)
+            {
+                errs.push(CcError::NotAnOption {
+                    slot: format!("appearance {slot}"),
+                    item: id.to_string(),
+                });
+            }
+        }
+        for (kind, id) in choice.appearance.material_choices() {
+            if !self
+                .appearance
+                .material_options(&kind)
+                .iter()
+                .any(|m| m.id == id)
+            {
+                errs.push(CcError::NotAnOption {
+                    slot: format!("appearance {kind} material"),
+                    item: id.to_string(),
+                });
+            }
+        }
         if !self.playable_races().iter().any(|r| r.id == choice.race) {
             errs.push(CcError::UnknownRace(choice.race));
         }
@@ -1036,6 +1063,12 @@ impl CharacterChoice {
                     .join(",")
             ),
         ];
+        for (slot, id) in self.appearance.visuals() {
+            out.push(format!("visual={slot}:{id}"));
+        }
+        for (kind, id) in self.appearance.material_choices() {
+            out.push(format!("material={kind}:{id}"));
+        }
         for p in &self.picks {
             out.push(format!(
                 "pick={}:{}:{}",
@@ -1082,6 +1115,20 @@ impl CharacterChoice {
                     c.abilities = a
                         .try_into()
                         .map_err(|_| "abilities: six scores".to_owned())?;
+                }
+                "visual" | "material" => {
+                    let (name, value) = v
+                        .split_once(':')
+                        .ok_or_else(|| format!("bad appearance {v:?}"))?;
+                    if name.trim().is_empty() {
+                        return Err("appearance needs a slot/category".into());
+                    }
+                    let id = opt(value)?;
+                    if k.trim() == "visual" {
+                        c.appearance.set_visual(name.trim(), id);
+                    } else {
+                        c.appearance.set_material(name.trim(), id);
+                    }
                 }
                 "pick" => {
                     let mut it = v.splitn(3, ':');

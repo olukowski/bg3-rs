@@ -132,6 +132,38 @@ impl Skeleton {
         unknown
     }
 
+    /// Shared meshes reference SkeletonBank sockets as bones. The original remapper copies
+    /// their target socket world transforms into the mesh's source pose before skinning.
+    // bg3: gr::GrannyMeshBinding::UpdatePose, ls::Skeleton::GetSocketWorldTransform
+    // (4.1.1.7631656); SkeletonBank/Sockets/{Name,Bone,Position,Rotation}.
+    fn add_sockets(&mut self, sockets: &[bg3_world::characters::SkeletonSocket]) {
+        for socket in sockets {
+            if self.index(&socket.name).is_some()
+                || socket.bone_constraint.is_some()
+                || socket.constraints_position != 0
+                || socket.constraints_rotation != 0
+            {
+                continue;
+            }
+            let Some(parent) = self.index(&socket.bone) else {
+                continue;
+            };
+            let rest = Transform {
+                translation: Vec3::from_array(space::vec3(socket.position)),
+                rotation: space::quat(socket.rotation),
+                ..Default::default()
+            };
+            let inverse_bind = (self.world_of(parent) * rest.to_matrix()).inverse();
+            self.by_name.insert(socket.name.clone(), self.joints.len());
+            self.joints.push(Joint {
+                name: socket.name.clone(),
+                parent: Some(parent),
+                rest,
+                inverse_bind,
+            });
+        }
+    }
+
     /// Model-space rest matrix of joint `i`.
     fn world_of(&self, mut i: usize) -> Mat4 {
         let mut m = self.joints[i].rest.to_matrix();
@@ -199,6 +231,8 @@ impl PreparedAnimation {
 /// A mesh ready to spawn.
 pub struct PreparedPart {
     pub mesh: Mesh,
+    /// CC mesh source bind matrices, indexed by the assembled skeleton.
+    pub inverse_bindposes: Option<Vec<Mat4>>,
     pub material_id: Option<String>,
     /// For rigid (unskinned) meshes: joint to attach to.
     pub attach_joint: Option<usize>,
@@ -263,7 +297,7 @@ impl LevelCharacters {
         vfs: &Vfs,
         level: &LoadedLevel,
         objects: impl Iterator<Item = &'a bg3_world::LevelObject>,
-        avatar_equipment: Option<(String, &[String])>,
+        avatar_equipment: Option<(String, &[String], &bg3_sim::cc::ResolvedAppearance)>,
         weapon_sets: &HashMap<String, WeaponSet>,
     ) -> Self {
         let started = std::time::Instant::now();
@@ -277,7 +311,34 @@ impl LevelCharacters {
         for obj in objects.filter(|o| o.kind == "character") {
             match resolve_character(obj, &level.templates, &level.banks, &idle) {
                 Ok(mut c) => {
-                    let items = if let (Some((id, names)), Some(stats)) =
+                    if let Some((id, _, appearance)) = &avatar_equipment
+                        && *id == c.id
+                    {
+                        use bg3_world::characters::{MaterialPresetRef, VisualSlot};
+                        if let Err(e) = c.apply_appearance(
+                            appearance
+                                .visuals
+                                .iter()
+                                .map(|(slot, id, bone)| VisualSlot {
+                                    slot: slot.clone(),
+                                    visual: id.to_string(),
+                                    bone: bone.clone(),
+                                }),
+                            appearance
+                                .presets
+                                .iter()
+                                .map(|(kind, id)| MaterialPresetRef {
+                                    group: kind.clone(),
+                                    preset: id.to_string(),
+                                    force: false,
+                                }),
+                            &level.banks,
+                        ) {
+                            out.failed.push((obj.name.clone(), e));
+                            continue;
+                        }
+                    }
+                    let items = if let (Some((id, names, _)), Some(stats)) =
                         (&avatar_equipment, &stats)
                         && *id == c.id
                     {
@@ -565,6 +626,11 @@ fn prepare(
     let base = cache.skeleton(vfs, skel_path)?;
     // Extend the base skeleton with bones only the meshes' own skeletons have.
     let mut extended = (*base).clone();
+    if c.parts.iter().any(|p| p.source_bind_pose)
+        && let Some(resource) = &c.skeleton
+    {
+        extended.add_sockets(&resource.sockets);
+    }
     let mut unmapped: Vec<String> = Vec::new();
     for part in &c.parts {
         let Some(path) = part.visual.source_file.as_deref() else {
@@ -607,6 +673,9 @@ fn prepare(
                 skinned_mesh(mesh, &skeleton).0
             };
             parts.push(PreparedPart {
+                inverse_bindposes: part
+                    .source_bind_pose
+                    .then(|| source_bindposes(&skeleton, scene.skeletons.first())),
                 mesh: bevy_mesh,
                 material_id: obj.material_id.clone(),
                 attach_joint,
@@ -723,6 +792,7 @@ fn rigid_equipment_parts(
             if let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) {
                 out.push(PreparedPart {
                     mesh: crate::meshes::to_bevy_mesh(mesh),
+                    inverse_bindposes: None,
                     material_id: obj.material_id.clone(),
                     attach_joint,
                     local,
@@ -733,6 +803,23 @@ fn rigid_equipment_parts(
         }
     }
     out
+}
+
+/// A selected CC mesh is authored against its own rig, not necessarily the avatar's.
+/// Preserve those inverse world matrices while reusing the target rig's named joints.
+/// The remapped source pose uses target socket transforms, composed with the mesh's own
+/// source inverse bind matrices, as in the original's indexed composite buffer.
+// bg3: gr::GrannyMeshBinding::UpdatePose (4.1.1.7631656).
+fn source_bindposes(target: &Skeleton, source: Option<&bg3_gr2::Skeleton>) -> Vec<Mat4> {
+    target
+        .joints
+        .iter()
+        .map(|j| {
+            source
+                .and_then(|s| s.bones.iter().find(|b| b.name == j.name))
+                .map_or(j.inverse_bind, |b| inverse_bind(&b.inverse_world))
+        })
+        .collect()
 }
 
 /// Convert a GR2 mesh and remap its bone indices (into the mesh's `BoneBindings`) to joints of
@@ -1097,7 +1184,10 @@ pub fn spawn_characters(
                 let mut e = commands.spawn((
                     Mesh3d(mesh),
                     SkinnedMesh {
-                        inverse_bindposes: ibm.clone(),
+                        inverse_bindposes: part.inverse_bindposes.map_or_else(
+                            || ibm.clone(),
+                            |poses| bindposes.add(SkinnedMeshInverseBindposes::from(poses)),
+                        ),
                         joints: joints.clone(),
                     },
                     Transform::default(),
@@ -1402,6 +1492,37 @@ mod tests {
             let p = *w * j.inverse_bind;
             assert!(p.abs_diff_eq(Mat4::IDENTITY, 1e-5), "{}: {p}", j.name);
         }
+    }
+
+    #[test]
+    fn shared_cc_mesh_binds_to_target_socket_with_source_inverse_bind() {
+        let mut source = test_skeleton();
+        source.bones.push(bone(
+            "Socket_Hair",
+            Some(1),
+            [0.0, 0.2, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ));
+        fill_inverse_world(&mut source.bones);
+        let mut avatar = Skeleton::from_gr2(&test_skeleton());
+        let socket = bg3_world::characters::SkeletonSocket {
+            name: "Socket_Hair".into(),
+            bone: "Spine".into(),
+            position: [0.0, 0.1, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        avatar.add_sockets(&[socket]);
+        assert!(avatar.extend_from(&source, ["Socket_Hair"]).is_empty());
+        let i = avatar.index("Socket_Hair").unwrap();
+        let source_world = inverse_bind(&source.bones.last().unwrap().inverse_world).inverse();
+        let vertex = source_world.transform_point3(Vec3::new(0.01, 0.02, 0.03));
+        let poses = source_bindposes(&avatar, Some(&source));
+        let target_world = avatar.rest_world()[i];
+        let actual = (target_world * poses[i]).transform_point3(vertex);
+        let expected = target_world.transform_point3(Vec3::new(0.01, 0.02, 0.03));
+        assert!(actual.abs_diff_eq(expected, 1e-5));
+        assert!(!actual.abs_diff_eq(vertex, 1e-3));
     }
 
     #[test]

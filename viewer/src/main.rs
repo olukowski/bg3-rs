@@ -244,8 +244,13 @@ fn main() -> Result<()> {
         &vfs,
         &level,
         level.level.objects.iter().chain(&extra),
-        play.as_ref()
-            .map(|(_, s)| (s.avatar.to_string(), s.avatar_equipment.as_slice())),
+        play.as_ref().map(|(_, s)| {
+            (
+                s.avatar.to_string(),
+                s.avatar_equipment.as_slice(),
+                &s.avatar_appearance,
+            )
+        }),
         play.as_ref()
             .map_or(&std::collections::HashMap::new(), |(_, s)| &s.weapon_sets),
     );

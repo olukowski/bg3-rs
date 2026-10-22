@@ -237,3 +237,30 @@ fn trace_choice_reproduces_the_trace_avatar() {
         .join()
         .expect("game thread");
 }
+
+#[test]
+#[ignore = "needs BG3 install"]
+fn default_deep_gnome_appearance_and_hair_spec() {
+    let Some(vfs) = vfs() else {
+        return;
+    };
+    let (cc, _) = data(&vfs);
+    let mut choice = trace_choice();
+    cc.complete(&mut choice);
+    let options = cc.appearance_options(&choice, "Hair");
+    let hair = options
+        .iter()
+        .find(|v| !v.visual.is_null())
+        .expect("hair visual");
+    choice.appearance.hair = Some(hair.id);
+    assert!(cc.appearance.material_options("Skin").len() >= 3);
+    assert_eq!(
+        CharacterChoice::from_spec(&choice.to_spec()),
+        Ok(choice.clone())
+    );
+    assert!(
+        cc.validate(&choice).is_empty(),
+        "{:?}",
+        cc.validate(&choice)
+    );
+}

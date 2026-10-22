@@ -46,7 +46,7 @@ pub fn run(vfs: &Vfs, shot: Option<PathBuf>) -> Result<()> {
     })
     .insert_resource(ClearColor(Color::srgb(0.05, 0.04, 0.05)))
     .add_systems(Startup, setup)
-    .add_systems(Update, (clicks, keys, redraw).chain());
+    .add_systems(Update, (clicks, keys, scroll, redraw).chain());
     if let Some(path) = shot {
         app.insert_resource(crate::ShotRequest(path, None))
             .add_systems(Update, crate::take_screenshot);
@@ -124,6 +124,8 @@ enum Action {
     Bonus(usize, i32),
     /// Slot index in `CcData::slots`, option.
     Toggle(usize, String),
+    Visual(String, i32),
+    Material(String, i32),
     Start,
 }
 
@@ -131,9 +133,11 @@ fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
     commands.spawn((
         Root,
+        ScrollPosition::default(),
         Node {
             width: Val::Percent(100.0),
             height: Val::Percent(100.0),
+            overflow: Overflow::scroll_y(),
             padding: UiRect::all(Val::Px(16.0)),
             column_gap: Val::Px(24.0),
             ..default()
@@ -225,8 +229,22 @@ impl Screen {
             self.choice.body_type = t;
             self.choice.body_shape = s;
         }
+        self.prune_appearance();
         self.data.complete(&mut self.choice);
         self.dirty = true;
+    }
+
+    fn prune_appearance(&mut self) {
+        for (slot, id) in self.choice.appearance.visuals() {
+            if !self
+                .data
+                .appearance_options(&self.choice, &slot)
+                .iter()
+                .any(|v| v.id == id)
+            {
+                self.choice.appearance.set_visual(&slot, None);
+            }
+        }
     }
 
     fn apply(&mut self, a: &Action) {
@@ -266,7 +284,7 @@ impl Screen {
                             });
                             (self.choice.body_type, self.choice.body_shape) = bodies[i];
                         }
-                        self.dirty = true;
+                        self.settle(false);
                     }
                     Field::Class => {
                         let ids = d.playable_classes().iter().map(|c| c.id).collect();
@@ -351,6 +369,41 @@ impl Screen {
                         pick.items.remove(0);
                     }
                     pick.items.push(item.clone());
+                }
+                self.dirty = true;
+            }
+            Action::Visual(slot, dir) | Action::Material(slot, dir) => {
+                let visual = matches!(a, Action::Visual(..));
+                let ids: Vec<_> = if visual {
+                    self.data
+                        .appearance_options(&self.choice, slot)
+                        .iter()
+                        .map(|v| v.id)
+                        .collect()
+                } else {
+                    self.data
+                        .appearance
+                        .material_options(slot)
+                        .iter()
+                        .map(|m| m.id)
+                        .collect()
+                };
+                let current = if visual {
+                    self.choice.appearance.visual(slot)
+                } else {
+                    self.choice.appearance.material(slot)
+                };
+                // Include “template” as a reversible choice alongside explicit “none” entries.
+                let index = current
+                    .and_then(|id| ids.iter().position(|v| *v == id))
+                    .map_or(0, |i| i + 1);
+                let next = (index as i32 + dir).rem_euclid(ids.len() as i32 + 1) as usize;
+                let id = next.checked_sub(1).and_then(|i| ids.get(i)).copied();
+                if visual {
+                    self.choice.appearance.set_visual(slot, id);
+                    self.prune_appearance();
+                } else {
+                    self.choice.appearance.set_material(slot, id);
                 }
                 self.dirty = true;
             }
@@ -653,6 +706,27 @@ fn redraw(mut commands: Commands, mut screen: ResMut<Screen>, root: Query<Entity
             ..default()
         })
         .with_children(|col| {
+            col.spawn((Text::new("Appearance"), font(20.0), TextColor(GOLD)));
+            for slot in d.appearance_slots(c) {
+                let options = d.appearance_options(c, &slot);
+                let name = c
+                    .appearance
+                    .visual(&slot)
+                    .and_then(|id| options.iter().find(|v| v.id == id))
+                    .map(|v| s.text(v.display.as_ref(), &v.id.to_string()))
+                    .unwrap_or_else(|| "Template".into());
+                appearance_cycler(col, &slot, &name, true);
+            }
+            for kind in d.appearance.material_kinds() {
+                let options = d.appearance.material_options(&kind);
+                let name = c
+                    .appearance
+                    .material(&kind)
+                    .and_then(|id| options.iter().find(|m| m.id == id))
+                    .map(|m| s.text(m.display.as_ref(), &m.name))
+                    .unwrap_or_else(|| "Template".into());
+                appearance_cycler(col, &kind, &name, false);
+            }
             for (i, slot) in slots.iter().enumerate() {
                 if slot.selector.kind == SelectorKind::SelectAbilityBonus {
                     continue;
@@ -688,4 +762,45 @@ fn redraw(mut commands: Commands, mut screen: ResMut<Screen>, root: Query<Entity
             }
         });
     });
+}
+
+fn appearance_cycler(p: &mut ChildSpawnerCommands, name: &str, value: &str, visual: bool) {
+    row(p, |r| {
+        label(
+            r,
+            &if visual {
+                name.to_owned()
+            } else {
+                format!("{name} colour/material")
+            },
+            170.0,
+            GOLD,
+        );
+        let action = |dir| {
+            if visual {
+                Action::Visual(name.to_owned(), dir)
+            } else {
+                Action::Material(name.to_owned(), dir)
+            }
+        };
+        button(r, "<", action(-1), WHITE, false);
+        label(r, value, 245.0, WHITE);
+        button(r, ">", action(1), WHITE, false);
+    });
+}
+
+fn scroll(
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    mut root: Query<&mut ScrollPosition, With<Root>>,
+) {
+    let delta: f32 = wheel
+        .read()
+        .map(|w| match w.unit {
+            bevy::input::mouse::MouseScrollUnit::Line => w.y * 24.0,
+            bevy::input::mouse::MouseScrollUnit::Pixel => w.y,
+        })
+        .sum();
+    if let Ok(mut position) = root.single_mut() {
+        position.0.y = (position.0.y - delta).max(0.0);
+    }
 }

@@ -144,8 +144,8 @@ subclass, scores and picks are not in the trace and come from the defaults (Deat
 
 - Items as entities (the trace's `AddedTo`/`Equipped` events), prepared spells
   (`MustPrepareSpells`, `ValidateSpellPreparation`), conditional boosts other than the armour
-  ones, `ActionResource` boosts outside combat, appearance (only the preset's template:
-  race and body type), voice, origin characters as the avatar, multiclassing, levels above 1.
+  ones, `ActionResource` boosts outside combat, voice, origin characters as the avatar,
+  multiclassing, levels above 1. Appearance limits are listed below.
 - The subclass order and defaults the real CC screen shows (data order here).
 
 ## Front ends
@@ -158,3 +158,143 @@ subclass, scores and picks are not in the trace and come from the defaults (Deat
 - `bg3-viewer --play --cc`: a Bevy UI screen (`viewer/src/cc_ui.rs`); Start re-runs the
   viewer with `--character` (winit can't open a second event loop in one process, and the
   level viewer sets up before its window opens).
+
+## Appearance
+
+Implemented in `cc/appearance.rs`, read through the VFS in `BASE_LOAD_ORDER`, with the
+same UUID replacement and stable first position as the other CC resources. The whole-row
+replacement policy remains an **assumption**. Inspected the following resources directly
+with `bg3x lsx -` on reference build 4.1.1.7631656; local survey output is in `.cache/cc-survey/`.
+No appearance tables are embedded in source.
+
+- `Public/{Shared,SharedDev}/CharacterCreation/CharacterCreationAppearanceVisuals.lsx`:
+  `UUID` identifies a selectable entry; `SlotName` identifies the slot and `VisualResource`
+  points into `VisualBank`. `DisplayName` is a loca handle. The modern rows filter by
+  `RaceUUID`, `BodyType` and `BodyShape`. Observed slots include Head, Hair, Horns, Tail,
+  Private Parts and DragonbornTop/Jaw/Chin. A few older Shared rows instead name a
+  `RootTemplate`; these are matched to the selected body preset. No `SubRaceUUID` was
+  present in the inspected visual rows; the loader supports one if supplied. Matching a
+  `RaceUUID` against either the race or selected subrace, and treating an omitted filter
+  as unrestricted, are **assumptions**. `HeadAppearanceUUID` constrains dragonborn pieces
+  to a selected CC head entry. Until a matching head is selected these pieces are hidden;
+  matching this dependency against the template's default head is not implemented.
+- `Public/{Shared,GustavDev}/CharacterCreation/CharacterCreationSharedVisuals.lsx`:
+  shared Hair, Beard and Piercing rows have no race/body attributes in the inspected data.
+  `Races/Races.lsx` supplies the missing race restriction: `Visuals/Object` references
+  shared CC entry UUIDs. For categories referenced by those lists (Hair and Beard), only
+  the race/subrace ancestry's listed entries are offered. Inheriting/combining those lists
+  through `ParentGuid` is an **assumption**. Categories without any race list, such as
+  Piercing, remain unrestricted (**assumption**). A shared hairstyle name can resolve to
+  different resource UUIDs for different races; the default gnome uses the dwarf-fit mesh
+  named by its race list, rather than the same-name humanoid mesh. `BoneName` supplies rigid piercing attachment;
+  otherwise the VisualBank `AttachBone` or the existing skinned-mesh binding is used.
+  A null `VisualResource` is an explicit “none” choice, distinct from leaving the slot at
+  its template default. Choices store the CC entry UUID, preserving entries that share
+  the same resource. CLI UUID matching also accepts a resource UUID and picks its first
+  allowed CC entry. Display-name substrings similarly prefer an exact name, then the
+  first matching entry in merged load order (**assumption** for ambiguous names).
+- `CharacterCreationPresets/CharacterCreation{Skin,Hair,Eye}Colors.lsx`: `UUID`, `Name`,
+  `DisplayName`, `UIColor`, `MaterialPresetUUID`; SharedDev adds skin rows with `SkinType`
+  (e.g. Dragonborn). All colour rows are currently offered, like an unrestricted palette
+  (**assumption**); `SkinType` is retained but is not a race filter. UI colours are retained
+  as strings and display names are resolved through loca.
+- `CharacterCreation/CharacterCreationAppearanceMaterials.lsx`: `MaterialType` partitions
+  the choices into Tattoo, Makeup, Scar, Passive, HairHighlight, HairGraying, LipsMakeup,
+  HornColor and HornTipColor. Each choice supplies `MaterialPresetUUID`. The UI offers
+  these data categories as selectors; it does not invent separate colour categories for
+  the entries grouped under Passive. The original UI's grouping of those rows is not
+  reconstructed. Camera and preview root-template attributes are not used for gameplay.
+- `CharacterCreationPresets/CharacterCreationPresets.lsx` continues to select the avatar's
+  `RootTemplate` by race/subrace/body, without changing its voice or camera metadata.
+- SharedDev's `CharacterCreationPresets/CharacterCreationMaterialOverrides.lsx` is loaded
+  into typed swap records: `SourceMaterialUUID`, `TargetMaterialUUID`, `MaterialType`,
+  `ActiveMaterialPresetUUID`, `InactiveMaterialPresetUUID`, `Name`, `UUID`. The inspected
+  rows are dragonborn Passive material swaps. They are retained for future CC preview
+  activation; swapping graphs based on those activation presets is **not modelled**.
+
+### Defaults and application order
+
+There is no observed default-head or default-hairstyle flag. Unspecified slots and colours
+therefore preserve the template visuals/presets, including its lack of hair. Array position
+is not used to invent a hairstyle. `DefaultForBodyType` is present on Private Parts rows;
+`complete_appearance` uses a matching explicit entry (**assumption** about the flag's exact
+engine interpretation). `DefaultSkinColor` appears on older visual rows; it is retained as
+metadata (mostly MaterialPresetBank references, with one legacy CC colour-entry reference)
+but does not replace an unspecified skin colour: the template remains authoritative.
+The engine's automatic selection rules for that field have not been observed.
+
+The sim retains `Appearance` inside `CreatedCharacter.choice`. The viewer receives resolved
+VisualBank IDs, attachment bones and material preset IDs. `ResolvedCharacter::apply_appearance`
+replaces every existing part in a selected slot (or removes it for an explicit null visual),
+leaves unselected slots alone, then recomputes body masks. This happens before equipment
+layering, skeleton extension and material preparation, so existing skinned-part binding and
+rigid attachment paths apply to new hair/beards/piercings too.
+
+Shared hair also needs the install's skeleton sockets. Hair VisualBank resources declare
+`NeedsSkeletonRemap`; their GR2 `BoneBindings` name `Socket_Hair_*` bones. The avatar body's
+`SkeletonBank/Sockets` defines `Name`, `Bone`, `Position`, `Rotation`, `BoneConstraint`,
+`ConstraintsPos` and `ConstraintsRot`. For a selected visual with `NeedsSkeletonRemap`, the
+viewer adds the fixed target sockets as joints under their named body bones, and gives the
+part the source GR2 inverse-bind matrices remapped by name. This computes target socket
+world pose × source inverse bind for each binding. Non-remapped visuals keep the existing
+assembly path; no offsets or scales are invented.
+
+Original evidence: focused LLVM disassembly of
+`gr::GrannyMeshBinding::RemapToSkeleton` (0x105b7a210) and
+`gr::GrannyMeshBinding::UpdatePose` (0x105b7a688), reference build 4.1.1.7631656.
+The remapped path copies target bone/socket world transforms into the source pose and
+builds an indexed composite buffer using the source skeleton; missing bones can resolve
+through `ls::Skeleton::GetSocketWorldTransform`. The socket path is visible around
+0x105b7a7b0–0x105b7a824 and composite-buffer call at 0x105b7aa90. Local assembly and resource
+surveys stay in `.cache/cc-survey/`. REA/Ghidra startup timed out, so no pseudocode result
+was used. `shared_cc_mesh_binds_to_target_socket_with_source_inverse_bind` checks the
+matrix path using synthetic rigs, and `skeleton_bank_reads_fixed_hair_socket` tests parsing.
+The implementation currently handles fixed sockets (zero constraint masks and no
+`BoneConstraint`), which cover the inspected hair bindings. Constrained sockets, full
+socket overrides by head/other skeleton slots, and the engine's complete missing-bone
+fallback remain unmodelled; other body/style combinations still need visual comparison.
+
+Material application order: graph defaults → material instance → **all template presets** (including `ColorPreset`) →
+selected Skin, Hair, Eye presets → other chosen material presets in sorted category order →
+the character visual's enabled explicit parameters. Thus a chosen colour follows the template's
+preset of that category. The existing preset/explicit-parameter order is supported by
+`ls::VisualSetSlots::InitVisualSlots` (see `character-shaders.md`); the insertion point and
+ordering among CC selections are an **assumption**, not a runtime observation of CC. A null
+material preset contributes no parameter assignments; it does not erase an earlier template
+preset. Overlapping preset categories and active/inactive dragonborn graph swaps are a remaining
+limit of this initial material selection path.
+
+### Spec, CLI and UI
+
+Old specs remain valid. New optional fields are `visual=<slot>:<CC entry UUID>` and
+`material=<category>:<CC entry UUID>`, repeated once for each chosen slot/category. Empty
+appearance preserves the legacy spec representation. Validation rejects unknown IDs, wrong
+slots/categories and visuals outside the selected race/body/template/head filters.
+
+`bg3x cc --list` prints all applicable visual options and all material categories with display
+names and UUIDs. `--head`, `--hair`, `--skin`, `--hair-color`, `--eye-color` accept an allowed
+entry/resource UUID or a case-insensitive display-name substring. Other categories can be set
+through the spec or the viewer's Appearance section. Each UI selector includes “Template”;
+explicit data “none” entries remain separate. Race/subrace/body or head changes clear visual
+choices that no longer apply. The screen scrolls with the mouse wheel.
+
+Synthetic verification: `spec_round_trip`, appearance parsing/UUID replacement, filter and
+wrong-slot validation, explicit defaults/null visual resolution, CLI substring matching,
+and `cc_replaces_slots_removes_none_and_layers_presets`. Install verification:
+`cc_install::default_deep_gnome_appearance_and_hair_spec` loads the default male deep gnome,
+requires Hair visuals and multiple skin colours, validates selected hair and round-trips its spec.
+
+
+### Local verification of appearance (2026-10-22)
+
+`cargo fmt --all --check`, workspace/all-target clippy with warnings denied, and
+`cargo test --workspace` pass. The release bg3-sim ignored suite passes, including the
+new deep gnome appearance/spec test. `sim-replay --check` against the local
+`full-nautiloid.log` reports 12,197 agreeing answers and zero disagreements.
+
+The capture `.cache/shots/cc-appearance.png` uses a race-allowed shared hairstyle and a
+lighter skin entry selected by CLI display name. Opened the image: hair follows the scalp,
+without the floating gap of an unremapped mesh, and the face/ears visibly change colour.
+`.cache/shots/cc-default.png` captures the same avatar with its default template appearance.
+Both use `--frame Gnomes_Male_Deep_Player --frame-mode face --shot-after 10`.
+The captures/specs and all install-derived survey output remain gitignored.

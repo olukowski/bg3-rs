@@ -53,6 +53,7 @@ pub struct VisualResource {
     /// Named body regions this visual asks to cut from underlying meshes.
     pub vertex_color_mask_slots: Vec<String>,
     pub supports_vertex_color_mask: bool,
+    pub needs_skeleton_remap: bool,
 }
 
 impl VisualResource {
@@ -261,6 +262,10 @@ fn read_visual(n: &Node) -> VisualResource {
             .children_named("VertexColorMaskSlots")
             .filter_map(|c| str_attr(c, "Object"))
             .collect(),
+        needs_skeleton_remap: n
+            .attr("NeedsSkeletonRemap")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         supports_vertex_color_mask: n
             .attr("SupportsVertexColorMask")
             .and_then(|v| v.as_bool())

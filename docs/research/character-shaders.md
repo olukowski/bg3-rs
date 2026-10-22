@@ -337,8 +337,10 @@ the material declares a parameter of that type; a Vector3 entry also sets a Vect
 character — a skin preset sets the eyelash card's `LashesAlphaIntensity`, a hair preset the
 skin's `Eyebrow_Color`. Not established: what `ForcePresetValues` changes, the per-material
 `Materials` and mesh-level `RealMaterialOverrides` maps of a character visual (not parsed),
-character-creation material settings (graying, highlights, make-up sliders) and the passive
-material swaps (`CharacterCreationMaterialOverrides.lsx`). Viewer **assumption**: a worn item's
+character-creation slider amounts (graying, highlights, make-up) and the passive
+material swaps (`CharacterCreationMaterialOverrides.lsx`; metadata is loaded by CC but graph
+activation is not applied). Appearance visual and material-preset selections now use the
+existing assembly/layering path; see `character-creation.md` for its assumptions. Viewer **assumption**: a worn item's
 own overrides apply to its meshes before the character's (Lae'zel's visual carries the
 `02 Colour` preset of her half-plate).
 
@@ -440,5 +442,5 @@ graph/instance profile in `resolve.rs`. Screenshots (`.cache/shots/`), same came
   identified); the generic glow path for `Base_GM_VT` (imp eyes: ×20, R only).
 - Detail normals, scars/age/wrinkles, wounds/dirt state.
 - `ForcePresetValues`, `RealMaterialOverrides`/per-material overrides, CC material settings,
-  CC hairstyle, passive material swaps.
+  slider amounts, passive material swaps.
 - `CHAR_Skin_Head_Creature` (cambion wings): skin model in a non-VT variant, not ported.
