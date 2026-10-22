@@ -85,6 +85,22 @@ Vertex `BoneIndices` index the mesh's `BoneBindings`, so they are remapped by na
 indices; inverse bind matrices come from the skeleton (`InverseWorldTransform`: row-major with
 row vectors, which as a flat array is the column-major layout of the column-vector matrix).
 
+**Rigid meshes.** Some meshes have no `BoneWeights`/`BoneIndices` vertex components at all, only
+`BoneBindings`: on the Nautiloid, the separate `*_Ears_Mesh` of the head visuals (githyanki,
+elf, half-elf, human, half-orc, tiefling, cambion and halfling heads seen), the imp, tiefling
+and cambion horns, Minsc's earrings, Shadowheart's circlet, leather caps (`HUM_*_ARM_Headwear_*`), Gale's Mystra
+piece (all one binding, `Head_M`), and Wyll's eye and eye stone (`eye_l`, `eye_r`). The game
+loader asks Granny whether each mesh is rigid (`gr::FactoryGr2::Parse` calls `GrannyMeshIsRigid`
+and keeps the result on the renderable template), and the mesh binding's pose update builds one
+composite matrix (`world · InverseWorldTransform`) per binding bone
+(`gr::GrannyMeshBinding::UpdatePose` → `GrannyBuildIndexedCompositeBufferTransposed`). A rigid
+mesh follows its first binding, as in Granny's rigid-mesh convention, so the viewer binds every
+vertex to that bone with weight 1 (`skinned_mesh`). Before this, rigid meshes got no joint
+attributes and were drawn as children of the character root in the rest pose: ears and horns
+floated in place while the head animated. Checked with `--frame Lae --frame-mode face
+--frame-yaw 90` (ear back on the head mid-idle) and the install test
+`characters::tests::laezel_ears_follow_the_head`.
+
 Mirroring into Bevy (see `coordinate-space.md`): with `M = diag(1, 1, −1)`, joint locals and
 animation samples become `M·T·M` (translation `z → −z`, quaternion `(−x, −y, z, w)`) and inverse
 binds `M·IBM·M`, so the skinned vertex `joint · IBM · v` is the mirror of the original. Unit tests

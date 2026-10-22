@@ -639,10 +639,17 @@ fn equipment_attachment_bone<'a>(
 /// Convert a GR2 mesh and remap its bone indices (into the mesh's `BoneBindings`) to joints of
 /// `skeleton` by bone name. Returns the bone names the skeleton lacks; their weights are moved to
 /// the root joint so the vertices stay attached to the character.
+///
+/// A rigid mesh (no per-vertex bone data: the separate ears, horns, circlets and caps of heads)
+/// follows its first bone binding, so every vertex is bound to that bone with full weight.
 pub fn skinned_mesh(m: &bg3_gr2::Mesh, skeleton: &Skeleton) -> (Mesh, Vec<String>) {
     let mut mesh = crate::meshes::to_bevy_mesh(m);
     let mut missing = Vec::new();
-    if m.bone_indices.len() != m.positions.len() || m.bone_weights.len() != m.positions.len() {
+    let n = m.positions.len();
+    // bg3: gr::FactoryGr2::Parse → GrannyMeshIsRigid (4.1.1.7631656)
+    let rigid = m.bone_indices.is_empty() && m.bone_weights.is_empty();
+    let weighted = m.bone_indices.len() == n && m.bone_weights.len() == n;
+    if !(rigid && !m.bone_bindings.is_empty() || weighted) {
         return (mesh, missing);
     }
     let remap: Vec<u16> = m
@@ -656,23 +663,28 @@ pub fn skinned_mesh(m: &bg3_gr2::Mesh, skeleton: &Skeleton) -> (Mesh, Vec<String
             }
         })
         .collect();
-    let joints: Vec<[u16; 4]> = m
-        .bone_indices
-        .iter()
-        .map(|idx| idx.map(|i| remap.get(usize::from(i)).copied().unwrap_or(0)))
-        .collect();
-    let weights: Vec<[f32; 4]> = m
-        .bone_weights
-        .iter()
-        .map(|w| {
-            let sum: f32 = w.iter().sum();
-            if sum > 0.0 {
-                w.map(|x| x / sum)
-            } else {
-                [1.0, 0.0, 0.0, 0.0]
-            }
-        })
-        .collect();
+    let (joints, weights): (Vec<[u16; 4]>, Vec<[f32; 4]>) = if rigid {
+        (vec![[remap[0]; 4]; n], vec![[1.0, 0.0, 0.0, 0.0]; n])
+    } else {
+        let joints = m
+            .bone_indices
+            .iter()
+            .map(|idx| idx.map(|i| remap.get(usize::from(i)).copied().unwrap_or(0)))
+            .collect();
+        let weights = m
+            .bone_weights
+            .iter()
+            .map(|w| {
+                let sum: f32 = w.iter().sum();
+                if sum > 0.0 {
+                    w.map(|x| x / sum)
+                } else {
+                    [1.0, 0.0, 0.0, 0.0]
+                }
+            })
+            .collect();
+        (joints, weights)
+    };
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_JOINT_INDEX,
         VertexAttributeValues::Uint16x4(joints),
@@ -1216,5 +1228,96 @@ mod tests {
             panic!("no joints");
         };
         assert_eq!(j, &vec![[2, 0, 2, 2], [0, 2, 2, 2]]);
+    }
+
+    fn bindings(names: &[&str]) -> Vec<bg3_gr2::BoneBinding> {
+        names
+            .iter()
+            .map(|n| bg3_gr2::BoneBinding {
+                bone_name: (*n).into(),
+                obb_min: [0.0; 3],
+                obb_max: [0.0; 3],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rigid_mesh_follows_its_first_bone_binding() {
+        let s = Skeleton::from_gr2(&test_skeleton());
+        let rigid = |names: &[&str]| bg3_gr2::Mesh {
+            positions: vec![[0.0; 3]; 3],
+            normals: vec![[0.0, 1.0, 0.0]; 3],
+            indices: vec![0, 1, 2],
+            bone_bindings: bindings(names),
+            ..Default::default()
+        };
+        let skin = |m: &bg3_gr2::Mesh| {
+            let (mesh, missing) = skinned_mesh(m, &s);
+            let joints = match mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX) {
+                Some(VertexAttributeValues::Uint16x4(j)) => Some(j.clone()),
+                _ => None,
+            };
+            let weights = match mesh.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT) {
+                Some(VertexAttributeValues::Float32x4(w)) => Some(w.clone()),
+                _ => None,
+            };
+            (joints, weights, missing)
+        };
+
+        let (j, w, missing) = skin(&rigid(&["Spine"]));
+        assert_eq!(j, Some(vec![[1; 4]; 3]));
+        assert_eq!(w, Some(vec![[1.0, 0.0, 0.0, 0.0]; 3]));
+        assert!(missing.is_empty());
+
+        // Only the first binding counts; an unknown bone falls back to the root and is reported.
+        let (j, _, missing) = skin(&rigid(&["Missing", "Hand_L"]));
+        assert_eq!(j, Some(vec![[0; 4]; 3]));
+        assert_eq!(missing, vec!["Missing".to_string()]);
+
+        // Without any binding there is nothing to follow: the mesh stays unskinned.
+        let (j, w, _) = skin(&rigid(&[]));
+        assert_eq!((j, w), (None, None));
+    }
+
+    /// Lae'zel's ears are a rigid mesh bound to `Head_M`, which her body rig animates.
+    #[test]
+    #[ignore = "needs BG3 install"]
+    fn laezel_ears_follow_the_head() {
+        let install = match bg3_install::Install::locate() {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("skipping: no BG3 install ({e})");
+                return;
+            }
+        };
+        let vfs = Vfs::from_install(&install).expect("vfs");
+        let read =
+            |path: &str| bg3_gr2::Scene::from_bytes(&vfs.read(path).expect(path)).expect(path);
+        let dir = "Public/Shared/Assets/Characters/_Anims/Githyanki/_Female";
+        let base = read(&format!("{dir}/GTY_F_Base.GR2"));
+        let head = read(&format!(
+            "Generated/{dir}/Resources/GTY_F_NKD_Head_Laezel.GR2"
+        ));
+        let mut skeleton = Skeleton::from_gr2(&base.skeletons[0]);
+        let names = head
+            .meshes
+            .iter()
+            .flat_map(|m| &m.bone_bindings)
+            .map(|b| b.bone_name.as_str());
+        skeleton.extend_from(&head.skeletons[0], names);
+        let ears = head
+            .meshes
+            .iter()
+            .find(|m| m.name == "GTY_F_NKD_Head_Laezel_Ears_Mesh")
+            .expect("ears mesh");
+        assert!(ears.bone_indices.is_empty() && ears.bone_weights.is_empty());
+        let head_m = skeleton.index("Head_M").expect("Head_M") as u16;
+        let (mesh, missing) = skinned_mesh(ears, &skeleton);
+        assert!(missing.is_empty(), "{missing:?}");
+        let Some(VertexAttributeValues::Uint16x4(j)) = mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX)
+        else {
+            panic!("ears not skinned");
+        };
+        assert!(j.iter().all(|v| *v == [head_m; 4]));
     }
 }
