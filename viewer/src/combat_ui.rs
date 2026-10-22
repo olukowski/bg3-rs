@@ -44,6 +44,8 @@ const PICK_RADIUS_PX: f32 = 45.0;
 const ATTACK_PAUSE_SECS: f32 = 0.7;
 /// Pause between AI turns that did nothing, seconds.
 const IDLE_PAUSE_SECS: f32 = 0.35;
+/// Wait after a weapon-state change: just long enough for the next frame.
+const UNSHEATH_PAUSE_SECS: f32 = 1e-3;
 /// Combat log lines kept / shown.
 const LOG_KEEP: usize = 300;
 const LOG_SHOWN: usize = 22;
@@ -758,7 +760,9 @@ impl CombatUi {
                 let t = format!("{} joins the fight", n(self, entity));
                 self.push(t, LogKind::Turn);
             }
-            CombatEvent::TurnEnded { .. } | CombatEvent::Log(_) => {}
+            CombatEvent::TurnEnded { .. }
+            | CombatEvent::Log(_)
+            | CombatEvent::Unsheathed { .. } => {}
         }
     }
 }
@@ -1052,8 +1056,9 @@ pub(crate) fn animate(
     }
 }
 
-/// Viewer approximation: generic clips, without the original blueprint's blending, animation
-/// event markers, weapon subsets or directional hit selection. See the resource survey.
+/// Viewer approximation: clips from the character's current weapon subset, without the
+/// original blueprint's blending, animation event markers, sheathe/unsheathe animations or
+/// directional hit selection. See the resource survey.
 fn present_event(
     event: &CombatEvent,
     kinds: &HashMap<String, CombatAnimation>,
@@ -1070,6 +1075,19 @@ fn present_event(
         CombatEvent::CombatEnded { .. } => {
             camera.stop();
             return 0.0;
+        }
+        CombatEvent::Unsheathed { entity, state } => {
+            let Some(&e) = by_id.get(entity) else {
+                return 0.0;
+            };
+            let state = *state;
+            commands.queue(move |world: &mut World| {
+                if let Some(mut u) = world.get_mut::<crate::characters::Unsheath>(e) {
+                    u.state = state;
+                }
+            });
+            // One frame, so the weapon clips are in place before the next event plays.
+            return UNSHEATH_PAUSE_SECS;
         }
         CombatEvent::SpellCast {
             caster,

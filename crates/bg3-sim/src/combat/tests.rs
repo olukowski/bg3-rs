@@ -723,6 +723,59 @@ fn a_fight_runs_to_the_end_deterministically() {
 }
 
 #[test]
+fn weapons_are_drawn_for_the_fight_by_spell_and_sheathed_after() {
+    use bg3_world::unsheath::UnsheathState::{Melee, Ranged, Sheathed};
+    let mut s = sim(3);
+    assert_eq!(s.unsheath_state(g(HERO1)), Sheathed);
+    let cid = s.enter_combat(g(HERO1), g(IMP1)).unwrap();
+    // Joining draws the melee set (the hero has a sword; an unarmed imp draws "melee" too).
+    assert_eq!(s.unsheath_state(g(HERO1)), Melee);
+    assert_eq!(s.unsheath_state(g(IMP1)), Melee);
+    let ev = s.take_combat_events();
+    let started = ev
+        .iter()
+        .position(|e| matches!(e, CombatEvent::CombatStarted { .. }))
+        .unwrap();
+    let drawn = ev
+        .iter()
+        .position(|e| {
+            matches!(e, CombatEvent::Unsheathed { entity, state: Melee } if *entity == g(HERO1))
+        })
+        .unwrap();
+    assert!(drawn > started);
+    // A spell's `Sheathing` switches the state before the cast is shown.
+    Arc::make_mut(&mut s.data)
+        .combat
+        .spells
+        .get_mut("Target_MainHandAttack")
+        .unwrap()
+        .sheathing = "Ranged".into();
+    s.combat_move(g(HERO1), 4.0, Some([4.0, 0.0, 0.0])).unwrap();
+    s.combat_cast(g(HERO1), "Target_MainHandAttack", g(IMP1))
+        .unwrap();
+    assert_eq!(s.unsheath_state(g(HERO1)), Ranged);
+    let ev = s.take_combat_events();
+    let switched = ev
+        .iter()
+        .position(|e| matches!(e, CombatEvent::Unsheathed { state: Ranged, .. }))
+        .unwrap();
+    let cast = ev
+        .iter()
+        .position(|e| matches!(e, CombatEvent::SpellCast { .. }))
+        .unwrap();
+    assert!(switched < cast);
+    // The end of the fight sheathes the survivors.
+    for i in [IMP1, IMP2] {
+        if let Some(c) = s.combat.combatants.get_mut(&g(i)) {
+            c.dead = true;
+        }
+    }
+    assert!(s.check_combat_end(cid));
+    assert_eq!(s.unsheath_state(g(HERO1)), Sheathed);
+    assert_eq!(s.unsheath_state(g(HERO2)), Sheathed);
+}
+
+#[test]
 fn hostiles_in_sight_start_a_fight() {
     let mut s = sim(3);
     for (id, x) in [(IMP1, 30.0), (IMP2, 40.0)] {

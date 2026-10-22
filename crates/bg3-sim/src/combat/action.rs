@@ -274,6 +274,14 @@ impl Sim {
                 vec![t.clone(), w.clone(), w.clone(), SimValue::Int(id)],
             );
         }
+        // bg3: eoc::unsheath::ResolveStateFromSpell (4.1.1.7631656): the spell's `Sheathing`
+        // decides what the caster holds; the weapons come out before the cast is shown.
+        let unsheath = bg3_world::unsheath::state_from_sheathing(
+            &def.sheathing,
+            self.unsheath_state(who),
+            self.uses_ranged_set(who),
+        );
+        self.set_unsheath(who, unsheath);
         self.combat_event(CombatEvent::SpellCast {
             caster: who,
             spell: spell.to_owned(),

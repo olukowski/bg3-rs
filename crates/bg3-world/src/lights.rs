@@ -501,6 +501,7 @@ mod tests {
             visual_template: None,
             physics_template: None,
             is_blocker: None,
+            equipment_type: None,
             equipment: None,
             light: Some(LightProps::read(&light)),
             character: None,

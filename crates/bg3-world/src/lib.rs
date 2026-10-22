@@ -10,6 +10,7 @@ pub mod level;
 pub mod lights;
 pub mod templates;
 pub mod terrain;
+pub mod unsheath;
 
 pub use banks::{
     MaterialResource, MeshObject, ResourceBanks, TextureResource, VirtualTextureResource,

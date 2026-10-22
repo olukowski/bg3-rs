@@ -329,7 +329,8 @@ On `Sim` (state) and `Game` (the same, with the story events delivered after eac
   `combat_end_turn(who)`, `combat_run_ai(combat, max)`, `Game::combat_auto(combat, max)`
 - notifications: `take_combat_events()` → `CombatEvent` (combat start/end, initiative rolls,
   rounds, turns, moves, casts, rolls with breakdown, damage, statuses, healing, downed, death
-  saves, deaths, rules log lines)
+  saves, deaths, weapon draw/sheathe (`Unsheathed`, see `characters.md` "Drawn and sheathed
+  weapons"), rules log lines)
 - scenario helpers: `Game::start_level(level)` (the new-game events up to the level start),
   `Game::set_companion_factions(party)` (`Companion1`, `Companion2`, … as the story assigns
   on recruitment; the trace: Lae'zel → `Companion1`)

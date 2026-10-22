@@ -191,6 +191,8 @@ pub struct SpellDef {
     /// `UseCosts`: resource/group selectors and amounts, retaining slot levels.
     pub use_costs: Vec<(super::ResourceSelector, f32)>,
     pub flags: Vec<String>,
+    /// `Sheathing` (`SpellSheathing`): the weapon state the cast asks for.
+    pub sheathing: String,
     /// Raw expression fields for `bg3_rules::exec::Spell::from_fields`.
     pub fields: Vec<(String, String)>,
 }
@@ -530,6 +532,7 @@ impl CombatData {
                             target_radius: o.get("TargetRadius").unwrap_or("").trim().to_owned(),
                             use_costs: parse_costs(o.get("UseCosts").unwrap_or("")),
                             flags: split_list(o.get("SpellFlags")),
+                            sheathing: o.get("Sheathing").unwrap_or("").trim().to_owned(),
                             fields: KEYS
                                 .iter()
                                 .filter_map(|k| Some(((*k).to_owned(), o.get(k)?.to_owned())))
