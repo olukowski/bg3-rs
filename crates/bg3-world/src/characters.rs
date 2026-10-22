@@ -1533,7 +1533,7 @@ add equipment entry "camp"
                     equipped += items.len();
                     if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
                         for p in &c.parts {
-                            for o in p.visual.objects.iter().filter(|o| o.lod == 0) {
+                            for o in p.visual.drawn_lod0_objects() {
                                 let m = o
                                     .material_id
                                     .as_deref()

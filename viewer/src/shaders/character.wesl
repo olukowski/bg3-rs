@@ -22,6 +22,13 @@ import bevy_pbr::{
 import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
+    mesh_view_bindings as view_bindings,
+    mesh_view_types,
+    mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
+    clustered_forward as clustering,
+    shadows,
+    pbr_ambient as ambient,
+    pbr_lighting::getDistanceAttenuation,
 };
 
 const MODE_SKIN: u32 = 0u;
@@ -83,10 +90,17 @@ struct Surface {
     specular: f32,
     occlusion: f32,
     emissive: vec3<f32>,
+    // Subsurface (G-buffer target 3 of shading model 3): scatter amount and thickness map.
+    sss_amount: f32,
+    thickness: f32,
+    // Hair (target 3 of model 5): world strand tangent, scatter; backlit (target 2, blue).
+    tangent: vec3<f32>,
+    scatter: f32,
+    backlit: f32,
 }
 
 fn surface_new() -> Surface {
-    return Surface(vec3(1.0), 1.0, 0.5, 0.0, 0.5, 1.0, vec3(0.0));
+    return Surface(vec3(1.0), 1.0, 0.5, 0.0, 0.5, 1.0, vec3(0.0), 1.0, 0.0, vec3(0.0, 1.0, 0.0), 0.3, 0.4);
 }
 
 // ---- Skin (CHAR_Skin_Body, CHAR_Skin_Head_v3, CHAR_Skin_Head_Creature) ----
@@ -185,6 +199,19 @@ fn skin(uv: vec2<f32>) -> Surface {
     s.roughness = r;
     s.metallic = clamp(metal, 0.0, 1.0);
     s.occlusion = clea.w;
+    // Subsurface amount and thickness map (G-buffer target 3: y, z). Off on non-skin,
+    // eyebrows, metal and texels the shading mask flags (value 1).
+    if head {
+        let flagged = floor(shading.w);
+        s.sss_amount = clamp(max(v[19].x, 1.0 - makeup) * (1.0 - cancel.x) * (1.0 - flagged)
+            * (1.0 - clea.y) * (1.0 - s.metallic), 0.0, 1.0);
+        s.thickness = clamp(max(s.metallic, clea.y + cancel.x + flagged), 0.0, 1.0);
+    } else {
+        let flagged = floor(shading.y);
+        s.sss_amount = clamp((1.0 - flagged) * (1.0 - s.metallic), 0.0, 1.0);
+        // Assumption: the body's thickness term mirrors the head's (not fully traced).
+        s.thickness = clamp(max(s.metallic, cancel.x + flagged), 0.0, 1.0);
+    }
     return s;
 }
 
@@ -237,9 +264,45 @@ fn eye_parallax_uv(in: VertexOutput, uv: vec2<f32>, view: vec3<f32>) -> vec2<f32
     let b = cross(n, t) * sign(in.world_tangent.w);
     let vt = normalize(vec3(dot(view, t), dot(view, n), dot(view, b)));
     let h = textureSample(t0, s0, uv).a;
-    return uv - 0.045 * (1.0 + h) * vec2(vt.x, vt.z);
+    // `_Creature_FX` mixes the parallax in by ParallaxWeight (1 for the other graphs).
+    return mix(uv, uv - 0.045 * (1.0 + h) * vec2(vt.x, vt.z), cu.v[11].y);
 }
     return uv;
+}
+
+// The sclera detail normal (`EYES_Sclera_NM`, t4) as tangent and binormal offsets.
+fn eye_sclera_offset(uv: vec2<f32>) -> vec2<f32> {
+    let ns = textureSample(t4, s0, uv);
+    return vec2(ns.a * 2.0 - 1.0, -(ns.g * 2.0 - 1.0));
+}
+
+// `_FX` / `_Creature_FX` glow (static unless the material sets speeds): a noise-modulated iris
+// mask times GlowColour × GlowBrightness, plus the pupil glow.
+// bg3: Shared_Characters_CHAR_Eye_Parallax_FX_ST_EMI_fragmentMain,
+// ..._Creature_FX_ST_EMI_fragmentMain (Materials.metallib, 4.1.1.7631656)
+fn eye_glow(uv: vec2<f32>, vc_r: f32, time: f32) -> vec3<f32> {
+    let v = cu.v;
+    let creature = v[10].z > 0.5;
+    var het = vc_r * v[10].x;
+    var ersatz = (1.0 - vc_r) * v[10].y;
+    if creature {
+        het = 0.0;
+        ersatz = 0.0;
+    }
+    let region = textureSample(t0, s0, uv);
+    let n1 = textureSample(t2, s0, uv + time * v[15].xy).r;
+    let uv2 = uv + v[15].zw * (n1 * region.g * region.b);
+    let colors = textureSample(t1, s0, uv2);
+    let m1 = spow(1.0 - (colors.g + colors.b), mix(v[12].w, v[13].w, het));
+    let s = clamp(1.0 - textureSample(t0, s0, uv2).g, 0.0, 1.0);
+    let mask = m1 * s * s * (3.0 - 2.0 * s);
+    let gc = mix(v[12].rgb, v[13].rgb, het);
+    let n0 = textureSample(t2, s0, uv).r;
+    let n3 = textureSample(t2, s0, uv + vec2(n0, n0 + time * v[14].w)).r;
+    let blind = mix(v[9].z, v[9].w, vc_r);
+    let bright = (1.0 - blind) * mix(v[14].x * (1.0 - ersatz), v[14].y, het);
+    let pupil = gc * (1.0 - region.b) * (1.0 - ersatz) * v[14].z;
+    return mask * gc * n3 * bright + pupil;
 }
 
 fn eye(uv: vec2<f32>, vc_r: f32) -> Surface {
@@ -265,7 +328,11 @@ fn eye(uv: vec2<f32>, vc_r: f32) -> Surface {
 
     let w = clamp(mix(k * parts.a, bl.r * bl.g * (bl.g * k), blind), 0.0, 1.0);
     var iris = mix(iris_c, iris2_c, w);
-    iris = mix(iris, mix(vec3(0.4375, 0.4974, 0.5222), vec3(0.2611, 0.3551, 0.3715), w), blind);
+    var blind_iris = mix(vec3(0.4375, 0.4974, 0.5222), vec3(0.2611, 0.3551, 0.3715), w);
+    if v[11].x > 0.5 {
+        blind_iris = mix(vec3(0.43681, 0.49951, 0.52344), vec3(0.25903, 0.35374, 0.37362), w);
+    }
+    iris = mix(iris, blind_iris, blind);
     iris = mix(iris, mix(vec3(0.2508, 0.5989, 0.8277), vec3(0.9323, 0.5542, 0.1836), w), ersatz);
     iris *= mix(parts.g, 1.0, blind);
     iris *= 1.0 - parts.b * mix(edge, 0.5, ersatz);
@@ -275,7 +342,9 @@ fn eye(uv: vec2<f32>, vc_r: f32) -> Surface {
     sclera = mix(sclera, mix(vec3(0.3587, 0.0414, 0.0342), vec3(0.4045, 0.4704, 0.3112), rr), ersatz);
     let smask = region.g * region.b;
     sclera *= smask;
-    let t = mix(select(smask, region.g, creature), 1.0 - bl.g, blind);
+    // The FX graphs blend iris and sclera by the region's green alone.
+    let fx = v[11].x > 0.5;
+    let t = mix(select(smask, region.g, fx), 1.0 - bl.g, blind);
 
     var s = surface_new();
     s.albedo = clamp(mix(iris, sclera, t), vec3(0.0), vec3(1.0));
@@ -284,8 +353,10 @@ fn eye(uv: vec2<f32>, vc_r: f32) -> Surface {
     return s;
 }
 
-// Catchlight: the reflected view direction in object space looks up a lat-long HDRI; the
-// game adds a third of it as emissive.
+// Catchlight: the view direction reflected about the eye mesh's normal (with the sclera detail
+// normal only), in object space, looks up a lat-long HDRI; the game adds a third of it as
+// emissive, unexposed. Approximation: the game uses the unskinned bind-pose frame; we use the
+// mesh's object frame.
 fn eye_catchlight(in: VertexOutput, n_world: vec3<f32>, view: vec3<f32>) -> vec3<f32> {
     let r = reflect(-view, n_world);
 @if(!PREPASS_PIPELINE) {
@@ -343,6 +414,12 @@ fn hair(uv: vec2<f32>, vc: vec4<f32>, n_dot_v: f32) -> Surface {
     s.roughness = clamp(v[6].x * mix(1.0, 1.5 * (1.0 - depth) + 0.5, v[6].y), 0.0, 1.0);
     // Coverage as the game's depth prepass computes it (tested against 1/3 without TAA).
     s.alpha = alpha * (1.0 - root * v[6].z) * clamp(5.0 * abs(n_dot_v), 0.0, 1.0) * v[6].w;
+    // Strand tangent in tangent space (x tangent, y normal, z binormal): the binormal tilted
+    // toward the normal per strand ID.
+    s.tangent = vec3(0.0, (1.0 - 2.0 * id) * v[7].y + noise * v[7].z, 1.0);
+    let gray_sum = clamp(v[1].x + v[1].y + v[1].z, 0.0, 1.0);
+    s.scatter = clamp(clamp(v[8].x + gray_mask * (2.0 * gray_sum - 1.0), 0.0, 1.0), 0.01, 1.0);
+    s.backlit = clamp(v[8].y, 0.0, 1.0);
     return s;
 }
 
@@ -357,6 +434,314 @@ fn lashes(uv: vec2<f32>) -> Surface {
     s.roughness = 1.0;
     s.specular = 0.0;
     return s;
+}
+
+// ---- Lighting: the game's deferred light loop for character surfaces ----
+// bg3: ClusteredLighting_N kernels, DoClusteredLight / DoClusteredLight_Subsurface,
+// Specular_Hair, CalculateHairParameters (Core.metallib, 4.1.1.7631656). Our own port of the
+// BRDFs, run over Bevy's lights (falloff, shadows and ambient stay Bevy's).
+// Shading model in `cu.flags`: 0 lit, 3 subsurface, 5 hair. Profile block (model 3):
+// v[20] (scatter colour, scatter distance mm), v[21] (transmission tint / 4, kernel index),
+// v[22] (thickness remap min, max − min, thick object, transmission), v[23] (dual specular
+// roughness A, B, mix).
+const MODEL_SSS: u32 = 3u;
+// `cu.flags` bits above the shading model.
+const FLAG_SSS_MARK: u32 = 8u;
+const FLAG_BEVY_LIGHTING: u32 = 256u;
+const MODEL_HAIR: u32 = 5u;
+const PI: f32 = 3.14159265;
+
+@if(!PREPASS_PIPELINE)
+fn pow5(x: f32) -> f32 {
+    let y = max(abs(x), 1e-4);
+    let y2 = y * y;
+    return y2 * y2 * y;
+}
+
+// Renormalised Disney diffuse (Frostbite form) with perceptual roughness `r`.
+@if(!PREPASS_PIPELINE)
+fn burley(r: f32, n_l: f32, n_v: f32, l_h: f32) -> f32 {
+    let bias = 0.5 * r;
+    let factor = mix(1.0, 1.0 / 1.51, r);
+    let fd90 = bias + 2.0 * l_h * l_h * r;
+    return (1.0 + (fd90 - 1.0) * pow5(1.0 - n_l)) * (1.0 + (fd90 - 1.0) * pow5(1.0 - n_v)) * factor / PI;
+}
+
+@if(!PREPASS_PIPELINE)
+fn d_ggx(a: f32, n_h: f32) -> f32 {
+    let a2 = a * a;
+    let d = (n_h * a2 - n_h) * n_h + 1.0;
+    return a2 / (PI * d * d);
+}
+
+// Height-correlated Smith with the remapped k² = ((r + 1)/2)².
+@if(!PREPASS_PIPELINE)
+fn vis_smith(r: f32, n_l: f32, n_v: f32) -> f32 {
+    let k = (r + 1.0) * 0.5;
+    let k2 = k * k;
+    return 0.5 / max(n_l * sqrt(n_v * n_v * (1.0 - k2) + k2) + n_v * sqrt(n_l * n_l * (1.0 - k2) + k2), 1e-5);
+}
+
+struct CharLight {
+    l: vec3<f32>,
+    // Light colour × falloff (no N·L, no shadow).
+    radiance: vec3<f32>,
+    shadow: f32,
+    // A shadow map is bound (Bevy).
+    has_shadow: bool,
+    // The game's light casts shadows (the viewer marks these with a negative normal bias when
+    // it renders no shadow map for them).
+    game_shadow: bool,
+    sun: bool,
+}
+
+struct CharShading {
+    model: u32,
+    n: vec3<f32>,
+    v: vec3<f32>,
+    albedo: vec3<f32>,
+    diffuse: vec3<f32>,
+    f0: vec3<f32>,
+    metallic: f32,
+    // Perceptual roughness before (r0) and after (r) the specular anti-aliasing.
+    r0: f32,
+    r: f32,
+    sss_amount: f32,
+    thickness: f32,
+    tangent: vec3<f32>,
+    scatter: f32,
+    backlit: f32,
+}
+
+// Lit (0) and subsurface (3) surfaces: Burley diffuse, GGX (dual-lobe for 3), transmission.
+@if(!PREPASS_PIPELINE)
+fn shade_surface(sh: CharShading, li: CharLight) -> vec3<f32> {
+    let n_l_raw = dot(sh.n, li.l);
+    let n_l = clamp(n_l_raw, 0.0, 1.0);
+    let n_v = max(dot(sh.n, sh.v), 1e-5);
+    var out = vec3(0.0);
+    if n_l > 0.0 {
+        let h = normalize(sh.v + li.l);
+        let l_h = clamp(dot(li.l, h), 0.0, 1.0);
+        let diffuse = sh.diffuse * burley(sh.r, n_l, n_v, l_h);
+        // The sun's specular uses the closest point of its disc (~0.26°) to the reflection.
+        var ls = li.l;
+        if li.sun {
+            let refl = reflect(-sh.v, sh.n);
+            let c = dot(li.l, refl);
+            if c < 0.99999 {
+                ls = normalize(0.99999 * li.l + 0.00459006 * normalize(refl - c * li.l));
+            } else {
+                ls = refl;
+            }
+        }
+        let hs = normalize(sh.v + ls);
+        let n_h = clamp(dot(sh.n, hs), 0.0, 1.0);
+        let l_hs = clamp(dot(ls, hs), 0.0, 1.0);
+        let n_ls = clamp(dot(sh.n, ls), 0.0, 1.0);
+        let f = sh.f0 + (1.0 - sh.f0) * pow5(1.0 - l_hs);
+        var d: f32;
+        if sh.model == MODEL_SSS {
+            let ds = cu.v[23];
+            let ra = max(0.09, clamp(sh.r0 * ds.x, 0.0, 1.0));
+            let rb = max(0.09, clamp(sh.r0 * ds.y, 0.0, 1.0));
+            let aa = mix(ra * ra, sh.r * sh.r, sh.metallic);
+            let ab = mix(rb * rb, sh.r * sh.r, sh.metallic);
+            d = mix(d_ggx(aa, n_h), d_ggx(ab, n_h), ds.z);
+        } else {
+            d = d_ggx(sh.r * sh.r, n_h);
+        }
+        let spec = f * d * vis_smith(sh.r, n_ls, n_v);
+        out = (diffuse + spec) * n_l * li.shadow;
+    }
+    // Back-lit transmission through skin (thin objects take the light's shadow).
+    if sh.model == MODEL_SSS && cu.v[22].w > 0.5 {
+        let p = cu.v;
+        let w = 0.258819;
+        let wt = clamp((w - n_l_raw) / ((1.0 + w) * (1.0 + w)), 0.0, 1.0);
+        if wt > 0.0 {
+            let t = p[22].x + p[22].y * sh.thickness;
+            let sc = 1.0 / max(0.0966094 * p[20].rgb * p[20].w * sh.sss_amount, vec3(1e-4));
+            let e = exp(-t * sc / 3.0);
+            var tr = p[21].rgb * e * (e * e + 3.0);
+            // Thin objects take the light's shadow. Thick ones take, instead, the larger of the
+            // remapped thickness and the depth through the occluder in the light's shadow map
+            // (0 for lights without shadows). Approximations: with a Bevy shadow map we gate by
+            // the shadow instead of measuring that depth; for a game-shadowed light without one
+            // we take the occluder as much thicker than the scatter length (no transmission).
+            if p[22].z < 0.5 || li.has_shadow {
+                tr *= li.shadow;
+            } else if li.game_shadow {
+                tr = vec3(0.0);
+            }
+            out += tr * sh.diffuse * wt / PI;
+        }
+    }
+    return out * li.radiance;
+}
+
+// Hair (5): Marschner R/TT/TRT lobes and the Kajiya-Kay scatter term.
+@if(!PREPASS_PIPELINE)
+fn hair_g(b: f32, x: f32) -> f32 {
+    return exp(-0.5 * x * x / (b * b)) / (b * 2.5066283);
+}
+
+@if(!PREPASS_PIPELINE)
+fn hair_fresnel(c: f32) -> f32 {
+    return 0.0465206 + 0.9534794 * pow5(1.0 - c);
+}
+
+@if(!PREPASS_PIPELINE)
+fn shade_hair(sh: CharShading, li: CharLight) -> vec3<f32> {
+    let t = sh.tangent;
+    let l = li.l;
+    let v = sh.v;
+    let a = sh.albedo;
+    let r = max(0.09, sh.r0);
+    let r2 = r * r;
+    let sin_l = clamp(dot(t, l), -1.0, 1.0);
+    let sin_v = clamp(dot(t, v), -1.0, 1.0);
+    let cos_d = cos(0.5 * abs(asin(sin_v) - asin(sin_l)));
+    let lp = l - sin_l * t;
+    let vp = v - sin_v * t;
+    let cos_phi = dot(lp, vp) / sqrt(dot(lp, lp) * dot(vp, vp) + 1e-4);
+    let cos_half = sqrt(clamp(0.5 + 0.5 * cos_phi, 0.0, 1.0));
+    let v_l = dot(v, l);
+
+    // R
+    let sa = sin(-0.07);
+    let ca = cos(-0.07);
+    let shift_r = 2.0 * sa * (ca * cos_half * sqrt(max(1.0 - sin_v * sin_v, 0.0)) + sa * sin_v);
+    let lobe_r = hair_g(1.4142135 * r2 * cos_half, sin_l + sin_v - shift_r) * 0.25 * cos_half
+        * hair_fresnel(sqrt(clamp(0.5 + 0.5 * v_l, 0.0, 1.0)))
+        * mix(1.0, sh.backlit, clamp(-v_l, 0.0, 1.0));
+    // TT
+    let n_p = 1.19 / cos_d + 0.36 * cos_d;
+    let ia = 1.0 / n_p;
+    let h = cos_half * (1.0 + ia * (0.6 - 0.8 * cos_phi));
+    let f_tt = hair_fresnel(cos_d * sqrt(clamp(1.0 - h * h, 0.0, 1.0)));
+    let t_tt = spow3(a, vec3(0.5 * sqrt(max(1.0 - h * h * ia * ia, 0.0)) / cos_d));
+    let lobe_tt = hair_g(0.5 * r2, sin_l + sin_v - 0.035) * exp(-3.65 * cos_phi - 3.98)
+        * (1.0 - f_tt) * (1.0 - f_tt) * t_tt * sh.backlit;
+    // TRT
+    let f_trt = hair_fresnel(0.5 * cos_d);
+    let t_trt = spow3(a, vec3(0.8 / cos_d));
+    let lobe_trt = hair_g(2.0 * r2, sin_l + sin_v - 0.14) * exp(17.0 * cos_phi - 16.78)
+        * (1.0 - f_trt) * (1.0 - f_trt) * f_trt * t_trt;
+    let spec = lobe_r + lobe_tt + lobe_trt;
+
+    // Visibility: the light's shadow, or a soft terminator for lights without one.
+    var sigma = li.shadow;
+    if !li.has_shadow {
+        sigma = clamp(2.0 * dot(sh.n, l) + 0.5, 0.0, 1.0);
+    }
+    let kk = 1.0 - abs(dot(t, l));
+    let wrap = clamp((dot(sh.n, l) + 1.0) * 0.25, 0.0, 1.0);
+    let luma = max(dot(a, vec3(0.3, 0.59, 0.11)), 1e-4);
+    var e = 1.0 - sigma;
+    if li.sun {
+        e = 1.0 - sigma * sigma;
+    }
+    let tint = spow3(a / luma, vec3(e));
+    let diff = sqrt(a) * (mix(wrap, kk, 0.33) * sh.scatter / PI) * tint;
+    return (spec + diff) * sigma * li.radiance;
+}
+
+@if(!PREPASS_PIPELINE)
+fn shade_light(sh: CharShading, li: CharLight) -> vec3<f32> {
+    if sh.model == MODEL_HAIR {
+        return shade_hair(sh, li);
+    }
+    return shade_surface(sh, li);
+}
+
+// Direct light from Bevy's clustered point/spot lights and directional lights, ambient, and
+// emissive, with the game's BRDFs. Replaces `apply_pbr_lighting` for character surfaces.
+@if(!PREPASS_PIPELINE)
+fn char_lighting(in: pbr_types::PbrInput, sh: CharShading) -> vec3<f32> {
+    let p = in.world_position;
+    let receiver = (in.flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u;
+    let view_z = dot(vec4<f32>(
+        view_bindings::view.view_from_world[0].z,
+        view_bindings::view.view_from_world[1].z,
+        view_bindings::view.view_from_world[2].z,
+        view_bindings::view.view_from_world[3].z
+    ), p);
+    let cluster_index = clustering::view_fragment_cluster_index(in.frag_coord.xy, view_z, in.is_orthographic);
+    let ranges = clustering::unpack_clusterable_object_index_ranges(cluster_index);
+    // Shadow lookups offset along the side the light is on (hair: along the light).
+    var direct = vec3(0.0);
+
+    for (var i = ranges.first_point_light_index_offset; i < ranges.first_rect_light_index_offset; i += 1u) {
+        let id = clustering::get_clusterable_object_id(i);
+        let light = &view_bindings::clustered_lights.data[id];
+        let to_light = (*light).position_radius.xyz - p.xyz;
+        let d2 = dot(to_light, to_light);
+        var li: CharLight;
+        li.l = normalize(to_light);
+        li.sun = false;
+        var falloff = getDistanceAttenuation(d2, (*light).color_inverse_square_range.w);
+        let spot = i >= ranges.first_spot_light_index_offset;
+        if spot {
+            var spot_dir = vec3((*light).light_custom_data.x, 0.0, (*light).light_custom_data.y);
+            spot_dir.y = sqrt(max(0.0, 1.0 - spot_dir.x * spot_dir.x - spot_dir.z * spot_dir.z));
+            if ((*light).flags & mesh_view_types::POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE) != 0u {
+                spot_dir.y = -spot_dir.y;
+            }
+            let cd = dot(-spot_dir, li.l);
+            let att = clamp(cd * (*light).light_custom_data.z + (*light).light_custom_data.w, 0.0, 1.0);
+            falloff *= att * att;
+        }
+        li.radiance = (*light).color_inverse_square_range.rgb * falloff;
+        li.game_shadow = (*light).shadow_normal_bias < 0.0;
+        li.has_shadow = receiver && ((*light).flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u;
+        li.shadow = 1.0;
+        if li.has_shadow {
+            var bias_n = select(-in.world_normal, in.world_normal, dot(in.world_normal, li.l) >= 0.0);
+            if sh.model == MODEL_HAIR {
+                bias_n = li.l;
+            }
+            if spot {
+                li.shadow = shadows::fetch_spot_shadow(id, p, bias_n, (*light).shadow_map_near_z, in.frag_coord.xy);
+            } else {
+                li.shadow = shadows::fetch_point_shadow(id, p, bias_n, in.frag_coord.xy);
+            }
+        }
+        direct += shade_light(sh, li);
+    }
+
+    let n_dir = view_bindings::lights.n_directional_lights;
+    for (var i = 0u; i < n_dir; i += 1u) {
+        let light = &view_bindings::lights.directional_lights[i];
+        var li: CharLight;
+        li.l = (*light).direction_to_light.xyz;
+        li.sun = true;
+        li.radiance = (*light).color.rgb;
+        li.game_shadow = (*light).shadow_normal_bias < 0.0;
+        li.has_shadow = receiver && ((*light).flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u;
+        li.shadow = 1.0;
+        if li.has_shadow {
+            var bias_n = select(-in.world_normal, in.world_normal, dot(in.world_normal, li.l) >= 0.0);
+            if sh.model == MODEL_HAIR {
+                bias_n = li.l;
+            }
+            li.shadow = shadows::fetch_directional_shadow(i, p, bias_n, view_z, in.frag_coord.xy) * in.directional_shadow_factor;
+        }
+        direct += shade_light(sh, li);
+    }
+
+    // Ambient: Bevy's uniform ambient through the split-sum approximation, as for every other
+    // surface here. Hair uses |N·V| (the game blends its probes 0.3 front / 0.7 back, which a
+    // uniform ambient doesn't distinguish).
+    let n_v = select(max(dot(sh.n, sh.v), 1e-4), max(abs(dot(sh.n, sh.v)), 1e-4), sh.model == MODEL_HAIR);
+    var amb_diffuse = sh.diffuse;
+    if sh.model == MODEL_HAIR {
+        amb_diffuse = sh.albedo;
+    }
+    let indirect = ambient::ambient_light(p, sh.n, sh.v, n_v, amb_diffuse, sh.f0, sh.r, in.diffuse_occlusion);
+
+    let emissive = in.material.emissive.rgb * mix(1.0, view_bindings::view.exposure, in.material.emissive.a);
+    return view_bindings::view.exposure * (direct + indirect) + emissive;
 }
 
 @fragment
@@ -380,6 +765,10 @@ fn fragment(
 }
 
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+    // Geometric specular anti-aliasing input: the normal's screen-space change.
+    let dn_x = dpdx(pbr_input.N);
+    let dn_y = dpdy(pbr_input.N);
+    let normal_variance = min(dot(dn_x, dn_x) + dot(dn_y, dn_y), 0.18);
 
 @if(VERTEX_UVS_A) {
     let uv = in.uv;
@@ -387,7 +776,26 @@ fn fragment(
         surf = skin(uv);
     } else if mode == MODE_EYE {
         surf = eye(uv, vc_r);
-        surf.emissive = eye_catchlight(in, pbr_input.N, pbr_input.V);
+@if(VERTEX_TANGENTS) {
+        // Lighting normal: the iris normal map flattened toward the mesh normal by blindness,
+        // plus the sclera detail normal; the catchlight reflects about the mesh normal plus the
+        // detail normal only.
+        let t = normalize(in.world_tangent.xyz);
+        let b = cross(pbr_input.world_normal, t) * sign(in.world_tangent.w);
+        let ns = eye_sclera_offset(uv);
+        let detail = (ns.x * t + ns.y * b) * cu.v[11].w;
+        let blind = mix(cu.v[9].z, cu.v[9].w, vc_r) * textureSample(t2, s0, uv).g;
+        let ni = mix(pbr_input.N, pbr_input.world_normal, blind);
+        pbr_input.N = normalize(ni + cu.v[11].z * detail);
+        surf.emissive = eye_catchlight(in, normalize(pbr_input.world_normal + detail), pbr_input.V);
+} @else {
+        surf.emissive = eye_catchlight(in, pbr_input.world_normal, pbr_input.V);
+}
+@if(!PREPASS_PIPELINE) {
+        if cu.v[11].x > 0.5 {
+            surf.emissive += eye_glow(uv, vc_r, view_bindings::globals.time);
+        }
+}
     } else if mode == MODE_LASHES {
         surf = lashes(uv);
     } else if mode == MODE_HAIR {
@@ -397,9 +805,11 @@ fn fragment(
         pbr_input.material.base_color = vec4(surf.albedo, surf.alpha * pbr_input.material.base_color.a);
         pbr_input.material.perceptual_roughness = surf.roughness;
         pbr_input.material.metallic = surf.metallic;
-        pbr_input.material.reflectance = vec3(sqrt(surf.specular * 0.5));
+        // The game's F0 is 0.16·reflectance², as Bevy's.
+        pbr_input.material.reflectance = vec3(surf.specular);
         pbr_input.diffuse_occlusion *= surf.occlusion;
-        pbr_input.material.emissive = vec4(surf.emissive, 1.0);
+        // Emissive (eye catchlight and glow) is added unexposed, as the game's emissive pass.
+        pbr_input.material.emissive = vec4(surf.emissive, 0.0);
     } else if mode == MODE_CLOTH_PALETTE {
         let base = pbr_input.material.base_color;
         pbr_input.material.base_color = vec4(base.rgb * palette_tint(uv), base.a);
@@ -421,8 +831,48 @@ fn fragment(
 }
 @if(!PREPASS_PIPELINE) {
     var out: FragmentOutput;
-    out.color = apply_pbr_lighting(pbr_input);
+    let model = cu.flags & 7u;
+    if (cu.flags & FLAG_BEVY_LIGHTING) != 0u {
+        out.color = apply_pbr_lighting(pbr_input);
+    } else {
+        var sh: CharShading;
+        sh.model = model;
+        sh.n = pbr_input.N;
+        sh.v = pbr_input.V;
+        let base = pbr_input.material.base_color.rgb;
+        sh.albedo = base;
+        sh.metallic = select(pbr_input.material.metallic, 0.0, model == MODEL_HAIR);
+        sh.diffuse = base * (1.0 - sh.metallic);
+        let refl = pbr_input.material.reflectance;
+        sh.f0 = mix(0.16 * refl * refl, base, sh.metallic);
+        sh.r0 = max(0.09, pbr_input.material.perceptual_roughness);
+        sh.r = sqrt(clamp(sh.r0 * sh.r0 + normal_variance, 0.0, 1.0));
+        sh.sss_amount = surf.sss_amount;
+        sh.thickness = surf.thickness;
+        sh.scatter = surf.scatter;
+        sh.backlit = surf.backlit;
+        sh.tangent = hair_tangent(in, pbr_input.N, surf.tangent);
+        out.color = vec4(char_lighting(pbr_input, sh), pbr_input.material.base_color.a);
+    }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    // Mark subsurface pixels for the screen-space scattering pass (`sss.wesl`) in the HDR
+    // target's alpha: −(1 + kernel index + amount/2). Blended surfaces keep their alpha.
+    if model == MODEL_SSS && (cu.flags & FLAG_SSS_MARK) != 0u {
+        out.color.a = -(1.0 + cu.v[21].w + 0.5 * clamp(surf.sss_amount, 0.0, 1.0));
+    }
     return out;
 }
+}
+
+// World strand tangent from the hair's tangent-space vector (x tangent, y normal, z binormal).
+@if(!PREPASS_PIPELINE)
+fn hair_tangent(in: VertexOutput, n: vec3<f32>, ts: vec3<f32>) -> vec3<f32> {
+@if(VERTEX_TANGENTS) {
+    let t = normalize(in.world_tangent.xyz);
+    let b = cross(n, t) * sign(in.world_tangent.w);
+    return normalize(ts.x * t + ts.y * n + ts.z * b);
+}
+    // No tangents: strands run along the surface, toward world up.
+    let up = vec3(0.0, 1.0, 0.0);
+    return normalize(up - n * dot(up, n) + vec3(1e-4, 0.0, 0.0));
 }

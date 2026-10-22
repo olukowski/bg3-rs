@@ -105,6 +105,7 @@ pub fn spawn_lights(
                         intensity: lumens,
                         range,
                         shadow_maps_enabled: false,
+                        shadow_normal_bias: game_shadow_marker(l.shadow),
                         ..default()
                     },
                     space::transform(&l.transform),
@@ -123,6 +124,7 @@ pub fn spawn_lights(
                         inner_angle: inner,
                         outer_angle: outer,
                         shadow_maps_enabled: false,
+                        shadow_normal_bias: game_shadow_marker(l.shadow),
                         ..default()
                     },
                     light_transform(l),
@@ -143,6 +145,7 @@ pub fn spawn_lights(
                         inner_angle: outer * 0.7,
                         outer_angle: outer,
                         shadow_maps_enabled: false,
+                        shadow_normal_bias: game_shadow_marker(l.shadow),
                         ..default()
                     },
                     light_transform(l),
@@ -169,6 +172,8 @@ pub fn spawn_lights(
                 color: color(tinted(sun.color, sun.kelvin, sun.use_temperature)),
                 illuminance: sun.intensity,
                 shadow_maps_enabled: false,
+                // The game's sun always shadows (screen-space shadow mask, cascades).
+                shadow_normal_bias: game_shadow_marker(true),
                 ..default()
             },
             Transform::default().looking_to(-to_sun, Vec3::Y),
@@ -185,6 +190,13 @@ pub fn spawn_lights(
         lighting.sun.is_some(),
         lights.ev100()
     );
+}
+
+/// Shadow maps are off in the viewer; a light that casts shadows in the game carries a negative
+/// normal bias instead, which the character shader reads (subsurface transmission through thick
+/// objects measures the occluder depth in the light's shadow map, `character.wesl`).
+fn game_shadow_marker(shadow: bool) -> f32 {
+    if shadow { -1.0 } else { 0.0 }
 }
 
 /// Give cameras the level's exposure (runs after the camera is spawned).

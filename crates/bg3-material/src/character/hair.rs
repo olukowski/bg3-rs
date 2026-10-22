@@ -15,7 +15,8 @@ fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 /// Highlight_Intensity), v3 (Highlight_Falloff, RootTransitionMidPoint, RootTransitionSoftness,
 /// DepthColorExponent), v4 (DepthColorIntensity, IDContrast, ColorDepthContrast, HairFrizz),
 /// v5 (HueShiftColorWeight, SharedNoiseTiling), v6 (Roughness, RoughnessContrast,
-/// SoftenTipsAlpha, DontTouchMe_Beard_Alpha), v7 (DreadNoiseBaseColor).
+/// SoftenTipsAlpha, DontTouchMe_Beard_Alpha), v7 (DreadNoiseBaseColor, StrandDirectionVariation,
+/// DreadNoiseNormal), v8 (Scatter, HairBacklit) — the last two feed the hair lighting.
 pub fn uniform(v: &mut [[f32; 4]; UNIFORM_LEN], p: &ParamSet) {
     let s = |n: &str, d: f32| p.scalar(n, d);
     let beard = s("DontTouchMe_isBeard", 0.0);
@@ -61,7 +62,13 @@ pub fn uniform(v: &mut [[f32; 4]; UNIFORM_LEN], p: &ParamSet) {
         s("SoftenTipsAlpha", 0.0),
         s("DontTouchMe_Beard_Alpha", 1.0),
     ];
-    v[7] = [s("DreadNoiseBaseColor", 0.0), 0.0, 0.0, 0.0];
+    v[7] = [
+        s("DreadNoiseBaseColor", 0.0),
+        s("StrandDirectionVariation", 0.35),
+        s("DreadNoiseNormal", 0.0),
+        0.0,
+    ];
+    v[8] = [s("Scatter", 0.3), s("HairBacklit", 0.4), 0.0, 0.0];
 }
 
 /// Strand colour before hue variation and dirt (reference for the shader's `hair()`):

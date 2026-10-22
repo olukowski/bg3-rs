@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use bevy::prelude::*;
+use bevy::render::render_resource::TextureUsages;
 use bg3_vfs::Vfs;
 use bg3_world::{Level, LevelObject, ResourceBanks, RootTemplates};
 
@@ -172,7 +173,15 @@ pub fn spawn_level(
         .position
         .unwrap_or(center + Vec3::new(0.0, 60.0, 40.0));
     commands.spawn((
-        Camera3d::default(),
+        Camera3d {
+            // The subsurface pass reads the depth buffer.
+            depth_texture_usages: (TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::TEXTURE_BINDING)
+                .into(),
+            ..default()
+        },
+        // Linear HDR target: subsurface marks live in its alpha (`sss.rs`).
+        bevy::camera::Hdr,
         Transform::from_translation(position).looking_at(target, Vec3::Y),
         FlyCamera::default(),
     ));

@@ -154,7 +154,7 @@ pub fn block_bytes(format: crate::dds::DdsFormat) -> Option<usize> {
     use crate::dds::DdsFormat::*;
     match format {
         Bc1 | Bc4 => Some(8),
-        Bc2 | Bc3 | Bc5 | Bc6h | Bc7 => Some(16),
+        Bc2 | Bc3 | Bc5 | Bc6h | Bc6hSigned | Bc7 => Some(16),
         _ => None,
     }
 }

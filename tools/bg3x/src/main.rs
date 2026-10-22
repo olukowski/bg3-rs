@@ -832,14 +832,15 @@ fn gr2(data: &[u8], tree: bool, bones: bool) -> Result<()> {
             .map(|c| format!("{}:{:?}x{}", c.name, c.kind, c.count))
             .collect();
         println!(
-            "mesh {i} {:?}: {} verts, {} tris ({:?}), {} groups, {} bone bindings, lod {:?}",
+            "mesh {i} {:?}: {} verts, {} tris ({:?}), {} groups, {} bone bindings, lod {:?}, flags {:?}",
             m.name,
             m.vertex_count(),
             m.triangle_count(),
             m.index_width,
             m.groups.len(),
             m.bone_bindings.len(),
-            m.properties.as_ref().and_then(|p| p.lod)
+            m.properties.as_ref().and_then(|p| p.lod),
+            m.properties.as_ref().map(|p| p.flags)
         );
         println!("    {}", fmt.join(" "));
     }

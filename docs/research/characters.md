@@ -65,6 +65,22 @@ Clothing meshes are drawn on top of the body. Wearable visuals name the partial 
 `VertexColorMaskSlots`; resolution exposes these requests (see Equipment below) and the viewer
 applies them as the game's vertex shaders do (`character-shaders.md`, "Body cut masks").
 
+### Cloth proxies
+
+Visuals with simulated cloth carry a `ClothProxyMapping` (read by
+`ls::VisualResource::ClothInfo::Visit`): each `MapKey` is the ObjectID of a coarse cloth
+simulation mesh (`*_Cloth_Mesh`, ~200 vertices, material `Engine_Default_Mesh_Lit_Opaque`), and
+its `MapValue` names the high-resolution meshes it drives, with a `ClosestVertices` buffer.
+The GR2 marks the same meshes with a cloth proxy type: `UserMeshProperties.Flags[2]` bits 8–9
+(value `0x100`), the field `ls.fs.Gr2.GetClothProxyType` returns (disassembly,
+4.1.1.7631656). In the Githyanki female armour bank, MapKeys and the GR2-flagged meshes are
+the same set (capes included). The proxies are listed in `Objects` like render meshes, so
+drawing every LOD0 object put a flat grey sheet over Lae'zel's pteruges. Resolution marks them
+(`MeshObject::cloth_proxy`) and `VisualResource::drawn_lod0_objects()` skips them.
+**Assumption:** the engine never draws a proxy (not traced at runtime; the reference captures
+show no proxy surface, and the high-resolution meshes cover the same area). Cloth simulation
+itself is not reproduced: the high-resolution meshes keep their skinning.
+
 ### Skeleton and skinning
 
 The skeleton GR2 (`SkeletonBank.SourceFile`, e.g. `HUM_M_Base.GR2`) holds the body rig with

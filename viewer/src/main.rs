@@ -16,6 +16,7 @@ mod meshes;
 mod nav;
 mod play;
 mod space;
+mod sss;
 mod terrain;
 
 use anyhow::Result;
@@ -229,6 +230,7 @@ fn main() -> Result<()> {
     .add_plugins(fly_camera::FlyCameraPlugin)
     .add_plugins(characters::CharactersPlugin)
     .add_plugins(char_materials::CharacterMaterialsPlugin)
+    .add_plugins(sss::SssPlugin)
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)
     .insert_resource(meshes)

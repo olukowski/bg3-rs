@@ -131,7 +131,10 @@ impl PreparedMaterials {
         let mut char_plans = HashMap::new();
         for (id, mat) in &materials {
             let path = mat.source_file.as_deref().unwrap_or_default();
-            let material = resolve(path, graphs.get(path), &mat.params);
+            let mut material = resolve(path, graphs.get(path), &mat.params);
+            if mat.diffusion_profile.is_some() {
+                material.diffusion_profile = mat.diffusion_profile.clone();
+            }
             let tex = |s: Slot| material.texture(s).map(|t| t.id.clone());
             let vt = material
                 .virtual_textures
@@ -294,6 +297,9 @@ fn to_image(t: Texture, srgb: bool) -> anyhow::Result<Image> {
         (TexelFormat::Bc(DdsFormat::Bc5), _) => F::Bc5RgUnorm,
         (TexelFormat::Bc(DdsFormat::Bc7), false) => F::Bc7RgbaUnorm,
         (TexelFormat::Bc(DdsFormat::Bc7), true) => F::Bc7RgbaUnormSrgb,
+        // HDR (the eye catchlight's lat-long environment); DXGI 95 is the unsigned variant.
+        (TexelFormat::Bc(DdsFormat::Bc6h), _) => F::Bc6hRgbUfloat,
+        (TexelFormat::Bc(DdsFormat::Bc6hSigned), _) => F::Bc6hRgbFloat,
         (TexelFormat::Rg8, _) => F::Rg8Unorm,
         (TexelFormat::Rgba8, false) => F::Rgba8Unorm,
         (TexelFormat::Rgba8, true) => F::Rgba8UnormSrgb,
@@ -443,6 +449,7 @@ pub fn upload(
         out.by_id.insert(id, Some(materials.add(material)));
     }
     commands.insert_resource(out);
+    commands.insert_resource(crate::sss::SssKernels::new(char_templates.sss_profiles()));
     commands.insert_resource(char_templates);
 }
 
