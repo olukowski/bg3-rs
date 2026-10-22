@@ -253,7 +253,50 @@ fn default_deep_gnome_appearance_and_hair_spec() {
         .find(|v| !v.visual.is_null())
         .expect("hair visual");
     choice.appearance.hair = Some(hair.id);
-    assert!(cc.appearance.material_options("Skin").len() >= 3);
+    let skins = cc.material_options(&choice, "Skin");
+    assert!(!skins.is_empty());
+    assert!(skins.len() < cc.appearance.material_options("Skin").len());
+    assert!(
+        skins
+            .iter()
+            .any(|m| Some(m.id) == choice.appearance.skin_color)
+    );
+    let neutral = cc
+        .appearance
+        .material_options("Skin")
+        .into_iter()
+        .find(|m| m.name == "HUM_Neutral_-2")
+        .expect("human Neutral Tone 1");
+    assert!(!skins.iter().any(|m| m.id == neutral.id));
+    let mut invalid = choice.clone();
+    invalid.appearance.skin_color = Some(neutral.id);
+    assert!(cc.validate(&invalid).iter().any(|e| matches!(e,
+        bg3_sim::cc::CcError::NotAnOption { slot, .. } if slot == "appearance Skin material")));
+    for race in &cc.races {
+        for (kind, ids) in &race.palettes {
+            if !matches!(kind.as_str(), "Skin" | "Hair" | "Eye") {
+                continue;
+            }
+            for id in ids {
+                assert!(
+                    cc.appearance
+                        .materials
+                        .iter()
+                        .any(|m| m.kind == *kind && m.id == *id),
+                    "{} {kind}: missing CC colour entry {id}",
+                    race.name
+                );
+            }
+        }
+    }
+    eprintln!(
+        "deep gnome palettes: {:?}",
+        cc.appearance
+            .material_kinds()
+            .iter()
+            .map(|kind| (kind, cc.material_options(&choice, kind).len()))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         CharacterChoice::from_spec(&choice.to_spec()),
         Ok(choice.clone())

@@ -6,7 +6,10 @@ use anyhow::Result;
 use bevy::camera::Exposure;
 use bevy::prelude::*;
 use bg3_vfs::Vfs;
-use bg3_world::lights::{LightingSources, decode_gamma, kelvin_to_rgb, load_level_lights};
+use bg3_world::lights::{
+    ExposureSettings, LightingSources, PostProcessing, decode_gamma, kelvin_to_rgb,
+    load_level_lights,
+};
 use bg3_world::{LevelLighting, Light, LightKind, RootTemplates};
 
 use crate::space;
@@ -107,6 +110,128 @@ impl LevelLights {
         self.lighting
             .exposure
             .map_or(DEFAULT_EV100, |[min, _max, comp]| min - comp)
+    }
+}
+
+/// The gameplay camera's atmosphere parameters, before conversion to shader uniforms.
+#[derive(Clone, Debug, PartialEq)]
+struct AtmosphereValues {
+    exposure: ExposureSettings,
+    post: PostProcessing,
+}
+
+impl AtmosphereValues {
+    fn read(lighting: &LevelLighting) -> Self {
+        Self {
+            exposure: lighting
+                .exposure_settings
+                .first()
+                .cloned()
+                .unwrap_or(ExposureSettings {
+                    enabled: false,
+                    min: DEFAULT_EV100,
+                    max: DEFAULT_EV100,
+                    compensation: 0.0,
+                    min_percentile: 0.0,
+                    max_percentile: 1.0,
+                    metering_mode: 0,
+                }),
+            post: lighting.post.clone(),
+        }
+    }
+
+    fn apply(&self, lighting: &mut LevelLighting) {
+        let e = &self.exposure;
+        lighting.exposure = Some([e.min, e.max, e.compensation]);
+        if let Some(first) = lighting.exposure_settings.first_mut() {
+            *first = e.clone();
+        } else {
+            lighting.exposure_settings.push(e.clone());
+        }
+        lighting.post = self.post.clone();
+    }
+
+    /// Assumption: linear in stored parameter space; discrete settings switch at halfway.
+    // bg3: AtmosphereTrigger/FadeTime, PostProcessing (4.1.1.7631656).
+    fn blend(&self, target: &Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        if t == 0.0 {
+            return self.clone();
+        }
+        if t == 1.0 {
+            return target.clone();
+        }
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        let discrete = if t < 0.5 { self } else { target };
+        let a = &self.exposure;
+        let b = &target.exposure;
+        let exposure = ExposureSettings {
+            enabled: discrete.exposure.enabled,
+            min: lerp(a.min, b.min),
+            max: lerp(a.max, b.max),
+            compensation: lerp(a.compensation, b.compensation),
+            min_percentile: lerp(a.min_percentile, b.min_percentile),
+            max_percentile: lerp(a.max_percentile, b.max_percentile),
+            metering_mode: discrete.exposure.metering_mode,
+        };
+        let a = &self.post;
+        let b = &target.post;
+        let post = PostProcessing {
+            bloom: discrete.post.bloom,
+            bloom_threshold: lerp(a.bloom_threshold, b.bloom_threshold),
+            bloom_amount: lerp(a.bloom_amount, b.bloom_amount),
+            white_balance_temperature: lerp(
+                a.white_balance_temperature,
+                b.white_balance_temperature,
+            ),
+            white_balance_tint: lerp(a.white_balance_tint, b.white_balance_tint),
+            contrast: lerp(a.contrast, b.contrast),
+            highlights: lerp(a.highlights, b.highlights),
+            shadows: lerp(a.shadows, b.shadows),
+            saturation: lerp(a.saturation, b.saturation),
+            hue: lerp(a.hue, b.hue),
+            pivot: lerp(a.pivot, b.pivot),
+            ranges: std::array::from_fn(|i| bg3_world::lights::GradingRange {
+                exposure_shift: lerp(a.ranges[i].exposure_shift, b.ranges[i].exposure_shift),
+                saturation: lerp(a.ranges[i].saturation, b.ranges[i].saturation),
+                xy_offset: std::array::from_fn(|j| {
+                    lerp(a.ranges[i].xy_offset[j], b.ranges[i].xy_offset[j])
+                }),
+            }),
+        };
+        Self { exposure, post }
+    }
+}
+
+pub(crate) struct AtmosphereFade {
+    from: AtmosphereValues,
+    target: AtmosphereValues,
+    elapsed: f32,
+    duration: f32,
+}
+
+impl AtmosphereFade {
+    fn new(from: AtmosphereValues, target: AtmosphereValues, duration: f32) -> Self {
+        Self {
+            from,
+            target,
+            elapsed: 0.0,
+            duration: duration.max(0.0),
+        }
+    }
+
+    fn advance(&mut self, seconds: f32) -> AtmosphereValues {
+        self.elapsed += seconds.max(0.0);
+        let t = if self.duration > 0.0 {
+            self.elapsed / self.duration
+        } else {
+            1.0
+        };
+        self.from.blend(&self.target, t)
+    }
+
+    fn finished(&self) -> bool {
+        self.elapsed >= self.duration
     }
 }
 
@@ -397,7 +522,8 @@ pub fn apply_exposure(
 /// camera moves (`docs/research/lighting.md`). Follow the camera for the atmosphere (exposure
 /// and grading, read by the post passes every frame); a different lighting trigger would need
 /// the sun, probes and fog respawned, which is not implemented, so the lighting chosen at start
-/// stays. The switch is immediate (`FadeTime` blending is not implemented).
+/// stays. Assumptions: the NEW trigger supplies FadeTime, blending is linear, and
+/// discrete settings switch halfway. The first camera update always selects instantly.
 // bg3: ecl::CameraSystem::CheckTriggers (4.1.1.7631656)
 pub fn follow_camera_triggers(
     mut lights: ResMut<LevelLights>,
@@ -411,6 +537,9 @@ pub fn follow_camera_triggers(
     >,
     windows: Query<&Window>,
     mut warned: Local<bool>,
+    mut initialized: Local<bool>,
+    mut fade: Local<Option<AtmosphereFade>>,
+    time: Res<Time>,
 ) {
     let Some((transform, post, mut exposure)) = cameras.iter_mut().next() else {
         return;
@@ -426,18 +555,41 @@ pub fn follow_camera_triggers(
             name(lights.zones[0]),
         );
     }
-    if zones[1] == lights.zones[1] {
+    let atmosphere_trigger = name(zones[1]);
+    // Advance the old transition before capturing a retarget's starting values.
+    let mut changed = false;
+    if let Some(active) = fade.as_mut() {
+        active
+            .advance(time.delta_secs())
+            .apply(&mut lights.lighting);
+        changed = true;
+        if active.finished() {
+            *fade = None;
+        }
+    }
+    if zones[1] != lights.zones[1] {
+        let from = AtmosphereValues::read(&lights.lighting);
+        let lighting = lights.sources.resolve([lights.zones[0], zones[1]]);
+        eprintln!(
+            "atmosphere: camera at {eye:?} in {:?}: {:?}, exposure {:?}",
+            atmosphere_trigger, lighting.atmosphere_name, lighting.exposure,
+        );
+        let duration = if *initialized {
+            zones[1].map_or(0.0, |i| lights.sources.zones[i].fade_time)
+        } else {
+            0.0
+        };
+        let mut transition = AtmosphereFade::new(from, AtmosphereValues::read(&lighting), duration);
+        lights.zones[1] = zones[1];
+        lights.lighting = lighting;
+        transition.advance(0.0).apply(&mut lights.lighting);
+        *fade = (!transition.finished()).then_some(transition);
+        changed = true;
+    }
+    *initialized = true;
+    if !changed {
         return;
     }
-    let lighting = lights.sources.resolve([lights.zones[0], zones[1]]);
-    eprintln!(
-        "atmosphere: camera at {eye:?} in {:?}: {:?}, exposure {:?}",
-        name(zones[1]),
-        lighting.atmosphere_name,
-        lighting.exposure,
-    );
-    lights.zones[1] = zones[1];
-    lights.lighting = lighting;
     match post {
         Some(mut post) => {
             let screen = windows
@@ -447,5 +599,100 @@ pub fn follow_camera_triggers(
             post.uniform = lights.post_uniform(screen);
         }
         None => exposure.ev100 = lights.ev100(),
+    }
+}
+
+#[cfg(test)]
+mod atmosphere_tests {
+    use super::*;
+
+    fn values(x: f32, enabled: bool) -> AtmosphereValues {
+        AtmosphereValues {
+            exposure: ExposureSettings {
+                enabled,
+                min: x,
+                max: x + 2.0,
+                compensation: x / 2.0,
+                min_percentile: x / 100.0,
+                max_percentile: 1.0 - x / 100.0,
+                metering_mode: enabled as i64,
+            },
+            post: PostProcessing {
+                contrast: x,
+                hue: x,
+                bloom: enabled,
+                bloom_threshold: x + 1.0,
+                bloom_amount: x,
+                white_balance_temperature: 6500.0 + x,
+                white_balance_tint: x,
+                highlights: x,
+                shadows: x,
+                saturation: x,
+                pivot: x,
+                ranges: [bg3_world::lights::GradingRange {
+                    exposure_shift: x,
+                    saturation: x,
+                    xy_offset: [x, -x],
+                }; 6],
+            },
+        }
+    }
+
+    fn assert_intermediate(actual: AtmosphereValues, expected: AtmosphereValues) {
+        let a = actual.exposure;
+        let b = expected.exposure;
+        for (a, b) in [
+            a.min,
+            a.max,
+            a.compensation,
+            a.min_percentile,
+            a.max_percentile,
+        ]
+        .into_iter()
+        .zip([
+            b.min,
+            b.max,
+            b.compensation,
+            b.min_percentile,
+            b.max_percentile,
+        ]) {
+            assert!((a - b).abs() < 1e-6, "{a} != {b}");
+        }
+        assert_eq!(a.enabled, b.enabled);
+        assert_eq!(a.metering_mode, b.metering_mode);
+        assert_eq!(actual.post, expected.post);
+    }
+
+    #[test]
+    fn atmosphere_fade_start_mid_end_and_discrete_midpoint() {
+        let a = values(2.0, false);
+        let b = values(10.0, true);
+        let mut fade = AtmosphereFade::new(a.clone(), b.clone(), 4.0);
+        assert_eq!(fade.advance(0.0), a);
+        let early = fade.advance(1.0);
+        assert_eq!(early.exposure.min, 4.0);
+        assert!(!early.exposure.enabled);
+        assert!(!early.post.bloom);
+        let mid = fade.advance(1.0);
+        assert_intermediate(mid, values(6.0, true));
+        assert!(!fade.finished());
+        assert_eq!(fade.advance(2.0), b);
+        assert!(fade.finished());
+        assert_eq!(fade.advance(10.0), b);
+    }
+
+    #[test]
+    fn retarget_starts_from_current_values_and_zero_fade_is_instant() {
+        let a = values(2.0, false);
+        let b = values(10.0, true);
+        let mut fade = AtmosphereFade::new(a.clone(), b.clone(), 4.0);
+        let current = fade.advance(2.0);
+        let mut retarget = AtmosphereFade::new(current.clone(), a.clone(), 2.0);
+        assert_eq!(retarget.advance(0.0), current);
+        assert_intermediate(retarget.advance(1.0), values(4.0, false));
+        assert_eq!(retarget.advance(1.0), a);
+        let mut instant = AtmosphereFade::new(a, b.clone(), 0.0);
+        assert_eq!(instant.advance(0.0), b);
+        assert!(instant.finished());
     }
 }

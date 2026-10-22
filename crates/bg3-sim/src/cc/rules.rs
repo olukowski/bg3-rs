@@ -664,8 +664,7 @@ impl CcData {
         }
         for (kind, id) in choice.appearance.material_choices() {
             if !self
-                .appearance
-                .material_options(&kind)
+                .material_options(choice, &kind)
                 .iter()
                 .any(|m| m.id == id)
             {

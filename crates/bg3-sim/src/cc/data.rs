@@ -2,7 +2,7 @@
 //!
 //! | Data | Where |
 //! |---|---|
-//! | races | `Public/<Module>/Races/Races.lsx`: `UUID`, `Name`, `DisplayName`, `ParentGuid`, `ProgressionTableUUID`, `RaceEquipment`, `Tags`, `ExcludedGods`, `Visuals/Object` |
+//! | races | `Public/<Module>/Races/Races.lsx`: `UUID`, `Name`, `DisplayName`, `ParentGuid`, `ProgressionTableUUID`, `RaceEquipment`, `Tags`, `ExcludedGods`, `Visuals/Object`, colour-category `Object` lists |
 //! | classes, subclasses | `Public/<Module>/ClassDescriptions/ClassDescriptions.lsx`: `UUID`, `Name`, `DisplayName`, `ParentGuid`, `BaseHp`, `HpPerLevel`, `ProgressionTableUUID`, `PrimaryAbility`, `SpellCastingAbility`, `ClassEquipment`, `HasGod`, `MustPrepareSpells`, `Tags` |
 //! | backgrounds | `Public/<Module>/Backgrounds/Backgrounds.lsx`: `UUID`, `DisplayName`, `Passives`, `Hidden`, `Tags` |
 //! | deities | `Public/<Module>/Gods/Gods.lsx`: `UUID`, `Name`, `DisplayName`, `Tags` |
@@ -33,6 +33,8 @@ use crate::load::{LoadError, guid_attr, parse, s};
 /// A race or subrace.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CcRace {
+    /// Colour choice UUIDs, keyed by category (CC presets or ColorDefinitions).
+    pub palettes: HashMap<String, Vec<Guid>>,
     /// Shared CC entries selected by Races/Visuals/Object.
     pub visuals: Vec<Guid>,
     pub id: Guid,
@@ -228,7 +230,7 @@ fn flag(n: &Node, key: &str) -> bool {
     matches!(n.attr(key), Some(Value::Bool(true)))
 }
 
-fn objects(n: &Node, child: &str) -> Vec<Guid> {
+pub(super) fn objects(n: &Node, child: &str) -> Vec<Guid> {
     n.children_named(child)
         .filter_map(|t| guid_attr(t, "Object"))
         .collect()
@@ -293,6 +295,7 @@ impl CcData {
                 };
                 let r = CcRace {
                     visuals: objects(n, "Visuals"),
+                    palettes: super::appearance::read_race_palettes(n),
                     id,
                     name: s(n, "Name").unwrap_or_default(),
                     display: handle(n, "DisplayName"),

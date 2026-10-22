@@ -195,15 +195,16 @@ No appearance tables are embedded in source.
   first matching entry in merged load order (**assumption** for ambiguous names).
 - `CharacterCreationPresets/CharacterCreation{Skin,Hair,Eye}Colors.lsx`: `UUID`, `Name`,
   `DisplayName`, `UIColor`, `MaterialPresetUUID`; SharedDev adds skin rows with `SkinType`
-  (e.g. Dragonborn). All colour rows are currently offered, like an unrestricted palette
-  (**assumption**); `SkinType` is retained but is not a race filter. UI colours are retained
-  as strings and display names are resolved through loca.
+  (e.g. Dragonborn). Race `SkinColors`, `HairColors` and `EyeColors` select these rows by
+  CC entry `UUID`, not `MaterialPresetUUID`. `SkinType` is retained but is not a race filter.
+  UI colours are retained as strings and display names are resolved through loca.
 - `CharacterCreation/CharacterCreationAppearanceMaterials.lsx`: `MaterialType` partitions
   the choices into Tattoo, Makeup, Scar, Passive, HairHighlight, HairGraying, LipsMakeup,
   HornColor and HornTipColor. Each choice supplies `MaterialPresetUUID`. The UI offers
   these data categories as selectors; it does not invent separate colour categories for
   the entries grouped under Passive. The original UI's grouping of those rows is not
   reconstructed. Camera and preview root-template attributes are not used for gameplay.
+
 - `CharacterCreationPresets/CharacterCreationPresets.lsx` continues to select the avatar's
   `RootTemplate` by race/subrace/body, without changing its voice or camera metadata.
 - SharedDev's `CharacterCreationPresets/CharacterCreationMaterialOverrides.lsx` is loaded
@@ -212,15 +213,44 @@ No appearance tables are embedded in source.
   rows are dragonborn Passive material swaps. They are retained for future CC preview
   activation; swapping graphs based on those activation presets is **not modelled**.
 
+The inspected reference install defines races in Shared and SharedDev; PhotoMode, Gustav,
+GustavDev and GustavX have no `Races/Races.lsx`. The existing module loader merges race rows.
+All ten colour lists use repeated child nodes carrying `Object`. Skin, hair and eye lists
+reference CC preset entry UUIDs. The other seven lists (`HairHighlightColors`,
+`HairGrayingColors`, `MakeupColors`, `LipsMakeupColors`, `TattooColors`, `HornColors`,
+`HornTipColors`) instead reference `Public/Shared/Lists/ColorDefinitions.lsx` UUIDs. These
+supply literal `Color` values, with no `MaterialPresetUUID`. They do **not** identify the
+similarly named appearance-material entries: Tattoo and Makeup entries select patterns,
+and HairHighlight/Graying/LipsMakeup/HornColor/HornTipColor entries select default material
+presets. Filtering these preset selectors by colour-definition UUIDs would remove every
+option. All ten race lists are loaded, but only Skin/Hair/Eye currently have colour-choice
+slots; the other seven colour-parameter selectors are not implemented. Existing material
+pattern/default selectors remain available, as do Scar and Passive.
+
+Deep gnome defines its own skin, hair, eye, highlight, graying, makeup and tattoo palettes but
+no lips palette; rock and forest gnome define no palettes. Human has no skin list and its
+Humanoid parent supplies one. **Assumption:** for each category separately, the nearest
+non-empty list in `ParentGuid` ancestry replaces ancestors; an empty or absent list
+inherits. We do not union a subrace's palette with its parent's: deep gnome's distinct
+Underdark skin list would otherwise gain human tones. No list anywhere in ancestry means
+no options for that colour category. Filtering, CLI name/UUID resolution, validation, UI
+cycling and race-change pruning all use the same options. The install test verifies race
+Skin/Hair/Eye references against merged CC entry UUIDs. Deep gnome has 125 hair and 32 eye choices; its skin palette has 60 of the 542 merged
+entries and excludes `HUM_Neutral_-2` (Neutral Tone 1).
+
 ### Defaults and application order
 
-There is no observed default-head or default-hairstyle flag. Unspecified slots and colours
-therefore preserve the template visuals/presets, including its lack of hair. Array position
-is not used to invent a hairstyle. `DefaultForBodyType` is present on Private Parts rows;
+There is no observed default-head or default-hairstyle flag. Unspecified visual slots
+preserve the template, including its lack of hair. Array position is not used to invent a
+hairstyle. For Skin/Hair/Eye colour categories, completion chooses the first allowed entry in
+merged CC table order when unspecified (**assumption** about default selection, not an
+observed engine default); this ensures explicit defaults belong to the race palette.
+Categories without allowed entries retain the template preset. `DefaultForBodyType` is
+present on Private Parts rows;
 `complete_appearance` uses a matching explicit entry (**assumption** about the flag's exact
 engine interpretation). `DefaultSkinColor` appears on older visual rows; it is retained as
 metadata (mostly MaterialPresetBank references, with one legacy CC colour-entry reference)
-but does not replace an unspecified skin colour: the template remains authoritative.
+but does not override the race-filtered colour default.
 The engine's automatic selection rules for that field have not been observed.
 
 The sim retains `Appearance` inside `CreatedCharacter.choice`. The viewer receives resolved

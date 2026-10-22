@@ -10,6 +10,29 @@ use super::rules::CharacterChoice;
 use crate::Guid;
 use crate::load::{LoadError, guid_attr, s};
 
+// bg3: Public/<Module>/Races/Races.lsx, Race/*Colors@Object (4.1.1.7631656).
+const RACE_PALETTES: [(&str, &str); 10] = [
+    ("Skin", "SkinColors"),
+    ("Hair", "HairColors"),
+    ("Eye", "EyeColors"),
+    ("HairHighlight", "HairHighlightColors"),
+    ("HairGraying", "HairGrayingColors"),
+    ("Makeup", "MakeupColors"),
+    ("LipsMakeup", "LipsMakeupColors"),
+    ("Tattoo", "TattooColors"),
+    ("HornColor", "HornColors"),
+    ("HornTipColor", "HornTipColors"),
+];
+
+pub(super) fn read_race_palettes(
+    n: &bg3_lsf::Node,
+) -> std::collections::HashMap<String, Vec<Guid>> {
+    RACE_PALETTES
+        .into_iter()
+        .map(|(kind, child)| (kind.to_owned(), super::data::objects(n, child)))
+        .collect()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Appearance {
     pub head: Option<Guid>,
@@ -267,6 +290,39 @@ impl AppearanceData {
 }
 
 impl CcData {
+    /// Skin/Hair/Eye race lists reference CC entry UUIDs, not MaterialPresetBank UUIDs.
+    /// Assumption: the nearest non-empty list in ParentGuid ancestry replaces ancestors;
+    /// empty lists inherit (e.g. rock gnome colours).
+    // bg3: Races/Races.lsx, ParentGuid and *Colors/Object (4.1.1.7631656).
+    pub fn material_options(&self, c: &CharacterChoice, kind: &str) -> Vec<&AppearanceMaterial> {
+        // Other *Colors lists reference Lists/ColorDefinitions.lsx, not appearance
+        // material entries. Those selectors choose patterns/default presets, not colours.
+        if !matches!(kind, "Skin" | "Hair" | "Eye") {
+            return self.appearance.material_options(kind);
+        }
+        let mut next = c.subrace.or(Some(c.race));
+        let mut seen = Vec::new();
+        while let Some(id) = next {
+            if seen.contains(&id) {
+                break;
+            }
+            seen.push(id);
+            let Some(race) = self.race(id) else {
+                break;
+            };
+            if let Some(ids) = race.palettes.get(kind).filter(|ids| !ids.is_empty()) {
+                return self
+                    .appearance
+                    .material_options(kind)
+                    .into_iter()
+                    .filter(|m| ids.contains(&m.id))
+                    .collect();
+            }
+            next = race.parent;
+        }
+        Vec::new()
+    }
+
     /// bg3: CharacterCreationAppearanceVisuals/{RaceUUID,BodyType,BodyShape,RootTemplate},
     /// CharacterCreationSharedVisuals (4.1.1.7631656). Absent filters are unrestricted.
     pub fn appearance_options(&self, c: &CharacterChoice, slot: &str) -> Vec<&AppearanceVisual> {
@@ -324,9 +380,17 @@ impl CcData {
         slots
     }
 
-    /// Only explicit body defaults are filled. No “first hairstyle” default is invented.
+    /// Fill explicit body defaults and select an allowed colour when unspecified.
+    /// Assumption: the first allowed colour in merged CC table order is our default.
     /// Assumption: DefaultForBodyType selects the default entry for the matching body type.
     pub fn complete_appearance(&self, c: &mut CharacterChoice) {
+        for kind in ["Skin", "Hair", "Eye"] {
+            if c.appearance.material(kind).is_none()
+                && let Some(m) = self.material_options(c, kind).first()
+            {
+                c.appearance.set_material(kind, Some(m.id));
+            }
+        }
         for slot in self.appearance_slots(c) {
             if c.appearance.visual(&slot).is_none()
                 && let Some(v) = self
@@ -562,5 +626,93 @@ mod race_visual_tests {
                 .iter()
                 .any(|e| matches!(e, super::super::CcError::NotAnOption { .. }))
         );
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::super::CcRace;
+    use super::*;
+    use bg3_lsf::{Node, Value};
+
+    #[test]
+    fn palette_object_attributes_are_cc_entry_ids() {
+        let mut race = Node::new("Race");
+        for (_, child) in RACE_PALETTES {
+            race.children.push(
+                Node::new(child).with_attr("Object", Value::FixedString(Guid(10).to_string())),
+            );
+        }
+        let palettes = read_race_palettes(&race);
+        for (kind, _) in RACE_PALETTES {
+            assert_eq!(palettes[kind], vec![Guid(10)]);
+        }
+    }
+
+    #[test]
+    fn subrace_overrides_nonempty_palettes_and_inherits_empty_categories() {
+        let mut d = CcData {
+            races: vec![
+                CcRace {
+                    id: Guid(1),
+                    palettes: [
+                        ("Skin".into(), vec![Guid(10)]),
+                        ("Hair".into(), vec![Guid(20)]),
+                    ]
+                    .into(),
+                    ..Default::default()
+                },
+                CcRace {
+                    id: Guid(2),
+                    parent: Some(Guid(1)),
+                    palettes: [("Skin".into(), vec![Guid(11)]), ("Hair".into(), vec![])].into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        d.appearance.materials = [(10, "Skin"), (11, "Skin"), (20, "Hair"), (30, "Scar")]
+            .into_iter()
+            .map(|(id, kind)| AppearanceMaterial {
+                id: Guid(id),
+                preset: Guid(id + 100),
+                kind: kind.into(),
+                ..Default::default()
+            })
+            .collect();
+        let mut c = CharacterChoice {
+            race: Guid(1),
+            ..Default::default()
+        };
+        assert_eq!(d.material_options(&c, "Skin")[0].id, Guid(10));
+        c.subrace = Some(Guid(2));
+        assert_eq!(
+            d.material_options(&c, "Skin")
+                .iter()
+                .map(|m| m.id)
+                .collect::<Vec<_>>(),
+            vec![Guid(11)]
+        );
+        assert_eq!(d.material_options(&c, "Hair")[0].id, Guid(20));
+        assert_eq!(d.material_options(&c, "Scar")[0].id, Guid(30));
+        assert!(d.material_options(&c, "HornColor").is_empty());
+        d.complete_appearance(&mut c);
+        assert_eq!(c.appearance.skin_color, Some(Guid(11)));
+        assert_eq!(c.appearance.hair_color, Some(Guid(20)));
+        let rejected = |c: &CharacterChoice| {
+            d.validate(c).iter().any(|e| {
+                matches!(e,
+            super::super::CcError::NotAnOption { slot, .. } if slot == "appearance Skin material")
+            })
+        };
+        assert!(!rejected(&c));
+        c.appearance.skin_color = Some(Guid(10));
+        assert!(rejected(&c));
+        c.appearance.skin_color = Some(Guid(111)); // preset UUID is not the CC entry UUID
+        assert!(rejected(&c));
+        d.races[1].palettes.get_mut("Skin").unwrap().clear();
+        assert_eq!(d.material_options(&c, "Skin")[0].id, Guid(10));
+        d.races[0].parent = Some(Guid(2)); // malformed ancestry terminates
+        assert!(d.material_options(&c, "Eye").is_empty());
     }
 }
