@@ -76,20 +76,20 @@ pub struct LevelExtension {
     pub decal_physical: Option<Handle<Image>>,
     /// Surfaces (`surfaces.rs`, `shaders/surfaces.wesl`): the fixed `surfaces::SURFACE_*`
     /// handles, shared by every level material.
-    #[storage(130, read_only)]
+    #[storage(140, read_only)]
     pub surface_params: Handle<ShaderBuffer>,
-    #[texture(131, sample_type = "float", filterable = false)]
+    #[texture(141, sample_type = "float", filterable = false)]
     pub surface_mask: Handle<Image>,
-    #[texture(132, sample_type = "float", filterable = false)]
+    #[texture(142, sample_type = "float", filterable = false)]
     pub surface_height: Handle<Image>,
-    #[texture(133, dimension = "2d_array")]
-    #[sampler(134)]
+    #[texture(143, dimension = "2d_array")]
+    #[sampler(144)]
     pub surface_base: Handle<Image>,
-    #[texture(135, dimension = "2d_array")]
+    #[texture(145, dimension = "2d_array")]
     pub surface_noise: Handle<Image>,
-    #[texture(136, dimension = "2d_array")]
+    #[texture(146, dimension = "2d_array")]
     pub surface_normal: Handle<Image>,
-    #[texture(137, dimension = "2d_array")]
+    #[texture(147, dimension = "2d_array")]
     pub surface_physical: Handle<Image>,
 }
 

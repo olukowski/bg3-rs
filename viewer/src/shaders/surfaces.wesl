@@ -16,16 +16,16 @@ import bg3_viewer::shaders::decals::{DecalSurface, rotate_euler, mirror};
 // then 4 per surface type: (texture layer or −1, Tilling_WarpNoise, Intensity, Tilling),
 // (Edge_Width, Edge_Range, MinOpacity, Normal_Intensity), (Color_Intensity, Reflectance,
 // normal blending, opacity), (EdgeColor, 0).
-@group(constants::MATERIAL_BIND_GROUP) @binding(130) var<storage, read> surface_params: array<vec4<f32>>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(140) var<storage, read> surface_params: array<vec4<f32>>;
 // Per cell: R type, G second type, B amount, A second amount (the game's `_SurfaceMask`).
-@group(constants::MATERIAL_BIND_GROUP) @binding(131) var surface_mask: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(141) var surface_mask: texture_2d<f32>;
 // Per cell: the AI grid height (m).
-@group(constants::MATERIAL_BIND_GROUP) @binding(132) var surface_height: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(133) var surface_base: texture_2d_array<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(134) var surface_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(135) var surface_noise: texture_2d_array<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(136) var surface_normal: texture_2d_array<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(137) var surface_physical: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(142) var surface_height: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(143) var surface_base: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(144) var surface_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(145) var surface_noise: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(146) var surface_normal: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(147) var surface_physical: texture_2d_array<f32>;
 
 const SURFACE_HALF_PI: f32 = 1.5707964;
 const CELL: f32 = 0.5;
