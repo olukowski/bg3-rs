@@ -65,6 +65,7 @@ pub struct Started {
     pub avatar_template: Guid,
     /// Actual CC result, including class/race starting items (read from the sim).
     pub avatar_equipment: Vec<String>,
+    pub avatar_appearance: bg3_sim::cc::ResolvedAppearance,
     pub level: String,
     pub presences: Vec<Presence>,
     /// Items with use actions (`Sim::item_use_actions`): clicking them uses them.
@@ -212,6 +213,13 @@ fn game_thread(
             .created_characters
             .get(&started.avatar)
             .map(|c| c.equipment.clone())
+            .unwrap_or_default(),
+        avatar_appearance: game
+            .sim
+            .combat
+            .created_characters
+            .get(&started.avatar)
+            .map(|c| game.sim.data.cc.resolve_appearance(&c.choice.appearance))
             .unwrap_or_default(),
         level: started.level,
         presences: last.clone(),

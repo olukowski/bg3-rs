@@ -15,7 +15,11 @@
 //! result is sim state (the avatar's [`crate::CharacterSheet`], tags, combat origin) and the
 //! data shares the sim's loaders (`crate::load`).
 
+pub mod appearance;
 pub mod apply;
+pub use appearance::{
+    Appearance, AppearanceData, AppearanceMaterial, AppearanceVisual, ResolvedAppearance,
+};
 pub mod data;
 pub mod rules;
 

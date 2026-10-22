@@ -627,3 +627,16 @@ other hand is empty. That is evidence against the "versatile means the other han
 - Initial death/lying poses for scenery corpses (combat deaths now animate).
 - Confirm the waterfall/override order and the fallback rule against the original
   (`ls::AnimationSetComponent` and related symbols).
+
+
+### Character-creation appearance
+
+The created avatar can replace template slots and append selected material presets before
+equipment is layered (`ResolvedCharacter::apply_appearance`). CC shared visuals whose
+VisualBank sets `NeedsSkeletonRemap` bind through fixed `SkeletonBank/Sockets` transforms
+and their source GR2 inverse-bind matrices. This handles the default gnome's shared hair
+without guessed fitting offsets. `gr::GrannyMeshBinding::UpdatePose` (4.1.1.7631656,
+focused disassembly) resolves target sockets before building the source skeleton's indexed
+composite buffer. Ordinary template meshes retain the assembly policy described above.
+See `character-creation.md` for the data filtering, ordering assumptions, socket limitations
+and local captures.

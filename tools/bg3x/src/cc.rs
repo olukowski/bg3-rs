@@ -54,6 +54,17 @@ pub struct Args {
     pub passives: Vec<String>,
     #[arg(long, value_delimiter = ',')]
     pub equipment: Vec<String>,
+    /// Appearance UUID or case-insensitive display-name substring (see --list).
+    #[arg(long)]
+    pub head: Option<String>,
+    #[arg(long)]
+    pub hair: Option<String>,
+    #[arg(long)]
+    pub skin: Option<String>,
+    #[arg(long)]
+    pub hair_color: Option<String>,
+    #[arg(long)]
+    pub eye_color: Option<String>,
     /// Print the choice as a `bg3-viewer --character` spec.
     #[arg(long)]
     pub spec: bool,
@@ -103,6 +114,30 @@ where
         .filter_map(|(_, _, n)| n.last().cloned())
         .collect();
     bail!("no {what} named {query:?} (known: {})", known.join(", "))
+}
+
+/// Prefer exact display names/entry UUIDs, then resource UUIDs and display substrings.
+fn find_appearance(
+    what: &str,
+    query: &str,
+    options: impl IntoIterator<Item = (Guid, Guid, String)>,
+) -> Result<Guid> {
+    let options: Vec<_> = options.into_iter().collect();
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        bail!("empty {what} query");
+    }
+    let id = Guid::parse(&q);
+    options
+        .iter()
+        .find(|(entry, _, name)| Some(*entry) == id || name.to_lowercase() == q)
+        .or_else(|| {
+            options.iter().find(|(_, resource, name)| {
+                Some(*resource) == id || (id.is_none() && name.to_lowercase().contains(&q))
+            })
+        })
+        .map(|(id, _, _)| *id)
+        .ok_or_else(|| anyhow::anyhow!("no allowed {what} matching {query:?}; see cc --list"))
 }
 
 fn ability(name: &str) -> Result<Ability> {
@@ -239,6 +274,40 @@ pub fn run(a: Args) -> Result<()> {
     }
     if choice.subclass.is_none() {
         choice.subclass = cc.level1_subclasses(choice.class).first().copied();
+    }
+    for (slot, query) in [("Head", &a.head), ("Hair", &a.hair)] {
+        if let Some(query) = query {
+            let options = cc.appearance_options(&choice, slot);
+            let id = find_appearance(
+                slot,
+                query,
+                options.iter().map(|v| {
+                    (
+                        v.id,
+                        v.visual,
+                        names.text(v.display.as_ref(), &v.id.to_string()),
+                    )
+                }),
+            )?;
+            choice.appearance.set_visual(slot, Some(id));
+        }
+    }
+    for (kind, query) in [
+        ("Skin", &a.skin),
+        ("Hair", &a.hair_color),
+        ("Eye", &a.eye_color),
+    ] {
+        if let Some(query) = query {
+            let id = find_appearance(
+                kind,
+                query,
+                cc.appearance
+                    .material_options(kind)
+                    .iter()
+                    .map(|m| (m.id, m.preset, names.text(m.display.as_ref(), &m.name))),
+            )?;
+            choice.appearance.set_material(kind, Some(id));
+        }
     }
     // Picks from the flags, distributed over the selectors of each kind in order.
     let lists: [(&[SelectorKind], Vec<String>); 5] = [
@@ -386,6 +455,30 @@ fn list(cc: &CcData, names: &Names<'_>, choice: &CharacterChoice) {
     for g in cc.allowed_gods(choice.race, choice.subrace) {
         println!("  {} [{}]", names.text(g.display.as_ref(), &g.name), g.name);
     }
+    println!("Appearance (for this race/body; unspecified keeps template):");
+    for slot in cc.appearance_slots(choice) {
+        println!("  {slot}:");
+        for v in cc.appearance_options(choice, &slot) {
+            println!(
+                "    {} [{}] visual={}",
+                names.text(v.display.as_ref(), &v.id.to_string()),
+                v.id,
+                v.visual
+            );
+        }
+    }
+    for kind in cc.appearance.material_kinds() {
+        println!("  {kind} materials:");
+        for m in cc.appearance.material_options(&kind) {
+            println!(
+                "    {} [{}] preset={} {}",
+                names.text(m.display.as_ref(), &m.name),
+                m.id,
+                m.preset,
+                m.ui_color.as_deref().unwrap_or("")
+            );
+        }
+    }
     println!("Choices of this character:");
     for s in cc.slots(choice) {
         let display: Vec<String> = s
@@ -523,4 +616,24 @@ fn print_sheet(
                 .collect()
         )
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appearance_names_match_substrings_and_reject_unavailable_uuids() {
+        let options = || vec![(Guid(1), Guid(2), "Synthetic Hairstyle".into())];
+        assert_eq!(
+            find_appearance("Hair", "HaIrStY", options()).unwrap(),
+            Guid(1)
+        );
+        assert_eq!(
+            find_appearance("Hair", &Guid(2).to_string(), options()).unwrap(),
+            Guid(1)
+        );
+        assert!(find_appearance("Hair", &Guid(3).to_string(), options()).is_err());
+        assert!(find_appearance("Hair", "", options()).is_err());
+    }
 }

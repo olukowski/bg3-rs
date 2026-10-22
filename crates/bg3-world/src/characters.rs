@@ -203,9 +203,22 @@ impl CharacterVisualResource {
     }
 }
 
+/// A SkeletonBank socket, used as a named binding by shared hair/beard meshes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SkeletonSocket {
+    pub name: String,
+    pub bone: String,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub bone_constraint: Option<String>,
+    pub constraints_position: u16,
+    pub constraints_rotation: u16,
+}
+
 /// A `SkeletonBank` resource.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SkeletonResource {
+    pub sockets: Vec<SkeletonSocket>,
     pub id: String,
     pub name: String,
     /// GR2 holding the skeleton.
@@ -217,6 +230,31 @@ pub struct SkeletonResource {
 impl SkeletonResource {
     pub(crate) fn read(n: &Node) -> Self {
         Self {
+            sockets: n
+                .children_named("Sockets")
+                .filter_map(|n| {
+                    let components = |name| {
+                        n.attr(name)?
+                            .components()
+                            .map(|v| v.into_iter().map(|x| x as f32).collect::<Vec<_>>())
+                    };
+                    Some(SkeletonSocket {
+                        name: str_attr(n, "Name")?,
+                        bone: str_attr(n, "Bone")?,
+                        position: components("Position")?.try_into().ok()?,
+                        rotation: components("Rotation")?.try_into().ok()?,
+                        bone_constraint: str_attr(n, "BoneConstraint"),
+                        constraints_position: n
+                            .attr("ConstraintsPos")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0) as u16,
+                        constraints_rotation: n
+                            .attr("ConstraintsRot")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0) as u16,
+                    })
+                })
+                .collect(),
             id: str_attr(n, "ID").unwrap_or_default(),
             name: str_attr(n, "Name").unwrap_or_default(),
             source_file: str_attr(n, "SourceFile"),
@@ -448,6 +486,8 @@ pub fn blueprint_variable_default(res: &bg3_lsf::Resource, name: &str) -> Option
 /// A visual to draw for a character, with the slot it fills.
 #[derive(Debug, Clone)]
 pub struct CharacterPart {
+    /// CC meshes carry a source bind pose that may differ from the avatar body rig.
+    pub source_bind_pose: bool,
     /// `BodySet` for the body set visual, otherwise the slot name.
     pub slot: String,
     pub visual: VisualResource,
@@ -691,6 +731,7 @@ pub fn resolve_equipment_items<'a>(
                 .flatten()
                 .filter_map(|id| banks.visuals.get(id))
                 .map(|v| CharacterPart {
+                    source_bind_pose: false,
                     slot: v.slot.clone().unwrap_or_default(),
                     attach_bone: v.attach_bone.clone(),
                     visual: v.clone(),
@@ -789,6 +830,64 @@ impl RootTemplates {
             }
         }
         out
+    }
+}
+
+impl ResolvedCharacter {
+    /// Replace CC slots before applying equipment. Null resources explicitly remove a slot;
+    /// absent slots retain the template. Rigid attachments use CC BoneName or AttachBone.
+    // bg3: CharacterCreationAppearanceVisuals, CharacterCreationSharedVisuals,
+    // CharacterVisualBank/Slots (4.1.1.7631656).
+    pub fn apply_appearance(
+        &mut self,
+        slots: impl IntoIterator<Item = VisualSlot>,
+        presets: impl IntoIterator<Item = MaterialPresetRef>,
+        banks: &ResourceBanks,
+    ) -> Result<(), String> {
+        for slot in slots {
+            let visual = if is_null_guid(&slot.visual) {
+                None
+            } else {
+                Some(
+                    banks
+                        .visuals
+                        .get(&slot.visual)
+                        .ok_or_else(|| {
+                            format!("CC {} visual {} missing from banks", slot.slot, slot.visual)
+                        })?
+                        .clone(),
+                )
+            };
+            self.parts.retain(|p| p.slot != slot.slot);
+            self.character_visual.slots.retain(|s| s.slot != slot.slot);
+            if let Some(visual) = visual {
+                self.parts.push(CharacterPart {
+                    source_bind_pose: visual.needs_skeleton_remap,
+                    slot: slot.slot.clone(),
+                    attach_bone: slot.bone.clone().or_else(|| visual.attach_bone.clone()),
+                    visual,
+                });
+                self.character_visual.slots.push(slot);
+            }
+        }
+        // Assumption: CC selections follow all template presets (including their category),
+        // while the visual's explicit parameter overrides retain the existing final priority.
+        let overrides = &mut self.character_visual.material_overrides;
+        let presets: Vec<_> = presets.into_iter().collect();
+        if !presets.is_empty() {
+            // ColorPreset normally follows MaterialPresets in assignments(). Keep that
+            // template ordering, then apply CC presets after both kinds of template ref.
+            if let Some(preset) = overrides.color_preset.take() {
+                overrides.presets.push(MaterialPresetRef {
+                    group: String::new(),
+                    preset,
+                    force: false,
+                });
+            }
+            overrides.presets.extend(presets);
+        }
+        self.body_masks = body_masks(&self.parts, &banks.equipment);
+        Ok(())
     }
 }
 
@@ -965,6 +1064,7 @@ pub fn resolve_character(
     let mut push = |slot: &str, id: &str, bone: Option<&String>| {
         if let Some(v) = banks.visuals.get(id) {
             parts.push(CharacterPart {
+                source_bind_pose: false,
                 slot: slot.to_owned(),
                 visual: v.clone(),
                 attach_bone: bone.cloned().or_else(|| v.attach_bone.clone()),
@@ -1255,6 +1355,7 @@ add equipment entry "camp"
             visual: None,
             hides_slots: vec!["Body".into()],
             worn: vec![CharacterPart {
+                source_bind_pose: false,
                 slot: "Body".into(),
                 visual: shirt,
                 attach_bone: None,
@@ -1553,6 +1654,115 @@ add equipment entry "camp"
             Some("test-guid")
         );
         assert!(!names.contains_key("incomplete"));
+    }
+
+    #[test]
+    fn skeleton_bank_reads_fixed_hair_socket() {
+        let node = Node::new("Resource").with_child(
+            Node::new("Sockets")
+                .with_attr("Name", fs("Socket_Test"))
+                .with_attr("Bone", fs("Head"))
+                .with_attr("BoneConstraint", fs(""))
+                .with_attr("Position", Value::Vec3([0.0, 0.1, 0.0]))
+                .with_attr("Rotation", Value::Vec4([0.0, 0.0, 0.0, 1.0]))
+                .with_attr("ConstraintsPos", Value::UShort(0))
+                .with_attr("ConstraintsRot", Value::UShort(0)),
+        );
+        let skeleton = SkeletonResource::read(&node);
+        assert_eq!(skeleton.sockets.len(), 1);
+        assert_eq!(skeleton.sockets[0].name, "Socket_Test");
+        assert_eq!(skeleton.sockets[0].position, [0.0, 0.1, 0.0]);
+        assert!(skeleton.sockets[0].bone_constraint.is_none());
+    }
+
+    #[test]
+    fn cc_replaces_slots_removes_none_and_layers_presets() {
+        let mut banks = ResourceBanks::default();
+        banks.characters.character_visuals.insert(
+            "cv".into(),
+            CharacterVisualResource {
+                slots: vec![
+                    VisualSlot {
+                        slot: "Head".into(),
+                        visual: "old".into(),
+                        bone: None,
+                    },
+                    VisualSlot {
+                        slot: "Hair".into(),
+                        visual: "old".into(),
+                        bone: None,
+                    },
+                ],
+                material_overrides: MaterialOverrides {
+                    color_preset: Some("template-color".into()),
+                    presets: vec![MaterialPresetRef {
+                        group: "Skin".into(),
+                        preset: "template".into(),
+                        force: false,
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        for id in ["old", "new"] {
+            banks.visuals.insert(
+                id.into(),
+                VisualResource {
+                    id: id.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let obj = LevelObject {
+            id: "test".into(),
+            name: "test".into(),
+            template: None,
+            visual_template: None,
+            is_blocker: None,
+            transform: Default::default(),
+            module: String::new(),
+            kind: "character".into(),
+            character: Some(CharacterProps {
+                character_visual: Some("cv".into()),
+                ..Default::default()
+            }),
+        };
+        let mut c = resolve_character(&obj, &RootTemplates::default(), &banks, "idle").unwrap();
+        c.apply_appearance(
+            [
+                VisualSlot {
+                    slot: "Head".into(),
+                    visual: "new".into(),
+                    bone: Some("head".into()),
+                },
+                VisualSlot {
+                    slot: "Hair".into(),
+                    visual: "00000000-0000-0000-0000-000000000000".into(),
+                    bone: None,
+                },
+            ],
+            [MaterialPresetRef {
+                group: "Skin".into(),
+                preset: "chosen".into(),
+                force: false,
+            }],
+            &banks,
+        )
+        .unwrap();
+        assert_eq!(c.parts.len(), 1);
+        assert_eq!(c.parts[0].visual.id, "new");
+        assert_eq!(c.parts[0].attach_bone.as_deref(), Some("head"));
+        assert_eq!(
+            c.character_visual
+                .material_overrides
+                .presets
+                .iter()
+                .map(|p| p.preset.as_str())
+                .collect::<Vec<_>>(),
+            ["template", "template-color", "chosen"]
+        );
+        assert_eq!(banks.characters.character_visuals["cv"].slots.len(), 2);
     }
 
     #[test]

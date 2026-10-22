@@ -2,7 +2,7 @@
 //!
 //! | Data | Where |
 //! |---|---|
-//! | races | `Public/<Module>/Races/Races.lsx`: `UUID`, `Name`, `DisplayName`, `ParentGuid`, `ProgressionTableUUID`, `RaceEquipment`, `Tags`, `ExcludedGods` |
+//! | races | `Public/<Module>/Races/Races.lsx`: `UUID`, `Name`, `DisplayName`, `ParentGuid`, `ProgressionTableUUID`, `RaceEquipment`, `Tags`, `ExcludedGods`, `Visuals/Object` |
 //! | classes, subclasses | `Public/<Module>/ClassDescriptions/ClassDescriptions.lsx`: `UUID`, `Name`, `DisplayName`, `ParentGuid`, `BaseHp`, `HpPerLevel`, `ProgressionTableUUID`, `PrimaryAbility`, `SpellCastingAbility`, `ClassEquipment`, `HasGod`, `MustPrepareSpells`, `Tags` |
 //! | backgrounds | `Public/<Module>/Backgrounds/Backgrounds.lsx`: `UUID`, `DisplayName`, `Passives`, `Hidden`, `Tags` |
 //! | deities | `Public/<Module>/Gods/Gods.lsx`: `UUID`, `Name`, `DisplayName`, `Tags` |
@@ -33,6 +33,8 @@ use crate::load::{LoadError, guid_attr, parse, s};
 /// A race or subrace.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CcRace {
+    /// Shared CC entries selected by Races/Visuals/Object.
+    pub visuals: Vec<Guid>,
     pub id: Guid,
     pub name: String,
     /// Loca handle of `DisplayName`.
@@ -175,6 +177,7 @@ pub struct CcData {
     pub backgrounds: Vec<CcBackground>,
     pub gods: Vec<CcGod>,
     pub presets: Vec<CcPreset>,
+    pub appearance: super::appearance::AppearanceData,
     pub origins: Vec<CcOrigin>,
     /// By `TableUUID`, in load order.
     pub progressions: HashMap<Guid, Vec<Progression>>,
@@ -208,14 +211,14 @@ fn list(v: Option<String>) -> Vec<String> {
         .collect()
 }
 
-fn handle(n: &Node, key: &str) -> Option<String> {
+pub(super) fn handle(n: &Node, key: &str) -> Option<String> {
     match n.attr(key) {
         Some(Value::TranslatedString(t)) if !t.handle.is_empty() => Some(t.handle.clone()),
         _ => None,
     }
 }
 
-fn int(n: &Node, key: &str) -> Option<i64> {
+pub(super) fn int(n: &Node, key: &str) -> Option<i64> {
     n.attr(key).and_then(|v| v.as_i64())
 }
 
@@ -240,7 +243,7 @@ pub fn ability_from_index(v: i64) -> Option<Ability> {
 }
 
 /// Insert or replace by id, keeping the first position.
-fn upsert<T>(v: &mut Vec<T>, item: T, id: impl Fn(&T) -> Guid) {
+pub(super) fn upsert<T>(v: &mut Vec<T>, item: T, id: impl Fn(&T) -> Guid) {
     let key = id(&item);
     match v.iter_mut().find(|x| id(x) == key) {
         Some(x) => *x = item,
@@ -249,7 +252,7 @@ fn upsert<T>(v: &mut Vec<T>, item: T, id: impl Fn(&T) -> Guid) {
 }
 
 /// The nodes named `name` of a resource region, directly or under `root`.
-fn nodes<'a>(res: &'a bg3_lsf::Resource, region: &str, name: &'a str) -> Vec<&'a Node> {
+pub(super) fn nodes<'a>(res: &'a bg3_lsf::Resource, region: &str, name: &'a str) -> Vec<&'a Node> {
     let Some(root) = res.region(region) else {
         return Vec::new();
     };
@@ -262,7 +265,7 @@ fn nodes<'a>(res: &'a bg3_lsf::Resource, region: &str, name: &'a str) -> Vec<&'a
 }
 
 /// Each module's copy of a resource, in load order.
-fn each_module(
+pub(super) fn each_module(
     vfs: &Vfs,
     rel: &str,
     mut f: impl FnMut(&bg3_lsf::Resource),
@@ -287,6 +290,7 @@ impl CcData {
                     continue;
                 };
                 let r = CcRace {
+                    visuals: objects(n, "Visuals"),
                     id,
                     name: s(n, "Name").unwrap_or_default(),
                     display: handle(n, "DisplayName"),
@@ -485,6 +489,7 @@ impl CcData {
             })?;
             d.defaults.extend(rows.into_iter().map(|(_, v)| v));
         }
+        d.appearance = super::appearance::AppearanceData::load(vfs)?;
         d.add_stats(stats);
         Ok(d)
     }
