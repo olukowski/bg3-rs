@@ -152,12 +152,27 @@ decides: a camera below y 14.1 (close-ups, the viewer's `--frame` shots) is only
 `…_Exterior`; a camera more than ~11 m above the deck is also inside `…_Interior` (bound
 radius 143 m against the exterior's 317 m), which wins. `…_UnderDeck` (y 3.2–15.8) lies west of
 the deck (x −127…−69) and does not cover it. The two atmospheres differ only in `ExposureMax` and
-the second entry's compensation. Blending over `FadeTime` and the story calls
-`TriggerSetAtmosphere`/`TriggerSetLighting` (not used on the Nautiloid) are not implemented. The
+the second entry's compensation. Story calls `TriggerSetAtmosphere`/`TriggerSetLighting`
+(not used on the Nautiloid) are not implemented. The
 viewer starts with the triggers at its start camera position (`--camera`, the play camera, or
 the avatar / `--look-at` until `--frame` places the camera) and then follows the camera for the
-atmosphere (`lights::follow_camera_triggers`, switching at once); switching the lighting
+atmosphere (`lights::follow_camera_triggers`, blending as described below); switching the lighting
 resource at runtime (sun, probes, fog) is not implemented.
+
+Atmosphere transitions blend the gameplay camera's first exposure entry (EV minimum,
+maximum, compensation and metering percentiles), plus all stored grading parameters,
+white balance and bloom scalars. **Assumptions:** the NEW selected trigger supplies
+`FadeTime`, interpolation is linear in the stored parameter space, and discrete values
+(auto-exposure enable, metering mode and bloom enable) change at the midpoint. In particular,
+range `ExposureShift` blends before conversion to `1.35^shift` for the shader. The fixed
+display LUT has no per-atmosphere handle to switch; future per-atmosphere textures/LUTs
+should use the same midpoint rule. Rendering limitations for bloom/white balance remain.
+Retargeting captures the current blended values, so a second trigger change does not jump
+back to an earlier endpoint. Zero duration switches instantly. Leaving all triggers uses
+zero duration (**assumption:** the level default has no entering trigger/FadeTime).
+The first camera update selects instantly, preserving screenshot startup and the GPU's
+existing first-frame exposure jump. Synthetic tests in `lights::atmosphere_tests` cover
+endpoints, midpoint/discrete settings, retargeting and zero duration.
 
 Evidence from the references (camera positions unknown, compared by eye):
 `laezel-combat.png` looks down at the deck in blue shade, with warm gold light only far off to
@@ -387,7 +402,7 @@ trigger choice, probe captures and fog volumes.
 - `CombinedLights`: how the gameplay half is evaluated (`eoc::GameplayLightComponent`:
   `m_Radius`, `m_EdgeSharpening`, `m_SpotLightAngle`, `m_DirectionalDimensions`, `m_IsSunlight`,
   `m_PointLightVerticalLimit`).
-- Trigger blending (`FadeTime`) and its curve; probe list order
+- The original trigger blending curve and entering-versus-leaving `FadeTime` semantics; probe list order
   (`ls::LightProbeHierarchySystem`); the distant probe.
 - The sun's transmittance precompute; the flat sky colour; `TimelineFog`.
 - Bloom parameter mapping; which camera uses the second `ExposureSettings` entry.
