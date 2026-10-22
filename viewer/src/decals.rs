@@ -8,8 +8,9 @@
 //! This module prepares the data: decal records in a storage buffer, the grid, and one texture
 //! array per map (base colour, normal, physical) with a layer per decal material. Receivers are
 //! marked with [`RECEIVES_DECALS`] in their `MeshTag`. Terrain always receives decals (its
-//! G-buffer shader sets the bit unconditionally); its tiles get [`TerrainDecalMaterial`], Bevy's
-//! standard material with the same decal step (`shaders/terrain_decals.wesl`).
+//! G-buffer shader sets the bit unconditionally); the game terrain material binds the same
+//! resources. With `BG3_STANDARD_TERRAIN=1`, tiles get [`TerrainDecalMaterial`], Bevy's standard
+//! material with the same decal step (`shaders/terrain_decals.wesl`).
 //! `BG3_NO_DECALS=1` turns decals off; `BG3_DECAL_DEBUG=1` lists them and paints a checker of
 //! each box's local x/z quarters where it projects.
 
@@ -80,7 +81,7 @@ pub struct LevelDecals {
     physical: Option<Image>,
 }
 
-/// The GPU resources every level material binds (`LevelExtension`).
+/// The GPU resources shared by level and terrain materials.
 #[derive(Resource, Clone, Debug)]
 pub struct DecalBindings {
     /// Whether the level has any decal to draw.
@@ -543,16 +544,16 @@ pub type TerrainDecalMaterial = ExtendedMaterial<StandardMaterial, DecalExtensio
 /// material (which carries the same bindings in `LevelExtension`).
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub struct DecalExtension {
-    #[storage(110, read_only)]
+    #[storage(130, read_only)]
     pub decals: Handle<ShaderBuffer>,
-    #[storage(111, read_only)]
+    #[storage(131, read_only)]
     pub decal_grid: Handle<ShaderBuffer>,
-    #[texture(112, dimension = "2d_array")]
-    #[sampler(113)]
+    #[texture(132, dimension = "2d_array")]
+    #[sampler(133)]
     pub decal_albedo: Option<Handle<Image>>,
-    #[texture(114, dimension = "2d_array")]
+    #[texture(134, dimension = "2d_array")]
     pub decal_normal: Option<Handle<Image>>,
-    #[texture(115, dimension = "2d_array")]
+    #[texture(135, dimension = "2d_array")]
     pub decal_physical: Option<Handle<Image>>,
 }
 

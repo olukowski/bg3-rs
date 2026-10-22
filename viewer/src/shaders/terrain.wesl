@@ -11,8 +11,11 @@ import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     mesh_functions,
+    mesh_view_bindings as view_bindings,
 };
 import bg3_viewer::shaders::game_lighting::{GameShading, game_lighting};
+// Shared material bindings 130–135; terrain inputs keep 100–110.
+import bg3_viewer::shaders::decals::{DecalSurface, apply_decals};
 
 struct TerrainUniform {
     // 1/(cells+1) (vertex normal map), 1/cells (weight maps).
@@ -176,6 +179,8 @@ fn fragment(
 ) -> FragmentOutput {
     var in = vertex_output;
     var pbr_input = pbr_input_from_standard_material(in, is_front);
+    let dp_x = dpdx(in.world_position.xyz);
+    let dp_y = dpdy(in.world_position.xyz);
 
     // Terrain-local position in the game's space: UV 0 = (x, z), UV 1.x = local height.
     let xz = in.uv;
@@ -307,16 +312,27 @@ fn fragment(
     // Shading model 1 (unlit) where black brushes cover the pixel.
     let unlit = black >= 0.975;
 
-    pbr_input.N = n_world;
-    pbr_input.material.base_color = vec4(albedo, 1.0);
-    pbr_input.material.perceptual_roughness = roughness;
-    pbr_input.material.metallic = metallic;
-    pbr_input.material.reflectance = vec3(0.5);
+    // bg3: Terrain_PS* (Core.metallib, 4.1.1.7631656) always sets the receives-decals bit.
+    // Blend into the completed terrain inputs before either light loop, leaving occlusion and
+    // the shading model alone, as the game's deferred decal pass does.
+    var ds: DecalSurface;
+    ds.albedo = albedo;
+    ds.normal = n_world;
+    ds.roughness = roughness;
+    ds.reflectance = 0.5;
+    ds.metallic = metallic;
+    ds = apply_decals(ds, in.world_position.xyz, view_bindings::view.world_position, dp_x, dp_y);
+
+    pbr_input.N = ds.normal;
+    pbr_input.material.base_color = vec4(ds.albedo, 1.0);
+    pbr_input.material.perceptual_roughness = ds.roughness;
+    pbr_input.material.metallic = ds.metallic;
+    pbr_input.material.reflectance = vec3(ds.reflectance);
     pbr_input.diffuse_occlusion = vec3(occlusion);
 
     var out: FragmentOutput;
     if unlit {
-        out.color = vec4(albedo, 1.0);
+        out.color = vec4(ds.albedo, 1.0);
     } else if (tu.flags & FLAG_BEVY_LIGHTING) != 0u {
         out.color = apply_pbr_lighting(pbr_input);
     } else {
@@ -326,13 +342,13 @@ fn fragment(
         let normal_variance = min(dot(dn_x, dn_x) + dot(dn_y, dn_y), 0.18);
         var sh: GameShading;
         sh.model = 0u;
-        sh.n = n_world;
+        sh.n = ds.normal;
         sh.v = pbr_input.V;
-        sh.albedo = albedo;
-        sh.metallic = metallic;
-        sh.diffuse = albedo * (1.0 - metallic);
-        sh.f0 = mix(vec3(0.16 * 0.25), albedo, metallic);
-        sh.r0 = max(0.09, roughness);
+        sh.albedo = ds.albedo;
+        sh.metallic = ds.metallic;
+        sh.diffuse = ds.albedo * (1.0 - ds.metallic);
+        sh.f0 = mix(vec3(0.16 * ds.reflectance * ds.reflectance), ds.albedo, ds.metallic);
+        sh.r0 = max(0.09, ds.roughness);
         sh.r = sqrt(clamp(sh.r0 * sh.r0 + normal_variance, 0.0, 1.0));
         sh.sss_amount = 1.0;
         sh.thickness = 0.0;

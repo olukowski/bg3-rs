@@ -324,7 +324,7 @@ fn main() -> Result<()> {
             decals::upload,
             materials::upload.after(decals::upload),
             level::spawn_level.after(materials::upload),
-            terrain::spawn_terrain,
+            terrain::spawn_terrain.after(decals::upload),
             lights::spawn_lights,
             probes::spawn_probes,
             fog::spawn_fog,

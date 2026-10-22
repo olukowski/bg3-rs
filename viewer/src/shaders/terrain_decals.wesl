@@ -1,4 +1,4 @@
-// Terrain tiles: Bevy's standard material with the level's decals blended into its inputs
+// `BG3_STANDARD_TERRAIN=1` tiles: Bevy's standard material with the level's decals blended into its inputs
 // before lighting. The game's terrain G-buffer shader always sets the receives-decals bit
 // (docs/research/decals.md); the terrain itself stays on Bevy's lighting (`terrain.rs`).
 //

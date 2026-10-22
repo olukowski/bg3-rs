@@ -63,16 +63,16 @@ pub struct LevelExtension {
     #[storage(120, read_only)]
     pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
     /// Level decals (`decals.rs`, `shaders/decals.wesl`), shared by every level material.
-    #[storage(110, read_only)]
+    #[storage(130, read_only)]
     pub decals: Handle<ShaderBuffer>,
-    #[storage(111, read_only)]
+    #[storage(131, read_only)]
     pub decal_grid: Handle<ShaderBuffer>,
-    #[texture(112, dimension = "2d_array")]
-    #[sampler(113)]
+    #[texture(132, dimension = "2d_array")]
+    #[sampler(133)]
     pub decal_albedo: Option<Handle<Image>>,
-    #[texture(114, dimension = "2d_array")]
+    #[texture(134, dimension = "2d_array")]
     pub decal_normal: Option<Handle<Image>>,
-    #[texture(115, dimension = "2d_array")]
+    #[texture(135, dimension = "2d_array")]
     pub decal_physical: Option<Handle<Image>>,
 }
 
@@ -94,7 +94,7 @@ pub fn enabled() -> bool {
 pub struct LevelMaterialsPlugin;
 
 /// Keeps the shared lighting module (imported by `character.wesl` and `level.wesl`) and the
-/// decal module (imported by `level.wesl`) loaded.
+/// decal module (imported by the level and terrain shaders) loaded.
 #[derive(Resource)]
 #[allow(dead_code)]
 struct GameLightingLibrary(Handle<Shader>, Handle<Shader>);

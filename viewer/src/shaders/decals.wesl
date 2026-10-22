@@ -1,4 +1,4 @@
-// Level decals applied to a level surface's material inputs before lighting, as the game's
+// Level decals applied to level and terrain surfaces' material inputs before lighting, as the game's
 // deferred decal pass blends them into the G-buffer: per decal, the pixel's position in the
 // decal's unit box, the distance and angle fades, base colour / roughness / reflectance /
 // metalness blended by alpha, and the decal's normal map applied as a rotation of the
@@ -22,15 +22,15 @@ struct Decal {
     props: vec4<f32>,
 }
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(110) var<storage, read> decals: array<Decal>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(130) var<storage, read> decals: array<Decal>;
 // Header (origin x, origin z, 1/cell as f32 bits, cells x, cells z, debug tint), (first, count)
 // per cell,
 // then the decal indices.
-@group(constants::MATERIAL_BIND_GROUP) @binding(111) var<storage, read> decal_grid: array<u32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(112) var decal_albedo: texture_2d_array<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(113) var decal_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(114) var decal_normal: texture_2d_array<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(115) var decal_physical: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(131) var<storage, read> decal_grid: array<u32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(132) var decal_albedo: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(133) var decal_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(134) var decal_normal: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(135) var decal_physical: texture_2d_array<f32>;
 
 const HALF_PI: f32 = 1.5707964;
 // The angle fade's slope: 1 / 0.17.
