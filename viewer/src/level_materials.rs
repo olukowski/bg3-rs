@@ -58,6 +58,9 @@ pub struct LevelExtension {
     #[texture(107)]
     #[sampler(108)]
     pub sss_map: Option<Handle<Image>>,
+    /// The level's box lights (`lights::BOX_LIGHTS`), read by the game's light loop.
+    #[storage(120, read_only)]
+    pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 impl MaterialExtension for LevelExtension {
@@ -215,6 +218,7 @@ impl LevelGameMaterials {
                 detail_normal_map,
                 glow_map: glow,
                 sss_map,
+                box_lights: crate::lights::BOX_LIGHTS,
             },
         });
         self.by_standard.insert(standard_handle.id(), handle);

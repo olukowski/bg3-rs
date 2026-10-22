@@ -3,8 +3,10 @@
 //! `docs/research/lighting.md` ("Viewer mapping").
 
 use anyhow::Result;
+use bevy::asset::uuid_handle;
 use bevy::camera::Exposure;
 use bevy::prelude::*;
+use bevy::render::storage::ShaderBuffer;
 use bg3_vfs::Vfs;
 use bg3_world::lights::{
     ExposureSettings, LightingSources, PostProcessing, decode_gamma, kelvin_to_rgb,
@@ -94,7 +96,11 @@ impl LevelLights {
             metering: Vec4::new(
                 e.map_or(0.0, |e| e.min_percentile),
                 e.map_or(1.0, |e| e.max_percentile),
-                e.map_or(0.0, |e| e.metering_mode as f32),
+                // `BG3_METERING=<mode>` overrides the metering mode (calibration checks only).
+                std::env::var("BG3_METERING")
+                    .ok()
+                    .and_then(|m| m.parse::<f32>().ok())
+                    .unwrap_or(e.map_or(0.0, |e| e.metering_mode as f32)),
                 min - comp,
             ),
             // The exposure buffer's histogram range: EV100 −8 to 18.
@@ -330,7 +336,7 @@ fn gain_fill(gain: f32, fill: bool) -> f32 {
 /// - spot lights: the game divides by π, so lumens = `4 · Intensity`; `Angle` holds full cone
 ///   angles, Bevy takes half angles; the cone curve is the same;
 /// - falloff, `Gain` and `FlatFalloff`: `bg3_light_falloff`, patched into Bevy's lighting;
-/// - box lights: approximated (see below).
+/// - box lights: exact, in the game's light loop (see [`box_light`]).
 ///
 /// Every Nautiloid light is `PreExpose` (exposed like everything else); lights without it are
 /// in display units in the game, which Bevy can't express (not handled).
@@ -342,7 +348,9 @@ pub fn spawn_lights(
     lights: Res<LevelLights>,
     fog: Res<crate::fog::LevelFog>,
     mut ambient: ResMut<GlobalAmbientLight>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
+    let mut boxes = Vec::new();
     // Every light scatters in the game's fog (`ScatteringScale`, 1 by default).
     let volumetric = fog.active();
     let scale = lights.scale;
@@ -401,40 +409,47 @@ pub fn spawn_lights(
                 }
             }
             LightKind::Directional => {
-                // A box light: `DirectionLightDimensions` (w, h, depth) from the source face (the
-                // object origin) along +Z, a constant direction and illuminance `Color ·
-                // Intensity` inside, fading over the attenuation lengths. Approximated by a fill
-                // spot light from the source face: its falloff is the constant 4/R², so lumens
-                // = π · Intensity · R² gives the box's illuminance on the axis; the range window
-                // stands in for the far fade, the cone (covering the box's cross-section at
-                // mid-depth) for the sides.
-                let [w, h, depth] = l.direction_dimensions;
-                let depth = depth.max(0.5);
-                let outer = ((w.max(h) * 0.5) / (depth * 0.5)).atan().clamp(0.1, 1.4);
-                let mut e = commands.spawn((
-                    name,
-                    SpotLight {
-                        color: c,
-                        intensity: std::f32::consts::PI * l.intensity * depth * depth * scale,
-                        range: depth,
-                        inner_angle: outer * 0.7,
-                        outer_angle: outer,
-                        shadow_maps_enabled: false,
-                        shadow_depth_bias: gain_fill(0.0, true),
-                        shadow_normal_bias: game_shadow_marker(l.shadow),
-                        ..default()
-                    },
-                    light_transform(l),
-                ));
-                if volumetric {
-                    e.insert(bevy::light::VolumetricLight);
+                // Box lights are evaluated by the game's light loop from `BOX_LIGHTS`
+                // (`box_light` below), not by a Bevy light. `BG3_NO_BOX_LIGHTS=1` drops them
+                // (A/B checks only).
+                let only = std::env::var("BG3_BOX_ONLY").ok();
+                if std::env::var_os("BG3_NO_BOX_LIGHTS").is_none()
+                    && only.is_none_or(|o| l.name.contains(&o))
+                {
+                    boxes.push(box_light(l, scale));
                 }
             }
         }
         spawned += 1;
     }
 
+    let box_count = boxes.len();
+    // A storage buffer can't be empty: an all-zero light is outside every box.
+    if boxes.is_empty() {
+        boxes.push(GpuBoxLight::default());
+    }
+    if buffers
+        .insert(
+            &BOX_LIGHTS,
+            ShaderBuffer::new(
+                boxes
+                    .iter()
+                    .flat_map(GpuBoxLight::words)
+                    .collect::<Vec<_>>(),
+                bevy::asset::RenderAssetUsages::RENDER_WORLD,
+            ),
+        )
+        .is_err()
+    {
+        eprintln!("lights: box light buffer not stored");
+    }
+
     let lighting = &lights.lighting;
+    spawn_box_shadow_carriers(
+        &mut commands,
+        &boxes[..box_count],
+        lighting.sun.as_ref().map_or(100.0, |s| s.shadow_far_plane),
+    );
     if let Some(sun) = &lighting.sun {
         // Towards the sun, BG3 space: yaw 0 = +X, 90° = +Z; pitch = elevation.
         // bg3: ls::Lighting::Visit (SunDir) (4.1.1.7631656)
@@ -485,11 +500,223 @@ pub fn spawn_lights(
     // through them (its intensity is not applied at run time).
     ambient.brightness = 0.0;
     eprintln!(
-        "spawned {spawned} lights, sun: {}, exposure EV100 {}",
+        "spawned {spawned} lights ({box_count} box lights in the game's light loop), sun: {}, exposure EV100 {}",
         lighting.sun.is_some(),
         lights.ev100()
     );
 }
+
+/// The level's box lights, bound by every game-shaded material (`level_materials.rs`,
+/// `char_materials.rs`) and evaluated in `shaders/game_lighting.wesl`.
+pub const BOX_LIGHTS: Handle<ShaderBuffer> = uuid_handle!("6f1f2f4e-3c55-4c1e-9a43-0b6c1d3f7a52");
+
+/// One box light as the shader reads it (`BoxLight` in `game_lighting.wesl`).
+#[derive(Clone, Copy, Default, Debug)]
+pub struct GpuBoxLight {
+    /// Rows of the affine map from Bevy world space to box coordinates (inside = all in 0–1).
+    to_box: [Vec4; 3],
+    /// Linear colour × intensity, and the fade curve (0 linear, 1 square, 2 smoothstep,
+    /// 3 smootherstep).
+    color_function: Vec4,
+    /// Fade along the axis: start, end (box coordinates), 1/start, 1/(1 − end).
+    attenuation_z: Vec4,
+    /// Towards the light (Bevy space), and 1 if the game shadows the light.
+    direction_shadow: Vec4,
+    /// Side fades: width / side length, height / side length.
+    attenuation_xy: Vec4,
+    /// Box size (w, h, depth); CPU only.
+    size: Vec3,
+}
+
+impl GpuBoxLight {
+    /// The seven `vec4<f32>` of the shader's struct, in order.
+    fn words(&self) -> [[f32; 4]; 7] {
+        [
+            self.to_box[0].to_array(),
+            self.to_box[1].to_array(),
+            self.to_box[2].to_array(),
+            self.color_function.to_array(),
+            self.attenuation_z.to_array(),
+            self.direction_shadow.to_array(),
+            self.attenuation_xy.to_array(),
+        ]
+    }
+}
+
+/// A box light (`LightType` 2) packed like the engine does: the box spans `±w/2`, `±h/2` and
+/// `0..depth` along the light's local +Z from its origin, which maps to box coordinates
+/// `(x/w + ½, y/h + ½, z/depth)` (rotation and position only, no scale); the light shines along
+/// +Z with the constant illuminance `Color · Intensity` (no distance falloff, no π), times the
+/// fades: over `AttenuationStart` from the source face (`z < start/depth`), over
+/// `AttenuationEnd` before the far face and over `AttenuationSide` from each side, each with
+/// the light's curve.
+///
+/// bg3: ls::ClusteredAssignmentStage::SetDirectionLightData, Illuminance_Direction
+/// (ClusteredLighting_*, Core.metallib) (4.1.1.7631656)
+fn box_light(l: &Light, scale: f32) -> GpuBoxLight {
+    let [w, h, depth] = l.direction_dimensions.map(|d| d.max(1e-5));
+    let [start, end, side] = l.direction_attenuation;
+    // bg3: SetDirectionLightData clamps start/depth to [1e-5, 1], 1 − end/depth to [0, 0.99999]
+    // and the side length to ≥ 1e-5.
+    let z_start = (start / depth).clamp(1e-5, 1.0);
+    let z_end = (1.0 - end / depth).clamp(0.0, 0.99999);
+    let side = side.max(1e-5);
+    let [x, y, z, qw] = l.transform.rotation;
+    let q = Quat::from_xyzw(x, y, z, qw).normalize();
+    let pos = Vec3::from_array(l.transform.position);
+    // BG3 world → box coordinates, after mirroring Bevy's z back into BG3 space.
+    let to_box = Mat4::from_translation(Vec3::new(0.5, 0.5, 0.0))
+        * Mat4::from_scale(Vec3::new(1.0 / w, 1.0 / h, 1.0 / depth))
+        * Mat4::from_quat(q.inverse())
+        * Mat4::from_translation(-pos)
+        * Mat4::from_scale(Vec3::new(1.0, 1.0, -1.0));
+    let towards = Vec3::from_array(space::vec3((-(q * Vec3::Z)).to_array()));
+    let [r, g, b] = l.effective_color().map(|c| c * l.intensity * scale);
+    GpuBoxLight {
+        to_box: [to_box.row(0), to_box.row(1), to_box.row(2)],
+        color_function: Vec4::new(r, g, b, f32::from(l.direction_attenuation_function.min(3))),
+        attenuation_z: Vec4::new(z_start, z_end, 1.0 / z_start, 1.0 / (1.0 - z_end)),
+        direction_shadow: towards.extend(if l.shadow { 1.0 } else { 0.0 }),
+        attenuation_xy: Vec4::new(w / side, h / side, 0.0, 0.0),
+        size: Vec3::new(w, h, depth),
+    }
+}
+
+/// Box lights with `Shadow` are shadowed in the game with an orthographic map along the
+/// light's axis (`DoClusteredLight` input: the shadow matrix's first three rows, no
+/// perspective divide). A Bevy directional light gives the same kind of map, so shadowed box
+/// lights get black directional lights that only render shadow maps; the light loop finds a
+/// box light's carrier by direction (`game_lighting.wesl`), so boxes along one axis share it.
+/// The game shadows every shadowed box light; Bevy allows ten directional lights, one of which
+/// is the sun, so [`assign_box_shadow_carriers`] gives the nine carriers to the directions of
+/// the shadowed boxes nearest the camera (further ones go unshadowed). Approximations: Bevy fits
+/// cascades to the camera, the game fits its map to the box; the biases and filtering are
+/// Bevy's.
+///
+/// bg3: ls::ClusteredAssignmentStage::SetDirectionLightData (ShadowDataIndex_VolShadow_Shadow),
+/// ClusteredLighting_* (4.1.1.7631656)
+fn spawn_box_shadow_carriers(commands: &mut Commands, boxes: &[GpuBoxLight], far_plane: f32) {
+    // `BG3_NO_BOX_SHADOWS=1`: box lights unshadowed (A/B checks only).
+    if std::env::var_os("BG3_NO_BOX_SHADOWS").is_some() {
+        return;
+    }
+    let shadowed: Vec<ShadowedBox> = boxes
+        .iter()
+        .filter(|b| b.direction_shadow.w > 0.5)
+        .map(|b| ShadowedBox {
+            to_box: b.to_box,
+            size: b.size,
+            direction: b.direction_shadow.truncate(),
+        })
+        .collect();
+    if shadowed.is_empty() {
+        return;
+    }
+    for _ in 0..MAX_BOX_SHADOW_CARRIERS {
+        commands.spawn((
+            Name::new("box light shadow"),
+            BoxShadowCarrier,
+            DirectionalLight {
+                color: Color::BLACK,
+                illuminance: 0.0,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            // Bevy's cascades, as for the sun (the game fits one map to the box).
+            bevy::light::CascadeShadowConfigBuilder {
+                maximum_distance: far_plane,
+                ..default()
+            }
+            .build(),
+            Transform::default(),
+        ));
+    }
+    commands.insert_resource(BoxShadows {
+        boxes: shadowed,
+        far_plane,
+    });
+}
+
+/// Directional lights left to box light shadows next to the sun.
+const MAX_BOX_SHADOW_CARRIERS: usize = 9;
+
+#[derive(Component)]
+pub struct BoxShadowCarrier;
+
+struct ShadowedBox {
+    to_box: [Vec4; 3],
+    size: Vec3,
+    direction: Vec3,
+}
+
+impl ShadowedBox {
+    /// Distance (m) from a Bevy-space point to the box (0 inside).
+    fn distance(&self, p: Vec3) -> f32 {
+        let p = p.extend(1.0);
+        let u = Vec3::new(
+            self.to_box[0].dot(p),
+            self.to_box[1].dot(p),
+            self.to_box[2].dot(p),
+        );
+        ((u - u.clamp(Vec3::ZERO, Vec3::ONE)) * self.size).length()
+    }
+}
+
+#[derive(Resource)]
+pub struct BoxShadows {
+    boxes: Vec<ShadowedBox>,
+    far_plane: f32,
+}
+
+/// Point the shadow carriers along the shadowed box lights nearest the camera (one per
+/// direction, boxes beyond the shadow distance skipped); unused carriers render no shadows.
+pub fn assign_box_shadow_carriers(
+    shadows: Option<Res<BoxShadows>>,
+    cameras: Query<&GlobalTransform, With<crate::fly_camera::FlyCamera>>,
+    mut carriers: Query<(&mut DirectionalLight, &mut Transform), With<BoxShadowCarrier>>,
+) {
+    let (Some(shadows), Some(camera)) = (shadows, cameras.iter().next()) else {
+        return;
+    };
+    let eye = camera.translation();
+    let mut near: Vec<(f32, Vec3)> = shadows
+        .boxes
+        .iter()
+        .map(|b| (b.distance(eye), b.direction))
+        .filter(|(d, _)| *d <= shadows.far_plane)
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut directions: Vec<Vec3> = Vec::new();
+    for (_, d) in near {
+        if directions.len() < MAX_BOX_SHADOW_CARRIERS
+            && !directions.iter().any(|e| e.dot(d) > BOX_SHADOW_MATCH)
+        {
+            directions.push(d);
+        }
+    }
+    for (i, (mut light, mut transform)) in carriers.iter_mut().enumerate() {
+        match directions.get(i) {
+            Some(d) => {
+                let up = if d.y.abs() > 0.99 { Vec3::X } else { Vec3::Y };
+                let target = Transform::default().looking_to(-*d, up);
+                if transform.rotation != target.rotation {
+                    *transform = target;
+                }
+                if !light.shadow_maps_enabled {
+                    light.shadow_maps_enabled = true;
+                }
+            }
+            None => {
+                if light.shadow_maps_enabled {
+                    light.shadow_maps_enabled = false;
+                }
+            }
+        }
+    }
+}
+
+/// Directions closer than this (cosine) share a shadow carrier; the shader uses the same test.
+const BOX_SHADOW_MATCH: f32 = 0.99999;
 
 /// Shadow maps are off in the viewer; a light that casts shadows in the game carries a negative
 /// normal bias instead, which the character shader reads (subsurface transmission through thick
@@ -702,5 +929,83 @@ mod atmosphere_tests {
         let mut instant = AtmosphereFade::new(a, b.clone(), 0.0);
         assert_eq!(instant.advance(0.0), b);
         assert!(instant.finished());
+    }
+}
+
+#[cfg(test)]
+mod box_light_tests {
+    use super::*;
+
+    fn light(rotation: [f32; 4]) -> Light {
+        Light {
+            id: "id".into(),
+            name: "box".into(),
+            object_type: "light".into(),
+            template: None,
+            transform: bg3_world::Transform {
+                position: [10.0, 2.0, -5.0],
+                rotation,
+                scale: 3.0,
+            },
+            kind: LightKind::Directional,
+            enabled: true,
+            color: [0.5, 1.0, 0.25],
+            intensity: 300.0,
+            kelvin: 6500.0,
+            use_temperature: false,
+            radius: 15.0,
+            angle: [35.0, 45.0],
+            flat_falloff: false,
+            gain: 1.0,
+            light_channel: 191,
+            shadow: true,
+            pre_expose: true,
+            is_flickering: false,
+            direction_dimensions: [2.0, 4.0, 10.0],
+            direction_attenuation: [3.0, 1.0, 0.5],
+            direction_attenuation_function: 2,
+            module: "Test".into(),
+        }
+    }
+
+    /// Box coordinates of a BG3-space point.
+    fn coords(b: &GpuBoxLight, bg3: [f32; 3]) -> Vec3 {
+        let p = Vec3::from_array(space::vec3(bg3)).extend(1.0);
+        Vec3::new(b.to_box[0].dot(p), b.to_box[1].dot(p), b.to_box[2].dot(p))
+    }
+
+    #[test]
+    fn box_spans_half_sizes_and_depth_along_local_z_without_scale() {
+        let b = box_light(&light([0.0, 0.0, 0.0, 1.0]), 1.0);
+        // Origin = centre of the source face; the far face is `depth` along +Z.
+        assert!((coords(&b, [10.0, 2.0, -5.0]) - Vec3::new(0.5, 0.5, 0.0)).length() < 1e-5);
+        assert!((coords(&b, [11.0, 4.0, 5.0]) - Vec3::new(1.0, 1.0, 1.0)).length() < 1e-5);
+        assert!((coords(&b, [9.5, 2.0, 0.0]) - Vec3::new(0.25, 0.5, 0.5)).length() < 1e-5);
+        // It shines along +Z: towards the light is BG3 −Z, Bevy +Z.
+        assert!((b.direction_shadow.truncate() - Vec3::Z).length() < 1e-5);
+        assert_eq!(b.direction_shadow.w, 1.0);
+        assert_eq!(b.color_function, Vec4::new(150.0, 300.0, 75.0, 2.0));
+        // Fades: start 3 of 10, end 1 of 10, sides 0.5.
+        let z = b.attenuation_z;
+        assert!((z - Vec4::new(0.3, 0.9, 1.0 / 0.3, 10.0)).length() < 1e-4);
+        assert_eq!(b.attenuation_xy, Vec4::new(4.0, 8.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn rotated_box_follows_the_light_axis() {
+        // 90° about Y: local +Z is BG3 +X.
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let b = box_light(&light([0.0, h, 0.0, h]), 1.0);
+        assert!((coords(&b, [15.0, 2.0, -5.0]) - Vec3::new(0.5, 0.5, 0.5)).length() < 1e-4);
+        assert!((b.direction_shadow.truncate() - Vec3::NEG_X).length() < 1e-4);
+        let shadowed = ShadowedBox {
+            to_box: b.to_box,
+            size: b.size,
+            direction: Vec3::NEG_X,
+        };
+        let inside = Vec3::from_array(space::vec3([15.0, 2.0, -5.0]));
+        let beyond = Vec3::from_array(space::vec3([23.0, 2.0, -5.0]));
+        assert!(shadowed.distance(inside) < 1e-4);
+        assert!((shadowed.distance(beyond) - 3.0).abs() < 1e-3);
     }
 }

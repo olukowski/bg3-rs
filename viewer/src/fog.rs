@@ -5,10 +5,12 @@
 //! surface or a box's faces, lit by the sun, the local lights (Henyey-Greenstein phase, g =
 //! `Fog/Phase`) and the probes' spherical harmonics, all pre-exposed. Here each volume becomes a
 //! Bevy `FogVolume` (a box; the fade is baked into a small density texture), lit by Bevy's
-//! volumetric lighting. Not reproduced (see `docs/research/lighting.md`, "Fog"): volumes of one
-//! group combining by max and `Replaces` volumes cutting the fog before them (Bevy adds
-//! everything), the density noise, the probes' ambient in-scattering, the phase for local
-//! lights (Bevy applies it to directional lights only) and per-light `ScatteringScale`.
+//! volumetric lighting plus the probes' ambient (patched in, one value per volume, band 0 only:
+//! [`FogAmbientPlugin`]). Not reproduced (see `docs/research/lighting.md`, "Fog"): volumes of
+//! one group combining by max and `Replaces` volumes cutting the fog before them (Bevy adds
+//! everything), the density noise, the ambient's variation inside a volume and its band 1, the
+//! phase for local lights (Bevy applies it to directional lights only) and per-light
+//! `ScatteringScale`.
 //!
 //! bg3: VolumetricFogInitialize, VolumetricFogLighting, VolumetricFogGather (Core.metallib,
 //! 4.1.1.7631656)
@@ -20,7 +22,69 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bg3_world::fog::FogVolume as Bg3Fog;
 
+use crate::probes::LevelProbes;
 use crate::space;
+
+/// Bevy's volumetric fog with the game's ambient in-scattering: the probes' harmonics
+/// ([`LevelProbes::fog_ambient_at`]) scattered towards the camera along the whole path,
+/// `albedo · L_ambient · (1 − T)` pre-exposed, where `T` is the transmittance through the
+/// volume (exact for an ambient constant over the volume: `∫ σs L T dt = (σs/σt) L (1 − T)`).
+/// Bevy's fog has no per-volume ambient, so the patch carries it in the volume's `light_tint`
+/// (and stops tinting the lights with it; the viewer never sets a tint); Bevy's own camera
+/// ambient term is dropped.
+///
+/// bg3: VolumetricFogLighting, VolumetricFogGather (Core.metallib, 4.1.1.7631656)
+pub struct FogAmbientPlugin;
+
+const VOLUMETRIC_FOG: &str = "embedded://bevy_pbr/volumetric_fog/volumetric_fog.wesl";
+
+/// (Bevy's text, replacement); every one must match once or more.
+const FOG_PATCHES: [(&str, &str); 3] = [
+    (
+        "var accumulated_color = exp(-ray_length_view * (absorption + scattering)) * ambient_color *\n        ambient_intensity;",
+        "var accumulated_color = vec3(0.0);",
+    ),
+    (
+        "fog_color * light_tint * light_attenuation",
+        "fog_color * light_attenuation",
+    ),
+    (
+        "return vec4(accumulated_color, 1.0 - background_alpha);",
+        "accumulated_color += fog_color * light_tint * exposure * (scattering / max(absorption + scattering, 1e-6)) * (1.0 - background_alpha);\n    return vec4(accumulated_color, 1.0 - background_alpha);",
+    ),
+];
+
+#[derive(Resource)]
+struct FogShaderPatch(Handle<Shader>, bool);
+
+impl Plugin for FogAmbientPlugin {
+    fn build(&self, app: &mut App) {
+        let handle = app.world().resource::<AssetServer>().load(VOLUMETRIC_FOG);
+        app.insert_resource(FogShaderPatch(handle, false))
+            .add_systems(First, patch_fog_shader);
+    }
+}
+
+fn patch_fog_shader(mut patch: ResMut<FogShaderPatch>, mut shaders: ResMut<Assets<Shader>>) {
+    if patch.1 {
+        return;
+    }
+    let Some(shader) = shaders.get(&patch.0) else {
+        return;
+    };
+    patch.1 = true;
+    let mut source = shader.source.as_str().to_string();
+    for (from, to) in FOG_PATCHES {
+        if !source.contains(from) {
+            eprintln!("fog: Bevy's volumetric fog changed; the probes' ambient is not patched in");
+            return;
+        }
+        source = source.replace(from, to);
+    }
+    if let Some(mut shader) = shaders.get_mut(&patch.0) {
+        shader.source = bevy::shader::Source::Wesl(source.into());
+    }
+}
 
 /// Resolution of the baked edge-fade textures.
 const DENSITY_RES: u32 = 16;
@@ -105,7 +169,34 @@ fn density_texture(v: &Bg3Fog, extent: Vec3) -> Image {
     image
 }
 
-pub fn spawn_fog(mut commands: Commands, fog: Res<LevelFog>, mut images: ResMut<Assets<Image>>) {
+/// The mean of the probes' fog ambient over a volume (BG3 space), weighted by its density fade
+/// on a 5³ grid: Bevy takes one ambient per volume, the game evaluates it per froxel.
+fn volume_ambient(v: &Bg3Fog, extent: Vec3, probes: &LevelProbes) -> Vec3 {
+    const N: usize = 5;
+    let [x, y, z, w] = v.transform.rotation;
+    let q = Quat::from_xyzw(x, y, z, w).normalize();
+    let pos = Vec3::from_array(v.transform.position);
+    let (mut sum, mut total) = (Vec3::ZERO, 0.0);
+    for i in 0..N * N * N {
+        let uvw = (Vec3::new((i % N) as f32, ((i / N) % N) as f32, (i / (N * N)) as f32) + 0.5)
+            / N as f32;
+        let local = (uvw - 0.5) * extent;
+        let weight = v.weight(local.to_array());
+        if weight > 0.0 {
+            let world = pos + q * (local * v.transform.scale);
+            sum += weight * probes.fog_ambient_at(world.to_array());
+            total += weight;
+        }
+    }
+    if total > 0.0 { sum / total } else { Vec3::ZERO }
+}
+
+pub fn spawn_fog(
+    mut commands: Commands,
+    fog: Res<LevelFog>,
+    probes: Res<LevelProbes>,
+    mut images: ResMut<Assets<Image>>,
+) {
     if !fog.active() {
         return;
     }
@@ -126,6 +217,8 @@ pub fn spawn_fog(mut commands: Commands, fog: Res<LevelFog>, mut images: ResMut<
             .fold(0.0f32, f32::max)
             .clamp(1e-3, 1.0);
         let [r, g, b] = v.albedo.map(|a| a / scattering);
+        // The probes' ambient, carried in `light_tint` (see `FogAmbientPlugin`).
+        let ambient = volume_ambient(v, extent, &probes);
         commands.spawn((
             Name::new(format!("fog {}", v.name)),
             FogVolume {
@@ -135,6 +228,7 @@ pub fn spawn_fog(mut commands: Commands, fog: Res<LevelFog>, mut images: ResMut<
                 absorption: 1.0 - scattering,
                 scattering,
                 scattering_asymmetry: fog.phase,
+                light_tint: Color::linear_rgb(ambient.x, ambient.y, ambient.z),
                 ..default()
             },
             transform,
@@ -142,8 +236,8 @@ pub fn spawn_fog(mut commands: Commands, fog: Res<LevelFog>, mut images: ResMut<
     }
 }
 
-/// Volumetric fog on the camera. Bevy's fog ambient term isn't exposed and fades with depth, so
-/// it is off; the game's comes from the probes' SH (not reproduced).
+/// Volumetric fog on the camera. Bevy's own ambient term (unexposed, fading with depth) is off;
+/// the game's ambient in-scattering is patched in per volume (`FogAmbientPlugin`).
 pub fn apply_fog(
     mut commands: Commands,
     fog: Res<LevelFog>,

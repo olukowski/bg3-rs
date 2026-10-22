@@ -294,6 +294,7 @@ fn main() -> Result<()> {
     .add_plugins(post::GamePostPlugin)
     .add_plugins(bloom::GameBloomPlugin)
     .add_plugins(lights::GameLightPlugin)
+    .add_plugins(fog::FogAmbientPlugin)
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)
     .insert_resource(meshes)
@@ -326,7 +327,11 @@ fn main() -> Result<()> {
         PostStartup,
         (lights::apply_exposure, probes::apply_sky, fog::apply_fog),
     )
-    .add_systems(Last, lights::follow_camera_triggers);
+    .add_systems(Last, lights::follow_camera_triggers)
+    .add_systems(
+        PostUpdate,
+        lights::assign_box_shadow_carriers.before(TransformSystems::Propagate),
+    );
     if args.terrain_only {
         app.add_systems(PostStartup, terrain::hide_objects);
     }
