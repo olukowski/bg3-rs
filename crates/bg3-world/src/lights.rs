@@ -454,9 +454,16 @@ impl Default for GradingRange {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PostProcessing {
     pub bloom: bool,
-    /// Bloom `Threshold` and `Amount`.
+    /// Bloom `Threshold` and `Amount`: the threshold pass weights each texel by
+    /// `sat(Amount · (luma − Threshold))` (`docs/research/lighting.md`, "Bloom").
     pub bloom_threshold: f32,
     pub bloom_amount: f32,
+    /// `Vignette`: the display output is mixed towards `VignetteColor` by
+    /// `sat(VignetteIntensity · ‖|2(uv − ½)|^VignettePower‖)` (`docs/research/lighting.md`).
+    pub vignette: bool,
+    pub vignette_color: [f32; 3],
+    pub vignette_intensity: f32,
+    pub vignette_power: f32,
     pub white_balance_temperature: f32,
     pub white_balance_tint: f32,
     pub contrast: f32,
@@ -482,9 +489,15 @@ pub const GRADING_RANGES: [&str; 6] = [
 impl Default for PostProcessing {
     fn default() -> Self {
         Self {
+            // The engine's defaults when an atmosphere omits them.
+            // bg3: ls::Atmosphere::Visit (4.1.1.7631656)
             bloom: false,
-            bloom_threshold: 1.0,
-            bloom_amount: 0.0,
+            bloom_threshold: 0.4,
+            bloom_amount: 1.5,
+            vignette: false,
+            vignette_color: [0.0; 3],
+            vignette_intensity: 0.5,
+            vignette_power: 7.0,
             white_balance_temperature: 6500.0,
             white_balance_tint: 0.0,
             contrast: 1.0,
@@ -506,6 +519,10 @@ impl PostProcessing {
             bloom: bool_attr(p, "Bloom").unwrap_or(false),
             bloom_threshold: f(p, "Threshold", d.bloom_threshold),
             bloom_amount: f(p, "Amount", d.bloom_amount),
+            vignette: bool_attr(p, "Vignette").unwrap_or(false),
+            vignette_color: vec_attr(p, "VignetteColor").unwrap_or(d.vignette_color),
+            vignette_intensity: f(p, "VignetteIntensity", d.vignette_intensity),
+            vignette_power: f(p, "VignettePower", d.vignette_power),
             white_balance_temperature: f(p, "WhiteBalanceTemperature", 6500.0),
             white_balance_tint: f(p, "WhiteBalanceTint", 0.0),
             ..d
@@ -870,6 +887,9 @@ mod tests {
                     Node::new("PostProcessing")
                         .with_attr("Bloom", Value::Bool(true))
                         .with_attr("Amount", Value::Float(0.25))
+                        .with_attr("Vignette", Value::Bool(true))
+                        .with_attr("VignetteColor", Value::Vec3([0.1, 0.0, 0.0]))
+                        .with_attr("VignettePower", Value::Float(4.03))
                         .with_child(exposure)
                         .with_child(
                             Node::new("NewColorCorrection")
@@ -918,6 +938,13 @@ mod tests {
         assert_eq!(l.exposure, Some([14.0, 16.0, 0.0]));
         assert!(l.post.bloom);
         assert_eq!(l.post.bloom_amount, 0.25);
+        assert_eq!(l.post.bloom_threshold, 0.4, "engine default");
+        assert!(l.post.vignette);
+        assert_eq!(l.post.vignette_color, [0.1, 0.0, 0.0]);
+        assert_eq!(
+            (l.post.vignette_intensity, l.post.vignette_power),
+            (0.5, 4.03)
+        );
         assert_eq!(l.post.contrast, 1.12);
         assert_eq!(l.post.ranges[2].xy_offset, [0.1, 0.01]);
         assert_eq!(l.post.ranges[0], GradingRange::default());

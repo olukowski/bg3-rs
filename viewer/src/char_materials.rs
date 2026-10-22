@@ -349,6 +349,11 @@ impl CharacterTemplates {
         })))
     }
 
+    /// The kernel slot of a subsurface profile (level materials share the character slots).
+    pub fn sss_slot(&mut self, profile: &DiffusionProfile) -> usize {
+        self.sss.slot(profile)
+    }
+
     /// The subsurface profiles in kernel-slot order.
     pub fn sss_profiles(&self) -> &SssProfiles {
         &self.sss

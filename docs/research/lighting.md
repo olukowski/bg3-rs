@@ -231,8 +231,8 @@ light buffers (`ls::ClusteredAssignmentStage::SetLightData` / `SetDirectionLight
 `viewer/src/lights.rs`. Bevy's exposure is the same `1/(1.2 · 2^EV100)` and Bevy divides a point
 or spot light's lumens by 4π, so: point lumens = `Intensity` (exact); spot lumens = `4 ·
 Intensity` and half angles (exact cone); colours from the engine's `blackbody` (exact). The
-falloff is one function, `bg3_light_falloff` in `shaders/game_light.wesl`, used by the character
-shader and patched at run time into Bevy's point light (`bevy_pbr::render::pbr_lighting`, in
+falloff is one function, `bg3_light_falloff` in `shaders/game_light.wesl`, used by the game's
+light loop (`game_lighting.wesl`, characters and level surfaces) and patched at run time into Bevy's point light (`bevy_pbr::render::pbr_lighting`, in
 place of `getDistanceAttenuation`). It reads `Gain`/`FlatFalloff` packed as the game does
 (`FlatFalloff ? −max(Gain, ε) : Gain`) from the light's `shadow_depth_bias` (unused: the viewer
 renders no local shadow maps). Approximations:
@@ -310,14 +310,77 @@ In the viewer the grading is evaluated per pixel instead of through the 32³ LUT
 quantisation is not reproduced), the LUT is loaded from the install at start, and the encoded
 output is decoded to linear for Bevy's sRGB swapchain (which re-encodes it). Not ported: white
 balance other than 6500 K / tint 0 (logged), the VFX grading of spell effects, artist grading LUTs
-(`GradingLutEnabled`), screen fades, and **bloom**: the game adds a bloom chain before grading
-(threshold `sat(Amount · (lum − Threshold))` with a min-of-4 downsample, combined with weight 0.2;
-the parameter mapping is an **assumption**), the viewer has none.
+(`GradingLutEnabled`) and screen fades. Bloom and the vignette: next sections.
 
 The Nautiloid atmospheres: `ATM_Default_EV08_Avernus_Int` (EV 8.5–10.5, centre-weighted,
 Highlights 10, blue shadows `ShadowRange.XYOffset (0.1, 0.01)`) and `ATM_Default_EV10_Avernus_Ext`
 (EV 8.5–12, uniform metering, Saturation 1.1, `ShadowRange.ExposureShift 0.25`); both Contrast
 1.12.
+
+## Post-process steps
+
+`ls::PostProcessStage::Load` creates the steps in this order (**assumption**: creation order is
+execution order; `InsertStep` takes an index): ClearRenderView, GodRays, DOF, FadeBlending,
+**Exposure**, ExposureOld, ReExpose, LensFlare, DarkenEnvironment, RadialBlur, SMAA, TAA,
+History, **Bloom**, ChromaticAberration, ComputeLUTs, ColorGrading, InjectTexture,
+**ToneMap**, CAS, **Vignette**, Calibration, FSR. So the exposure histogram sees the scene
+without bloom, bloom is added to the pre-exposed HDR scene before grading, and the vignette
+works on the display-encoded output. What the Nautiloid uses and the viewer does:
+
+| Step | Gate | Nautiloid | Viewer |
+|---|---|---|---|
+| Exposure, grading, tonemap | — | yes | ported (above) |
+| Bloom | atmosphere `Bloom` and the graphics option | exterior atmosphere only | ported (below) |
+| Vignette | atmosphere `Vignette` (52 of 344 atmospheres) | off | ported (below) |
+| GodRays | atmosphere `GodRays` (97) | off | not ported |
+| LensFlare | `LensFlareEnabled` (9) | off | not ported |
+| DOF | atmosphere / camera | — | not ported (cinematic) |
+| SMAA / TAA / FSR | graphics options | — | none (no anti-aliasing) |
+| CAS (sharpening) | graphics: sharpening on and no upscaler (`_GraphicSettings` +0xa1, +0x97) | user setting | not ported |
+
+No film grain or dithering step exists in the SDR path. CAS only redistributes contrast
+locally and changes the mean luminance little.
+
+## Bloom
+
+Sources: `PPBloomScaleBiasDownsampleAndBlur_PS`, `PPBloomDownsampleAndBlur_PS`,
+`PPBloomUpsampleAndBlur_PS`, `PPBloomUpsampleBlurAndCombine_PS` (Core.metallib),
+`ls::PostProcessStep_Bloom::ExecuteWTKernel`, `::LoadRenderTargets`, `::LoadShaders`,
+`::UpdateIsRenderingInternal`, `ls::Atmosphere::Visit` (4.1.1.7631656).
+
+- **Settings**: `PostProcessing/Bloom` (on/off), `Threshold` (engine default 0.4) and `Amount`
+  (default 1.5) are copied straight into the threshold pass's `Params`. The step runs when the
+  atmosphere's `Bloom` is set and the graphics option is on.
+- **Targets**: 1/2, 1/4, 1/8, 1/16 of the screen (two each: down and up) and 1/32 (one).
+- **Threshold** (scene → 1/2): four bilinear taps a quarter of a destination texel apart (one
+  source texel each), each `c · sat(Amount · (dot(c, (0.3, 0.59, 0.11)) − Threshold))` on the
+  pre-exposed scene, and the per-channel minimum of the four (suppresses fireflies).
+- **Downsample** (1/2 → … → 1/32): a 3×3 tent (centre ¼, edges ⅛, corners 1/16) with taps one
+  destination texel × `s` apart, where `s = height / 1080` (times render/output size when
+  upscaling).
+- **Upsample** (1/32 + 1/16 → 1/16, … → 1/2): this level + `Amount` (a constant 1) × the tent of
+  the level below, taps two destination texels × `s` apart.
+- **Combine**: scene + **0.2** × the 1/2 result (bilinear).
+
+The Nautiloid: `ATM_Default_EV10_Avernus_Ext` has bloom on, threshold 1, amount 0.25 (so
+only pre-exposed luminance above 1 blooms, fully from 5); the interior atmosphere has it off;
+`ATM_Default` has 0.9 / 0.2.
+
+In the viewer (`viewer/src/bloom.rs`, `shaders/bloom.wesl`) all of the above is ported,
+between our exposure and tonemap passes, following the atmosphere of the camera. Differences:
+the targets are `Rgba16Float` (the engine's format code is not decoded, **assumption**), the
+frame's exposure lag is corrected as in the tonemap pass, and the graphics option is taken as
+on. `BG3_NO_BLOOM=1` turns it off; `BG3_BLOOM=threshold,amount` forces other settings (checks
+only). On the framed Lae'zel shot (exterior atmosphere) bloom changes the centre luma by 0.03:
+the deck has almost nothing above the threshold.
+
+## Vignette
+
+`PPVignette_PS` with `ls::PostProcessStep_Vignette::ExecuteWTKernel` (4.1.1.7631656): when the
+atmosphere's `Vignette` is set, the display-encoded output is mixed towards `VignetteColor`
+(as stored) by `w = sat(VignetteIntensity · ‖|2(uv − ½)|^VignettePower‖)` (power per axis,
+then the length). Defaults: intensity 0.5, power 7, colour black. Ported in the tonemap pass
+(`post.wesl`); off on the Nautiloid. `BG3_VIGNETTE=intensity,power` forces it on (checks only).
 
 ## Light probes
 
@@ -397,6 +460,26 @@ template inheritance, the fog edge weights, the post-processing fields and the e
 the install test `nautiloid_triggers_choose_lighting_probes_and_fog` checks the Nautiloid's
 trigger choice, probe captures and fog volumes.
 
+### Level shading and bloom (2026-10-22)
+
+Same script after the level materials moved to the game's light loop and bloom/vignette were
+added (luma ours / reference; captures repeat to ±0.03):
+
+| Shot | Before | After |
+|------|------|------|
+| `laezel` | 28.7 / 41.9 | 28.6 / 41.9 |
+| `imp` | 27.6 / 32.4 | 22.6 / 32.4 |
+| `avatar-deepgnome-cleric` | 15.6 / 31.6 | 14.4 / 31.6 |
+
+On the imp shot the game's inputs lit by Bevy's PBR (`BG3_LEVEL_BEVY_LIGHTING=1`) give 26.5:
+most of the drop is the game's BRDF (renormalised Burley, remapped Smith), not the inputs.
+Bloom changes these shots by < 0.1 (exterior atmosphere, threshold 1). In all three shots the
+adapted exposure sits at the atmosphere's `ExposureMin` (EV100 8.5, `BG3_POST_DEBUG=1` prints
+it): the metered scene is darker than the brightest exposure the game allows, so the game's
+scene radiance must be higher than ours. The remaining gap is in the light sources and
+ambient (the distant probe, box lights, sun transmittance, shadowing differences), not in the
+post chain or the surface response.
+
 ## Open questions
 
 - `CombinedLights`: how the gameplay half is evaluated (`eoc::GameplayLightComponent`:
@@ -405,5 +488,6 @@ trigger choice, probe captures and fog volumes.
 - The original trigger blending curve and entering-versus-leaving `FadeTime` semantics; probe list order
   (`ls::LightProbeHierarchySystem`); the distant probe.
 - The sun's transmittance precompute; the flat sky colour; `TimelineFog`.
-- Bloom parameter mapping; which camera uses the second `ExposureSettings` entry.
-- Level materials still use Bevy's `StandardMaterial` BRDF (see `materials.md`), not the game's.
+- Which camera uses the second `ExposureSettings` entry; the bloom targets' format; whether
+  step creation order is the execution order.
+- God rays, lens flare, CAS and anti-aliasing (see "Post-process steps").

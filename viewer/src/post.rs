@@ -62,6 +62,16 @@ pub struct PostUniform {
     pub ranges: [Vec4; 6],
 }
 
+/// The atmosphere's vignette (`post.wesl` `Vignette`), applied to the display output.
+#[derive(Component, Clone, Copy, ExtractComponent, ShaderType, Default, Debug, PartialEq)]
+#[extract_app(RenderApp)]
+pub struct GameVignette {
+    /// (VignetteColor, on (1) / off (0)).
+    pub color: Vec4,
+    /// (VignetteIntensity, VignettePower, 0, 0).
+    pub params: Vec4,
+}
+
 /// Adapted exposure state, on the GPU (`post.wesl` `ExposureState`).
 #[derive(Clone, Copy, ShaderType, Debug)]
 pub struct ExposureState {
@@ -155,6 +165,7 @@ impl Plugin for GamePostPlugin {
         app.insert_resource(ExposureBuffer(handle))
             .add_plugins((
                 ExtractComponentPlugin::<GamePost>::default(),
+                ExtractComponentPlugin::<GameVignette>::default(),
                 ExtractResourcePlugin::<ExposureBuffer>::default(),
                 ExtractResourcePlugin::<DisplayLut>::default(),
             ))
@@ -168,7 +179,8 @@ impl Plugin for GamePostPlugin {
             .add_systems(Render, prepare_pipelines.in_set(RenderSystems::Prepare))
             .add_systems(
                 Core3d,
-                (exposure, tonemap)
+                // The engine's order: exposure, …, bloom, grading and tonemap.
+                (exposure, crate::bloom::bloom, tonemap)
                     .chain()
                     .before(tonemapping)
                     .in_set(Core3dSystems::PostProcess),
@@ -192,6 +204,9 @@ fn start_readback(mut commands: Commands, buffer: Res<ExposureBuffer>) {
                 let (ev, frames) = (f32::from_le_bytes(ev), u32::from_le_bytes(frames));
                 if frames == 0 || !ev.is_finite() {
                     return;
+                }
+                if std::env::var_os("BG3_POST_DEBUG").is_some() && frames % 60 == 1 {
+                    eprintln!("post: frame {frames}, EV100 {ev:.2}");
                 }
                 for mut e in &mut cameras {
                     e.ev100 = ev;
@@ -285,6 +300,7 @@ fn init_pipelines(
                 storage_buffer_read_only::<ExposureState>(false),
                 texture_3d(TextureSampleType::Float { filterable: true }),
                 sampler(SamplerBindingType::Filtering),
+                uniform_buffer::<GameVignette>(false),
             ),
         ),
     );
@@ -417,6 +433,7 @@ fn tonemap(
         &ViewUniformOffset,
         &GamePost,
         &TonemapPipelineId,
+        Option<&GameVignette>,
     )>,
     cache: Res<PipelineCache>,
     pipelines: Res<PostPipelines>,
@@ -427,7 +444,7 @@ fn tonemap(
     images: Res<RenderAssets<bevy::render::texture::GpuImage>>,
     mut ctx: RenderContext,
 ) {
-    let (target, offset, post, id) = view.into_inner();
+    let (target, offset, post, id, vignette) = view.into_inner();
     let Some(pipeline) = cache.get_render_pipeline(id.0) else {
         return;
     };
@@ -443,6 +460,18 @@ fn tonemap(
     let Some(uniform) = post_uniform(ctx.render_device(), &post.uniform) else {
         return;
     };
+    let vignette = {
+        let mut bytes = encase::UniformBuffer::new(Vec::<u8>::new());
+        let Ok(()) = bytes.write(&vignette.copied().unwrap_or_default()) else {
+            return;
+        };
+        ctx.render_device()
+            .create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("bg3 vignette uniform"),
+                contents: bytes.as_ref(),
+                usage: BufferUsages::UNIFORM,
+            })
+    };
     let post_write = target.post_process_write();
     let bind_group = ctx.render_device().create_bind_group(
         Some("bg3 tonemap bind group"),
@@ -455,6 +484,7 @@ fn tonemap(
             state.buffer.as_entire_buffer_binding(),
             &lut.texture_view,
             &lut.sampler,
+            vignette.as_entire_binding(),
         )),
     );
     let mut pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {

@@ -16,6 +16,7 @@ pub mod character;
 pub mod convert;
 pub mod dds;
 pub mod graph;
+pub mod level;
 pub mod params;
 pub mod resolve;
 
