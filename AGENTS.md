@@ -95,8 +95,10 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
 - `cargo run -p bg3-viewer -- [LEVEL] [--camera x,y,z --look-at x,y,z] [--shot out.png]` renders a
   level. `--shot` saves a screenshot and exits, which is handy for checking rendering changes.
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),
-  `--terrain-only` hides objects, `--light-scale` tunes local-light brightness,
-  `--placeholders` draws a small box for each object without a drawn mesh (effects, …).
+  `--terrain-only` hides objects, `--light-scale` multiplies local lights (default 1 = the game's
+  units), `--placeholders` draws a small box for each object without a drawn mesh (effects, …).
+  The level is lit, exposed and tonemapped like the game (`docs/research/lighting.md`);
+  `BG3_BEVY_POST=1` puts Bevy's tonemapping back, `BG3_NO_FOG=1` turns the fog volumes off.
   `--dialog <name>` runs a dialog in an on-screen panel (number keys pick options).
   `--play --frame <NAME> [--frame-mode face|body] [--frame-yaw <degrees>]` frames a character
   from the front by name substring (default: whole body, yaw 0), hiding UI, clipping foreground

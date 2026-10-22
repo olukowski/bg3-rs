@@ -286,9 +286,10 @@ lights without one. Ambient: Lambert + split sum, evaluated with N and −N and 
 ### Our port (viewer)
 
 `character.wesl` replaces Bevy's `apply_pbr_lighting` for every character material with
-`char_lighting`: a loop over Bevy's clustered point/spot lights and directional lights (Bevy's
-falloff, cone and shadow lookups, which are the viewer's level-light mapping), the game's
-BRDFs above per shading model, Bevy's uniform ambient through its split-sum approximation, and
+`char_lighting`: a loop over Bevy's clustered point/spot lights and directional lights (the
+game's falloff via `game_light.wesl`, Bevy's cone and shadow lookups; see `lighting.md`), the game's
+BRDFs above per shading model, the level's light probes (and Bevy's uniform ambient, zero with
+probes) through Bevy's split-sum environment-map code, and
 the emissive. Exact: the Burley/GGX/remapped-Smith forms, specular anti-aliasing, the sun-disc
 specular, dual-lobe specular, the transmission formula and its wrap, the hair lobes and
 scatter term, the profile values and the kernel (unit-tested against an independent evaluation).
@@ -305,9 +306,9 @@ Approximated or missing:
   the scatter length: ears and fingers don't glow); lights that don't cast shadows in the game
   give the full transmission, as in the game. With a Bevy shadow map we would gate by it rather
   than measure the occluder depth.
-- Light falloff, light channels, box lights, probes (ambient is Bevy's uniform colour, so the
-  hair's front/back probe blend reduces to `|N·V|`), SSAO and the specular occlusion are not
-  the game's. Subsurface clothing (imps) reads no thickness map (the VT physical layer's alpha):
+- Light channels, box lights (approximated, see `lighting.md`), the probe blending (the level's
+  probes are Bevy reflection probes, evaluated through Bevy's environment-map code; hair blends
+  N and −N 0.3/0.7), SSAO and the specular occlusion are not the game's. Subsurface clothing (imps) reads no thickness map (the VT physical layer's alpha):
   amount 1, thickness 0.
 - **Eyes**: the catchlight is now unexposed (it was multiplied by the camera exposure, i.e.
   invisible) and reflects about the mesh normal plus the sclera detail normal; the sclera

@@ -52,6 +52,8 @@ pub struct LightProps {
     /// Spot cone angles in degrees (`x` inner, `y` outer — assumed).
     pub angle: Option<[f32; 2]>,
     pub flat_falloff: Option<bool>,
+    pub gain: Option<f32>,
+    pub light_channel: Option<u8>,
     pub shadow: Option<bool>,
     pub pre_expose: Option<bool>,
     pub is_flickering: Option<bool>,
@@ -59,6 +61,7 @@ pub struct LightProps {
     pub direction_attenuation_start: Option<f32>,
     pub direction_attenuation_end: Option<f32>,
     pub direction_attenuation_side: Option<f32>,
+    pub direction_attenuation_function: Option<u8>,
 }
 
 fn f32_attr(n: &Node, name: &str) -> Option<f32> {
@@ -96,6 +99,11 @@ impl LightProps {
             radius: f32_attr(n, "Radius"),
             angle: vec_attr(n, "Angle"),
             flat_falloff: bool_attr(n, "FlatFalloff"),
+            gain: f32_attr(n, "Gain"),
+            light_channel: n
+                .attr("LightChannelFlag")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as u8),
             shadow: bool_attr(n, "Shadow"),
             pre_expose: bool_attr(n, "PreExpose"),
             is_flickering: bool_attr(n, "IsFlickering"),
@@ -103,6 +111,10 @@ impl LightProps {
             direction_attenuation_start: f32_attr(n, "DirectionLightAttenuationStart"),
             direction_attenuation_end: f32_attr(n, "DirectionLightAttenuationEnd"),
             direction_attenuation_side: f32_attr(n, "DirectionLightAttenuationSide"),
+            direction_attenuation_function: n
+                .attr("DirectionLightAttenuationFunction")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as u8),
         }
     }
 
@@ -118,6 +130,8 @@ impl LightProps {
             radius: self.radius.or(parent.radius),
             angle: self.angle.or(parent.angle),
             flat_falloff: self.flat_falloff.or(parent.flat_falloff),
+            gain: self.gain.or(parent.gain),
+            light_channel: self.light_channel.or(parent.light_channel),
             shadow: self.shadow.or(parent.shadow),
             pre_expose: self.pre_expose.or(parent.pre_expose),
             is_flickering: self.is_flickering.or(parent.is_flickering),
@@ -131,6 +145,9 @@ impl LightProps {
             direction_attenuation_side: self
                 .direction_attenuation_side
                 .or(parent.direction_attenuation_side),
+            direction_attenuation_function: self
+                .direction_attenuation_function
+                .or(parent.direction_attenuation_function),
         }
     }
 }
@@ -155,12 +172,20 @@ pub struct Light {
     pub radius: f32,
     /// Degrees.
     pub angle: [f32; 2],
+    /// The engine's "fill light": constant `4/R²` in place of the inverse square.
     pub flat_falloff: bool,
+    /// Added to the inverse square (1/m²).
+    pub gain: f32,
+    /// Light channels the light reaches (bit per G-buffer channel).
+    pub light_channel: u8,
     pub shadow: bool,
     pub pre_expose: bool,
     pub is_flickering: bool,
     pub direction_dimensions: [f32; 3],
+    /// Box light fade lengths (m): start (from the source face), end, sides.
     pub direction_attenuation: [f32; 3],
+    /// Box light fade curve: 0 linear, 1 square, 2 smoothstep, 3 smootherstep.
+    pub direction_attenuation_function: u8,
     pub module: String,
 }
 
@@ -179,11 +204,13 @@ impl Light {
             enabled: props.enabled.unwrap_or(true),
             color: props.color.unwrap_or([1.0; 3]),
             intensity: props.intensity.unwrap_or(0.0),
-            kelvin: props.kelvin.unwrap_or(6500.0),
+            kelvin: props.kelvin.unwrap_or(6445.8965),
             use_temperature: props.use_temperature.unwrap_or(false),
-            radius: props.radius.unwrap_or(0.0),
+            radius: props.radius.unwrap_or(1.0),
             angle: props.angle.unwrap_or([35.0, 45.0]),
             flat_falloff: props.flat_falloff.unwrap_or(false),
+            gain: props.gain.unwrap_or(0.0),
+            light_channel: props.light_channel.unwrap_or(0xff),
             shadow: props.shadow.unwrap_or(false),
             pre_expose: props.pre_expose.unwrap_or(false),
             is_flickering: props.is_flickering.unwrap_or(false),
@@ -193,6 +220,7 @@ impl Light {
                 props.direction_attenuation_end.unwrap_or(0.0),
                 props.direction_attenuation_side.unwrap_or(0.0),
             ],
+            direction_attenuation_function: props.direction_attenuation_function.unwrap_or(0),
             id,
             name,
             object_type,
@@ -281,37 +309,46 @@ pub fn load_level_lights(vfs: &Vfs, level: &str, templates: &RootTemplates) -> R
     Ok(out)
 }
 
-/// Approximate black-body colour (linear RGB, max component 1) for a colour temperature.
+/// The engine's colour for a colour temperature: linear Rec.709 RGB with unit luminance (so it
+/// tints without changing brightness; components can exceed 1).
 ///
-/// Our own fit, not the game's: Tanner Helland's sRGB approximation, converted to linear.
+/// The chromaticity is the Planckian locus (rational fits in CIE 1960 uv) blended into the CIE
+/// daylight locus around 13000 K by a logistic weight, then converted from xyY (Y = 1) to linear
+/// Rec.709 and divided by its luminance.
+// bg3: ls::blackbody (4.1.1.7631656)
 pub fn kelvin_to_rgb(kelvin: f32) -> [f32; 3] {
-    let t = kelvin.clamp(1000.0, 40000.0) / 100.0;
-    let r = if t <= 66.0 {
-        255.0
-    } else {
-        329.698_73 * (t - 60.0).powf(-0.133_204_76)
-    };
-    let g = if t <= 66.0 {
-        99.470_8 * t.ln() - 161.119_57
-    } else {
-        288.122_16 * (t - 60.0).powf(-0.075_514_846)
-    };
-    let b = if t >= 66.0 {
-        255.0
-    } else if t <= 19.0 {
+    let t = f64::from(kelvin.max(1.0));
+    let u = (0.860117757 + 1.54118254e-4 * t + 1.28641212e-7 * t * t)
+        / (1.0 + 8.42420235e-4 * t + 7.08145163e-7 * t * t);
+    let v = (0.317398726 + 4.22806245e-5 * t + 4.20481691e-8 * t * t)
+        / (1.0 - 2.89741816e-5 * t + 1.61456053e-7 * t * t);
+    let d = 2.0 * u - 8.0 * v + 4.0;
+    let (xp, yp) = (3.0 * u / d, 2.0 * v / d);
+    let xd = 0.24039 + 222.6347 / t + 2107038.0 / (t * t) - 3025846784.0 / (t * t * t);
+    let yd = 3.081758 * xd * xd * xd - 5.873387 * xd * xd + 3.751130 * xd - 0.370015;
+    let s = (13000.0 - t) / 256.0;
+    let w = if s < -18.0 {
         0.0
+    } else if s > 18.0 {
+        1.0
     } else {
-        138.517_73 * (t - 10.0).ln() - 305.044_8
+        0.5 + 0.5 * (s.exp() - 1.0) / (s.exp() + 1.0)
     };
-    let lin = |c: f32| {
-        let c = (c / 255.0).clamp(0.0, 1.0);
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    [lin(r), lin(g), lin(b)]
+    let x = w * xp + (1.0 - w) * xd;
+    let y = w * yp + (1.0 - w) * yd;
+    let (cx, cz) = (x / y, (1.0 - x - y) / y);
+    let r = (3.2404542 * cx - 1.5371385 - 0.4985314 * cz).max(0.0);
+    let g = (-0.9692660 * cx + 1.8760108 + 0.0415560 * cz).max(0.0);
+    let b = (0.0556434 * cx - 0.2040259 + 1.0572252 * cz).max(0.0);
+    let lum = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b;
+    [(r / lum) as f32, (g / lum) as f32, (b / lum) as f32]
+}
+
+/// Gamma-encoded colours of the lighting bank (sun, moon, sky light): the engine converts them
+/// with a plain 2.2 power.
+// bg3: ls::Lighting::Visit (4.1.1.7631656)
+pub fn decode_gamma(c: [f32; 3]) -> [f32; 3] {
+    c.map(|v| v.max(0.0).powf(2.2))
 }
 
 /// The level's sun (from `LightingBank` → `Lighting/Sun`).
@@ -327,6 +364,8 @@ pub struct Sun {
     pub kelvin: f32,
     pub use_temperature: bool,
     pub shadow: bool,
+    /// Distance covered by the sun's shadow cascades (m).
+    pub shadow_far_plane: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -335,6 +374,12 @@ pub struct SkyLight {
     pub intensity: f32,
     pub kelvin: f32,
     pub use_temperature: bool,
+    /// Atmospheric scattering on: the sun then lights surfaces with `scattering_sun_color ·
+    /// scattering_sun_intensity` (× the atmosphere's transmittance) instead of its own colour.
+    pub scattering: bool,
+    pub scattering_intensity: f32,
+    pub scattering_sun_color: [f32; 3],
+    pub scattering_sun_intensity: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -358,15 +403,162 @@ pub struct LevelLighting {
     pub sky: Option<SkyLight>,
     pub fog: Vec<FogLayer>,
     pub fog_render_distance: Option<f32>,
+    /// Henyey-Greenstein asymmetry of the volumetric fog (`Fog/Phase`).
+    pub fog_phase: Option<f32>,
     /// `(ExposureMin, ExposureMax, ExposureCompensation)` of the first `ExposureSettings` (EV100).
     pub exposure: Option<[f32; 3]>,
+    /// Every `ExposureSettings` entry of the atmosphere, in file order.
+    pub exposure_settings: Vec<ExposureSettings>,
+    /// The atmosphere's colour grading and bloom (`PostProcessing`).
+    pub post: PostProcessing,
     /// `LevelBounds` from `meta.lsf` (min, max).
     pub bounds: Option<([f32; 3], [f32; 3])>,
+    /// Names of the lighting / atmosphere triggers that chose the resources (see
+    /// [`LevelLighting::load_at`]), if any.
+    pub zones: [Option<String>; 2],
+}
+
+/// One `PostProcessing/ExposureSettings/Object` of an atmosphere.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExposureSettings {
+    /// Auto-exposure on.
+    pub enabled: bool,
+    pub min: f32,
+    pub max: f32,
+    pub compensation: f32,
+    /// Histogram percentiles kept for metering.
+    pub min_percentile: f32,
+    pub max_percentile: f32,
+    pub metering_mode: i64,
+}
+
+/// One range of `NewColorCorrection` (`GlobalRange`, `ShadowRange`, …).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GradingRange {
+    pub exposure_shift: f32,
+    pub saturation: f32,
+    pub xy_offset: [f32; 2],
+}
+
+impl Default for GradingRange {
+    fn default() -> Self {
+        Self {
+            exposure_shift: 0.0,
+            saturation: 1.0,
+            xy_offset: [0.0; 2],
+        }
+    }
+}
+
+/// Colour grading and bloom settings of an atmosphere (`PostProcessing`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostProcessing {
+    pub bloom: bool,
+    /// Bloom `Threshold` and `Amount`.
+    pub bloom_threshold: f32,
+    pub bloom_amount: f32,
+    pub white_balance_temperature: f32,
+    pub white_balance_tint: f32,
+    pub contrast: f32,
+    pub highlights: f32,
+    pub shadows: f32,
+    pub saturation: f32,
+    pub hue: f32,
+    pub pivot: f32,
+    /// Ranges in the order global, dark, shadow, midtones, highlight, specular.
+    pub ranges: [GradingRange; 6],
+}
+
+/// `NewColorCorrection` range node names, in [`PostProcessing::ranges`] order.
+pub const GRADING_RANGES: [&str; 6] = [
+    "GlobalRange",
+    "DarkRange",
+    "ShadowRange",
+    "MidtonesRange",
+    "HighlightRange",
+    "SpecularRange",
+];
+
+impl Default for PostProcessing {
+    fn default() -> Self {
+        Self {
+            bloom: false,
+            bloom_threshold: 1.0,
+            bloom_amount: 0.0,
+            white_balance_temperature: 6500.0,
+            white_balance_tint: 0.0,
+            contrast: 1.0,
+            highlights: 0.0,
+            shadows: 0.0,
+            saturation: 1.0,
+            hue: 0.0,
+            pivot: 0.0,
+            ranges: [GradingRange::default(); 6],
+        }
+    }
+}
+
+impl PostProcessing {
+    fn read(p: &Node) -> Self {
+        let d = Self::default();
+        let f = |n: &Node, name: &str, default: f32| f32_attr(n, name).unwrap_or(default);
+        let mut out = Self {
+            bloom: bool_attr(p, "Bloom").unwrap_or(false),
+            bloom_threshold: f(p, "Threshold", d.bloom_threshold),
+            bloom_amount: f(p, "Amount", d.bloom_amount),
+            white_balance_temperature: f(p, "WhiteBalanceTemperature", 6500.0),
+            white_balance_tint: f(p, "WhiteBalanceTint", 0.0),
+            ..d
+        };
+        if let Some(c) = p.child("NewColorCorrection") {
+            out.contrast = f(c, "Contrast", 1.0);
+            out.highlights = f(c, "Highlights", 0.0);
+            out.shadows = f(c, "Shadows", 0.0);
+            out.saturation = f(c, "Saturation", 1.0);
+            out.hue = f(c, "Hue", 0.0);
+            out.pivot = f(c, "Pivot", 0.0);
+            for (range, name) in out.ranges.iter_mut().zip(GRADING_RANGES) {
+                if let Some(r) = c.child(name) {
+                    *range = GradingRange {
+                        exposure_shift: f(r, "ExposureShift", 0.0),
+                        saturation: f(r, "Saturation", 1.0),
+                        xy_offset: vec_attr(r, "XYOffset").unwrap_or([0.0; 2]),
+                    };
+                }
+            }
+        }
+        out
+    }
+}
+
+impl ExposureSettings {
+    fn read(o: &Node) -> Option<Self> {
+        Some(Self {
+            enabled: bool_attr(o, "Exposure").unwrap_or(true),
+            min: f32_attr(o, "ExposureMin")?,
+            max: f32_attr(o, "ExposureMax")?,
+            compensation: f32_attr(o, "ExposureCompensation").unwrap_or(0.0),
+            min_percentile: f32_attr(o, "ExposureMinPercentile").unwrap_or(0.0),
+            max_percentile: f32_attr(o, "ExposureMaxPercentile").unwrap_or(1.0),
+            metering_mode: o
+                .attr("ExposureMeteringMode")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+        })
+    }
 }
 
 impl LevelLighting {
     /// Read `meta.lsf` (last module wins) and resolve its lighting/atmosphere resources.
     pub fn load(vfs: &Vfs, level: &str) -> Result<Self> {
+        Self::load_at(vfs, level, None)
+    }
+
+    /// Like [`load`](Self::load), but if `at` (BG3 world space) is inside a lighting or
+    /// atmosphere trigger, that trigger's resource replaces the level's (the innermost trigger;
+    /// its first resource). Triggers fade between resources as the camera moves; this picks one
+    /// place.
+    pub fn load_at(vfs: &Vfs, level: &str, at: Option<[f32; 3]>) -> Result<Self> {
         let mut meta = None;
         for module in BASE_LOAD_ORDER {
             let path = format!("Mods/{module}/Levels/{level}/meta.lsf");
@@ -389,11 +581,37 @@ impl LevelLighting {
             sky: None,
             fog: Vec::new(),
             fog_render_distance: None,
+            fog_phase: None,
             exposure: None,
+            exposure_settings: Vec::new(),
+            post: PostProcessing::default(),
             bounds,
+            zones: [None, None],
         };
-        for res in atmosphere_banks(vfs)? {
-            out.apply_bank(&res);
+        let banks = atmosphere_banks(vfs)?;
+        if let Some(p) = at {
+            let zones = crate::atmosphere::load_resource_zones(vfs, level)?;
+            let has = |region: &str, id: &str| {
+                banks.iter().any(|b| {
+                    b.region(region).is_some_and(|r| {
+                        r.children_named("Resource")
+                            .any(|x| x.attr_str("ID") == Some(id))
+                    })
+                })
+            };
+            let lighting = crate::atmosphere::zone_at(&zones, p, |r| has("LightingBank", r));
+            if let Some(z) = lighting {
+                out.lighting_id = Some(z.resources[0].clone());
+                out.zones[0] = Some(z.name.clone());
+            }
+            let atmosphere = crate::atmosphere::zone_at(&zones, p, |r| has("AtmosphereBank", r));
+            if let Some(z) = atmosphere {
+                out.atmosphere_id = Some(z.resources[0].clone());
+                out.zones[1] = Some(z.name.clone());
+            }
+        }
+        for res in &banks {
+            out.apply_bank(res);
         }
         Ok(out)
     }
@@ -415,18 +633,23 @@ impl LevelLighting {
         }
         if let Some(r) = find("AtmosphereBank", &self.atmosphere_id) {
             self.atmosphere_name = str_attr(&r, "Name").unwrap_or_default();
-            self.exposure = r
+            self.exposure_settings = r
                 .child("Atmosphere")
                 .and_then(|a| a.child("PostProcessing"))
-                .and_then(|p| p.child("ExposureSettings"))
-                .and_then(|e| e.child("Object"))
-                .and_then(|o| {
-                    Some([
-                        f32_attr(o, "ExposureMin")?,
-                        f32_attr(o, "ExposureMax")?,
-                        f32_attr(o, "ExposureCompensation").unwrap_or(0.0),
-                    ])
-                });
+                .into_iter()
+                .flat_map(|p| p.children_named("ExposureSettings"))
+                .filter_map(|e| e.child("Object"))
+                .filter_map(ExposureSettings::read)
+                .collect();
+            self.exposure = self
+                .exposure_settings
+                .first()
+                .map(|e| [e.min, e.max, e.compensation]);
+            self.post = r
+                .child("Atmosphere")
+                .and_then(|a| a.child("PostProcessing"))
+                .map(PostProcessing::read)
+                .unwrap_or_default();
         }
     }
 
@@ -436,18 +659,24 @@ impl LevelLighting {
             pitch: f32_attr(s, "Pitch").unwrap_or(45.0),
             color: vec_attr(s, "SunColor").unwrap_or([1.0; 3]),
             intensity: f32_attr(s, "SunIntensity").unwrap_or(0.0),
-            kelvin: f32_attr(s, "Kelvin").unwrap_or(6500.0),
+            kelvin: f32_attr(s, "Kelvin").unwrap_or(6445.8965),
             use_temperature: bool_attr(s, "UseTemperature").unwrap_or(false),
             shadow: bool_attr(s, "ShadowEnabled").unwrap_or(false),
+            shadow_far_plane: f32_attr(s, "ShadowFarPlane").unwrap_or(100.0),
         });
         self.sky = l.child("SkyLight").map(|s| SkyLight {
             color: vec_attr(s, "Color").unwrap_or([1.0; 3]),
             intensity: f32_attr(s, "Intensity").unwrap_or(0.0),
-            kelvin: f32_attr(s, "Kelvin").unwrap_or(6500.0),
+            kelvin: f32_attr(s, "Kelvin").unwrap_or(6445.8965),
             use_temperature: bool_attr(s, "UseTemperature").unwrap_or(false),
+            scattering: bool_attr(s, "ScatteringEnabled").unwrap_or(false),
+            scattering_intensity: f32_attr(s, "ScatteringIntensity").unwrap_or(0.0),
+            scattering_sun_color: vec_attr(s, "ScatteringSunColor").unwrap_or([1.0; 3]),
+            scattering_sun_intensity: f32_attr(s, "ScatteringSunIntensity").unwrap_or(0.0),
         });
         if let Some(fog) = l.child("Fog") {
             self.fog_render_distance = f32_attr(fog, "RenderDistance");
+            self.fog_phase = f32_attr(fog, "Phase");
             self.fog = ["FogLayer0", "FogLayer1"]
                 .iter()
                 .filter_map(|name| fog.child(name))
@@ -505,6 +734,8 @@ mod tests {
             equipment: None,
             light: Some(LightProps::read(&light)),
             character: None,
+            probe: None,
+            fog: None,
         }
     }
 
@@ -551,15 +782,20 @@ mod tests {
     }
 
     #[test]
-    fn kelvin_colours_are_plausible() {
-        let warm = kelvin_to_rgb(2700.0);
-        let neutral = kelvin_to_rgb(6600.0);
-        let cold = kelvin_to_rgb(15000.0);
-        assert!(warm[0] > warm[2] * 3.0);
-        assert!((neutral[0] - 1.0).abs() < 0.05 && neutral[2] > 0.9);
-        assert!(cold[2] > cold[0]);
-        for c in [warm, neutral, cold] {
-            assert!(c.iter().all(|v| (0.0..=1.0).contains(v)));
+    fn kelvin_colours_have_unit_luminance_and_the_expected_tint() {
+        // Reference values: our evaluation of the engine's formula (research notes).
+        for (t, rgb) in [
+            (2500.0, [2.066, 0.770, 0.138]),
+            (3500.0, [1.564, 0.892, 0.405]),
+            (6445.9, [1.049, 0.983, 1.028]),
+            (15000.0, [0.785, 0.993, 1.706]),
+        ] {
+            let c = kelvin_to_rgb(t);
+            for (a, b) in c.iter().zip(rgb) {
+                assert!((a - b).abs() < 0.01, "{t} K: {c:?}");
+            }
+            let lum = 0.2126729 * c[0] + 0.7151522 * c[1] + 0.072175 * c[2];
+            assert!((lum - 1.0).abs() < 1e-4);
         }
     }
 
@@ -582,8 +818,20 @@ mod tests {
         let atmosphere = Node::new("Resource")
             .with_attr("ID", Value::FixedString("A".into()))
             .with_child(
-                Node::new("Atmosphere")
-                    .with_child(Node::new("PostProcessing").with_child(exposure)),
+                Node::new("Atmosphere").with_child(
+                    Node::new("PostProcessing")
+                        .with_attr("Bloom", Value::Bool(true))
+                        .with_attr("Amount", Value::Float(0.25))
+                        .with_child(exposure)
+                        .with_child(
+                            Node::new("NewColorCorrection")
+                                .with_attr("Contrast", Value::Float(1.12))
+                                .with_child(
+                                    Node::new("ShadowRange")
+                                        .with_attr("XYOffset", Value::Vec2([0.1, 0.01])),
+                                ),
+                        ),
+                ),
             );
         let res = bg3_lsf::Resource {
             regions: vec![
@@ -607,8 +855,12 @@ mod tests {
             sky: None,
             fog: vec![],
             fog_render_distance: None,
+            fog_phase: None,
             exposure: None,
+            exposure_settings: vec![],
+            post: PostProcessing::default(),
             bounds: None,
+            zones: [None, None],
         };
         l.apply_bank(&res);
         assert_eq!(l.lighting_name, "LTN_Test");
@@ -616,6 +868,11 @@ mod tests {
         assert_eq!(sun.intensity, 100000.0);
         assert_eq!(sun.color, [1.0, 0.9, 0.8]);
         assert_eq!(l.exposure, Some([14.0, 16.0, 0.0]));
+        assert!(l.post.bloom);
+        assert_eq!(l.post.bloom_amount, 0.25);
+        assert_eq!(l.post.contrast, 1.12);
+        assert_eq!(l.post.ranges[2].xy_offset, [0.1, 0.01]);
+        assert_eq!(l.post.ranges[0], GradingRange::default());
     }
 
     #[test]
@@ -659,5 +916,56 @@ mod tests {
             assert_eq!(lighting.sun.is_some(), has_lighting);
             assert!(lighting.exposure.is_some());
         }
+    }
+
+    #[test]
+    #[ignore = "needs BG3 install"]
+    fn nautiloid_triggers_choose_lighting_probes_and_fog() {
+        let install = match bg3_install::Install::locate() {
+            Ok(i) => i,
+            Err(e) => return eprintln!("skipping: {e}"),
+        };
+        let vfs = Vfs::from_install(&install).unwrap();
+        let level = "TUT_Avernus_C";
+        // The deck of the imp fight.
+        let at = [-41.0, 4.0, -399.0];
+        let lighting = LevelLighting::load_at(&vfs, level, Some(at)).unwrap();
+        eprintln!(
+            "{level} at {at:?}: {} / {} via {:?}; exposure {:?}; post {:?}",
+            lighting.lighting_name,
+            lighting.atmosphere_name,
+            lighting.zones,
+            lighting.exposure_settings,
+            lighting.post
+        );
+        assert_eq!(lighting.lighting_name, "LTN_Default_EV10_Avernus_Ext");
+        assert!(lighting.atmosphere_name.starts_with("ATM_Default_EV"));
+        assert!(lighting.exposure_settings.len() >= 2);
+        let e = &lighting.exposure_settings[0];
+        assert!(e.min < 10.0 && e.max >= e.min);
+        assert!(lighting.sky.as_ref().is_some_and(|s| s.scattering));
+        // Without a point the level default applies.
+        let default = LevelLighting::load(&vfs, level).unwrap();
+        assert_eq!(default.lighting_name, "LTN_Default");
+
+        let templates = RootTemplates::load(&vfs).unwrap();
+        let probes = crate::probes::load_level_probes(&vfs, level, &templates).unwrap();
+        let id = lighting.lighting_id.as_deref().unwrap();
+        let baked = probes.iter().filter(|p| p.capture(id).is_some()).count();
+        eprintln!("{} probes, {baked} baked with {id}", probes.len());
+        assert!(baked >= 20);
+        for p in probes.iter().filter_map(|p| p.capture(id)) {
+            for path in [&p.diffuse, &p.specular, &p.sh].into_iter().flatten() {
+                assert!(vfs.exists(path), "{path}");
+            }
+        }
+        let fog = crate::fog::load_fog_volumes(&vfs, level, &templates).unwrap();
+        let enabled = fog.iter().filter(|f| f.enabled).count();
+        eprintln!("{} fog volumes, {enabled} enabled", fog.len());
+        assert!(enabled >= 20);
+        assert!(
+            fog.iter()
+                .all(|f| f.density >= 0.0 && f.transition_distance >= 0.0)
+        );
     }
 }

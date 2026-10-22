@@ -30,6 +30,7 @@ bg3-vt = { path = "crates/bg3-vt" }
 bg3-world = { path = "crates/bg3-world" }
 
 anyhow = "1"
+bcdec_rs = "0.2"
 bevy = "0.20"
 clap = { version = "4.6", features = ["derive"] }
 flate2 = "1.1"

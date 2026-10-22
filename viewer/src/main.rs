@@ -10,6 +10,7 @@ mod characters;
 mod combat_ui;
 mod dialog;
 mod fly_camera;
+mod fog;
 mod framing;
 mod level;
 mod lights;
@@ -17,6 +18,8 @@ mod materials;
 mod meshes;
 mod nav;
 mod play;
+mod post;
+mod probes;
 mod space;
 mod sss;
 mod terrain;
@@ -168,7 +171,6 @@ fn main() -> Result<()> {
         .chain(args.terrain_levels.iter().cloned())
         .collect();
     let terrain = terrain::LevelTerrain::load(&vfs, &terrain_levels)?;
-    let lights = lights::LevelLights::load(&vfs, &args.level, &level.templates, args.light_scale)?;
     let started = std::time::Instant::now();
     let meshes = meshes::VisualMeshes::load(&vfs, &level);
     eprintln!(
@@ -206,16 +208,34 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    let avatar_position = play.as_ref().and_then(|(_, s)| {
+        s.presences
+            .iter()
+            .find(|p| p.id == s.avatar)
+            .map(|p| Vec3::from_array(p.position))
+    });
     // The play camera starts behind the avatar (BG3 space) unless placed explicitly.
-    let avatar_at = play
-        .as_ref()
-        .filter(|_| args.frame.is_none())
-        .and_then(|(_, s)| {
-            s.presences
-                .iter()
-                .find(|p| p.id == s.avatar)
-                .map(|p| Vec3::from_array(p.position))
-        });
+    let avatar_at = avatar_position.filter(|_| args.frame.is_none());
+    // Lighting and atmosphere triggers choose the level-wide lighting where the player is.
+    let lights = lights::LevelLights::load(
+        &vfs,
+        &args.level,
+        &level.templates,
+        args.light_scale,
+        avatar_position.or(args.look_at).map(|v| v.to_array()),
+    )?;
+    let fog = fog::LevelFog::load(
+        &vfs,
+        &args.level,
+        &level.templates,
+        lights.lighting.fog_phase,
+    );
+    let probes = probes::LevelProbes::load(
+        &vfs,
+        &args.level,
+        &level.templates,
+        lights.lighting.lighting_id.as_deref(),
+    );
     let extra = match &play {
         Some((_, started)) => play_characters(&vfs, &level, started)?,
         None => Vec::new(),
@@ -253,11 +273,15 @@ fn main() -> Result<()> {
     .add_plugins(characters::CharactersPlugin)
     .add_plugins(char_materials::CharacterMaterialsPlugin)
     .add_plugins(sss::SssPlugin)
+    .add_plugins(post::GamePostPlugin)
+    .add_plugins(lights::GameLightPlugin)
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)
     .insert_resource(meshes)
     .insert_resource(terrain)
     .insert_resource(lights)
+    .insert_resource(probes)
+    .insert_resource(fog)
     .insert_resource(materials)
     .insert_resource(characters)
     .insert_resource(level::ShowPlaceholders(args.placeholders))
@@ -278,9 +302,14 @@ fn main() -> Result<()> {
             level::spawn_level.after(materials::upload),
             terrain::spawn_terrain,
             lights::spawn_lights,
+            probes::spawn_probes,
+            fog::spawn_fog,
         ),
     )
-    .add_systems(PostStartup, lights::apply_exposure);
+    .add_systems(
+        PostStartup,
+        (lights::apply_exposure, probes::apply_sky, fog::apply_fog),
+    );
     if args.terrain_only {
         app.add_systems(PostStartup, terrain::hide_objects);
     }
