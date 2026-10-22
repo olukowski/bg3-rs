@@ -96,8 +96,9 @@ Open: one Nautiloid destruction mesh
 (`WALL_MF_Nautiloid_Interior_A_Mid_D_Piece_45_E_Membrane_Destruction_Mesh`, a 25 m bar) carries
 the engine default material with no flag that hides it; the zero-size door-handle and anchor
 dummies do too. Whether the game draws them (destruction meshes may only show once broken)
-is not established. Decals, fog volumes and triggers are not loaded by the viewer
-(`OBJECT_DIRS` is `Scenery`, `Items`, `Characters`), so none of them were among the shapes.
+is not established. Decals, fog volumes and triggers are not level meshes (`OBJECT_DIRS` is
+`Scenery`, `Items`, `Characters`), so none of them were among the shapes; decals are projected
+onto the level by the material shader (`decals.md`).
 
 **Not missing geometry: the lower deck's "gaps".** Close-ups of the imp fight showed the deck as
 straight-cut slabs with a pink-orange surface below. Neither was level data: the cuts were the

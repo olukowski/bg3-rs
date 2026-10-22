@@ -136,6 +136,9 @@ pub struct TerrainExtension {
     pub normal_map: Handle<Image>,
     #[texture(110, sample_type = "float", filterable = false)]
     pub base_ramp: Handle<Image>,
+    /// The level's box lights (`lights::BOX_LIGHTS`), read by the shared game light loop.
+    #[storage(120, read_only)]
+    pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 impl MaterialExtension for TerrainExtension {
@@ -840,6 +843,7 @@ fn terrain_extension(
             layer_count: inp.params.len() as u32,
             flags: if bevy_lighting { FLAG_BEVY_LIGHTING } else { 0 },
         },
+        box_lights: crate::lights::BOX_LIGHTS,
         layers,
         base_color_array: Handle::default(),
         normal_array: Handle::default(),

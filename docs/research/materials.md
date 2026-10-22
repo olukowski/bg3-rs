@@ -221,6 +221,9 @@ A/B, centre luma: imp deck view (`--play --combat-test --no-follow --camera=-42,
 (`lerp(1, 1/1.51, r)`) loses some energy on rough surfaces; glow maps now show their
 detail at the graph's intensity instead of the earlier guessed 150 nits.
 
+Decals (`docs/research/decals.md`) are blended into these inputs before lighting, on meshes
+whose object receives decals.
+
 ## Open
 
 Character graphs (skin, hair, eyes, clothing palettes, vertex-colour cuts) have their own

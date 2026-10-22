@@ -63,6 +63,9 @@ impl LevelObject {
 pub struct Level {
     pub name: String,
     pub objects: Vec<LevelObject>,
+    /// `RecieveDecal` (sic) set on the level object itself, by `MapKey` (few objects set it;
+    /// see [`RootTemplates::receives_decals`]).
+    pub receive_decal: HashMap<String, bool>,
 }
 
 impl Level {
@@ -74,6 +77,7 @@ impl Level {
     pub fn load_modules(vfs: &Vfs, name: &str, modules: &[&str]) -> Result<Self> {
         let mut by_id: HashMap<String, usize> = HashMap::new();
         let mut objects: Vec<LevelObject> = Vec::new();
+        let mut receive_decal: HashMap<String, bool> = HashMap::new();
         let mut found = false;
         for module in modules {
             for dir in OBJECT_DIRS {
@@ -92,6 +96,15 @@ impl Level {
                         }
                     }
                 }
+                for n in game_objects(&res) {
+                    if let Some(id) = str_attr(n, "MapKey") {
+                        match n.attr("RecieveDecal").and_then(|v| v.as_bool()) {
+                            Some(b) => receive_decal.insert(id, b),
+                            // A later module's definition replaces the whole object.
+                            None => receive_decal.remove(&id),
+                        };
+                    }
+                }
             }
         }
         if !found {
@@ -100,6 +113,7 @@ impl Level {
         Ok(Self {
             name: name.to_owned(),
             objects,
+            receive_decal,
         })
     }
 }
@@ -134,28 +148,30 @@ pub fn load_global_characters(vfs: &Vfs) -> Result<Vec<LevelObject>> {
     Ok(objects)
 }
 
+fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = &Node> {
+    res.region("Templates")
+        .into_iter()
+        .flat_map(|n| n.children.iter().filter(|c| c.name == "GameObjects"))
+}
+
 fn read_objects<'a>(
     res: &'a bg3_lsf::Resource,
     module: &'a str,
 ) -> impl Iterator<Item = LevelObject> + 'a {
-    res.region("Templates")
-        .into_iter()
-        .flat_map(|n| n.children.iter().filter(|c| c.name == "GameObjects"))
-        .filter_map(move |n| {
-            let kind = str_attr(n, "Type").unwrap_or_default();
-            Some(LevelObject {
-                id: str_attr(n, "MapKey")?,
-                name: str_attr(n, "Name").unwrap_or_default(),
-                character: (kind == "character")
-                    .then(|| crate::characters::CharacterProps::read(n)),
-                kind,
-                template: str_attr(n, "TemplateName"),
-                visual_template: str_attr(n, "VisualTemplate"),
-                is_blocker: n.attr("IsBlocker").and_then(|v| v.as_bool()),
-                transform: n.child("Transform").map(read_transform).unwrap_or_default(),
-                module: module.to_owned(),
-            })
+    game_objects(res).filter_map(move |n| {
+        let kind = str_attr(n, "Type").unwrap_or_default();
+        Some(LevelObject {
+            id: str_attr(n, "MapKey")?,
+            name: str_attr(n, "Name").unwrap_or_default(),
+            character: (kind == "character").then(|| crate::characters::CharacterProps::read(n)),
+            kind,
+            template: str_attr(n, "TemplateName"),
+            visual_template: str_attr(n, "VisualTemplate"),
+            is_blocker: n.attr("IsBlocker").and_then(|v| v.as_bool()),
+            transform: n.child("Transform").map(read_transform).unwrap_or_default(),
+            module: module.to_owned(),
         })
+    })
 }
 
 pub(crate) fn read_transform(node: &Node) -> Transform {

@@ -31,6 +31,8 @@ import bevy_pbr::render::{
 };
 @if(!PREPASS_PIPELINE)
 import bg3_viewer::shaders::game_lighting::{GameShading, game_lighting};
+@if(!PREPASS_PIPELINE)
+import bg3_viewer::shaders::decals::{DecalSurface, apply_decals};
 
 struct LevelUniform {
     // Shading model (bits 0–2), FLAG_* above.
@@ -55,6 +57,9 @@ const GLOW_PULSE_COLOUR: u32 = 4u;
 const GLOW_WIND: u32 = 5u;
 const GLOW_BOUNCING: u32 = 6u;
 const GLOW_GLASS: u32 = 7u;
+
+// `MeshTag` bit of objects that receive decals (`viewer/src/decals.rs`).
+const TAG_RECEIVES_DECALS: u32 = 1u;
 
 const SSS_THICKNESS_MAP: u32 = 1u;
 const SSS_RADIUS_MASK: u32 = 2u;
@@ -142,6 +147,9 @@ fn fragment(
     let dn_x = dpdx(pbr_input.N);
     let dn_y = dpdy(pbr_input.N);
     let normal_variance = min(dot(dn_x, dn_x) + dot(dn_y, dn_y), 0.18);
+    // Screen derivatives of the position, for the decals' texture gradients and flat normal.
+    let dp_x = dpdx(in.world_position.xyz);
+    let dp_y = dpdy(in.world_position.xyz);
 
     var sss_amount = 1.0;
     var thickness = 0.0;
@@ -189,6 +197,26 @@ fn fragment(
         pbr_input.material.alpha_cutoff,
         pbr_input.material.base_color,
     );
+
+@if(!PREPASS_PIPELINE) {
+    // Decals blend into the G-buffer of decal receivers; blended (forward) surfaces get none.
+    let alpha_mode = pbr_input.material.flags & pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS;
+    if (mesh_functions::get_tag(in.instance_index) & TAG_RECEIVES_DECALS) != 0u
+        && alpha_mode != pbr_types::STANDARD_MATERIAL_FLAGS_ALPHA_MODE_BLEND {
+        var ds: DecalSurface;
+        ds.albedo = pbr_input.material.base_color.rgb;
+        ds.normal = pbr_input.N;
+        ds.roughness = pbr_input.material.perceptual_roughness;
+        ds.reflectance = pbr_input.material.reflectance.x;
+        ds.metallic = pbr_input.material.metallic;
+        ds = apply_decals(ds, in.world_position.xyz, view_bindings::view.world_position, dp_x, dp_y);
+        pbr_input.material.base_color = vec4(ds.albedo, pbr_input.material.base_color.a);
+        pbr_input.N = ds.normal;
+        pbr_input.material.perceptual_roughness = ds.roughness;
+        pbr_input.material.reflectance = vec3(ds.reflectance);
+        pbr_input.material.metallic = ds.metallic;
+    }
+}
 
 @if(PREPASS_PIPELINE) {
     let out = deferred_output(in, pbr_input);
