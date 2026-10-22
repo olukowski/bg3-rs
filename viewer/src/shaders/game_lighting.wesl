@@ -27,6 +27,58 @@ import bevy_pbr::{
     render::pbr_lighting::{LightingInput, LAYER_BASE, F_AB},
 };
 
+// A box light (`LightType` 2), packed by `lights::box_light`: rows of the world → box map
+// (inside = every coordinate in 0–1), colour × intensity and the fade curve, the axial fade
+// (start, end, 1/start, 1/(1 − end)), the direction towards the light and the game's shadow
+// flag, the side fade scales (size / side length).
+struct BoxLight {
+    to_box: array<vec4<f32>, 3>,
+    color_function: vec4<f32>,
+    attenuation_z: vec4<f32>,
+    direction_shadow: vec4<f32>,
+    attenuation_xy: vec4<f32>,
+}
+
+@if(!PREPASS_PIPELINE)
+@group(constants::MATERIAL_BIND_GROUP) @binding(120) var<storage, read> box_lights: array<BoxLight>;
+
+// The fade curves of box lights: linear, square, smoothstep, smootherstep.
+@if(!PREPASS_PIPELINE)
+fn box_fade(t: f32, function: u32) -> f32 {
+    if function == 0u {
+        return t;
+    }
+    if function == 1u {
+        return t * t;
+    }
+    if function == 2u {
+        let c = clamp(t, 0.0, 1.0);
+        return c * c * (3.0 - 2.0 * c);
+    }
+    return t * t * t * (t * (6.0 * t - 15.0) + 10.0);
+}
+
+// Illuminance of a box light at box coordinates `u` (inside the box), without N·L: the axial
+// fade near the source and far faces, times the side fades.
+@if(!PREPASS_PIPELINE)
+fn box_illuminance(b: BoxLight, u: vec3<f32>) -> f32 {
+    let function = u32(b.color_function.w);
+    var w = 1.0;
+    if u.z < b.attenuation_z.x {
+        w = box_fade(u.z * b.attenuation_z.z, function);
+    } else if u.z > b.attenuation_z.y {
+        w = box_fade((1.0 - u.z) * b.attenuation_z.w, function);
+    }
+    let side = (0.5 - abs(u.xy - 0.5)) * b.attenuation_xy.xy;
+    if side.x < 1.0 {
+        w *= box_fade(side.x, function);
+    }
+    if side.y < 1.0 {
+        w *= box_fade(side.y, function);
+    }
+    return w;
+}
+
 // `pow` as the game's shaders evaluate it.
 @if(!PREPASS_PIPELINE)
 fn spow3(x: vec3<f32>, y: vec3<f32>) -> vec3<f32> { return pow(max(abs(x), vec3(1e-4)), y); }
@@ -301,9 +353,53 @@ fn game_lighting(in: pbr_types::PbrInput, sh: GameShading) -> vec3<f32> {
         direct += shade_light(sh, li);
     }
 
+    // Box lights: constant direction and illuminance inside the box, faded at its faces
+    // (`Illuminance_Direction`); those with `Shadow` take an orthographic shadow map.
+    for (var i = 0u; i < arrayLength(&box_lights); i += 1u) {
+        let b = box_lights[i];
+        let u = vec3(
+            dot(b.to_box[0], vec4(p.xyz, 1.0)),
+            dot(b.to_box[1], vec4(p.xyz, 1.0)),
+            dot(b.to_box[2], vec4(p.xyz, 1.0)),
+        );
+        if any(abs(u - 0.5) >= vec3(0.5)) {
+            continue;
+        }
+        var li: GameLight;
+        li.l = b.direction_shadow.xyz;
+        li.sun = false;
+        li.radiance = b.color_function.rgb * box_illuminance(b, u);
+        li.game_shadow = b.direction_shadow.w > 0.5;
+        li.has_shadow = false;
+        li.shadow = 1.0;
+        // Shadowed box lights: the black directional light along the same axis that carries
+        // their shadow map (`lights::spawn_box_shadow_carriers`).
+        if li.game_shadow && receiver {
+            for (var j = 0u; j < view_bindings::lights.n_directional_lights; j += 1u) {
+                let carrier = &view_bindings::lights.directional_lights[j];
+                if all((*carrier).color.rgb == vec3(0.0))
+                    && ((*carrier).flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u
+                    && dot((*carrier).direction_to_light.xyz, li.l) > 0.99999 {
+                    var bias_n = select(-in.world_normal, in.world_normal, dot(in.world_normal, li.l) >= 0.0);
+                    if sh.model == MODEL_HAIR {
+                        bias_n = li.l;
+                    }
+                    li.has_shadow = true;
+                    li.shadow = shadows::fetch_directional_shadow(j, p, bias_n, view_z, in.frag_coord.xy);
+                    break;
+                }
+            }
+        }
+        direct += shade_light(sh, li);
+    }
+
     let n_dir = view_bindings::lights.n_directional_lights;
     for (var i = 0u; i < n_dir; i += 1u) {
         let light = &view_bindings::lights.directional_lights[i];
+        // Black lights only carry box light shadows (see the box light loop).
+        if all((*light).color.rgb == vec3(0.0)) {
+            continue;
+        }
         var li: GameLight;
         li.l = (*light).direction_to_light.xyz;
         li.sun = true;

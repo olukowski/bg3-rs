@@ -206,7 +206,8 @@ fn start_readback(mut commands: Commands, buffer: Res<ExposureBuffer>) {
                     return;
                 }
                 if std::env::var_os("BG3_POST_DEBUG").is_some() && frames % 60 == 1 {
-                    eprintln!("post: frame {frames}, EV100 {ev:.2}");
+                    let target = word(8).map_or(f32::NAN, f32::from_le_bytes);
+                    eprintln!("post: frame {frames}, EV100 {ev:.2} (metered target {target:.2})");
                 }
                 for mut e in &mut cameras {
                     e.ev100 = ev;

@@ -98,7 +98,13 @@ pub fn frame_character(
         perspective.near = foreground_near(min, max, front, camera.translation, perspective.fov);
         *global = GlobalTransform::from(*camera);
         if frame.target.is_none() {
-            eprintln!("frame: {} (height {:.2} m)", root.name, max.y - min.y);
+            let at = crate::space::vec3(((min + max) * 0.5).to_array());
+            eprintln!(
+                "frame: {} (height {:.2} m) at {at:?} (BG3 space), camera at {:?}",
+                root.name,
+                max.y - min.y,
+                crate::space::vec3(camera.translation.to_array()),
+            );
         }
         frame.target = Some(entity);
         frame.ready = true;

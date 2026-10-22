@@ -46,6 +46,75 @@ pub struct LevelProbes {
     pub probes: Vec<ProbeMaps>,
     /// Mean radiance (capture units) of what the captures saw where there was no geometry.
     pub sky: Option<Vec3>,
+    /// The spherical harmonics of every enabled probe with a capture, in file order.
+    pub sh: Vec<ProbeSh>,
+    /// The background: the specular capture that saw the most sky (see [`apply_sky`]).
+    pub background: Option<(String, Image)>,
+}
+
+/// A probe's spherical harmonics (`_SH.dat`): four RGBA coefficient vectors (`Y00`, `Y1−1`,
+/// `Y10`, `Y11`), the plain projection of the captured radiance in capture units, with the
+/// coverage in alpha; and the volume they apply in.
+pub struct ProbeSh {
+    pub transform: bg3_world::Transform,
+    /// 0 = sphere, 1 = box.
+    pub shape: u8,
+    pub radius: f32,
+    pub size: [f32; 3],
+    pub transition_distance: f32,
+    pub coefficients: [[f32; 4]; 4],
+}
+
+impl ProbeSh {
+    /// The probe's weight at a BG3-space point: 0 outside, else smoothstep of the fade (sphere:
+    /// `(R − |p|)/TD`; box: 1 − the distance into the `TD` band inside the faces, over `TD`).
+    // bg3: VolumetricFogLighting / ClusteredLighting_* probe loop (Core.metallib, 4.1.1.7631656)
+    fn fade(&self, p: [f32; 3]) -> f32 {
+        let [x, y, z, w] = self.transform.rotation;
+        let q = Quat::from_xyzw(x, y, z, w).normalize();
+        let local = q.inverse() * (Vec3::from_array(p) - Vec3::from_array(self.transform.position));
+        let td = self.transition_distance.max(1e-5);
+        let t = if self.shape == 1 {
+            let half = Vec3::from_array(self.size) * 0.5;
+            if local.abs().cmpgt(half).any() {
+                return 0.0;
+            }
+            1.0 - ((local.abs() - half + td).max(Vec3::ZERO).length() / td).clamp(0.0, 1.0)
+        } else {
+            let d = local.length();
+            if d > self.radius {
+                return 0.0;
+            }
+            ((self.radius - d) / td).clamp(0.0, 1.0)
+        };
+        t * t * (3.0 - 2.0 * t)
+    }
+}
+
+impl LevelProbes {
+    /// Mean ambient radiance (cd/m², linear RGB) the volumetric fog sees at a BG3-space point:
+    /// the probes' band-0 harmonics laid over each other in file order, each by its fade times
+    /// its coverage, over the distant probe's (taken as 0: not known). The game evaluates band
+    /// 1 too, scaled by the phase asymmetry, towards the view ray; Bevy's fog can't take a
+    /// direction-dependent ambient, so it is dropped (exact for isotropic fog).
+    ///
+    /// bg3: VolumetricFogLighting (g_DistantProbeSH, LightProbeDataBuffer SH, × 100)
+    /// (Core.metallib, 4.1.1.7631656)
+    pub fn fog_ambient_at(&self, p: [f32; 3]) -> Vec3 {
+        const Y00: f32 = 0.282_095;
+        let mut out = Vec3::ZERO;
+        for sh in &self.sh {
+            let fade = sh.fade(p);
+            if fade <= 0.0 {
+                continue;
+            }
+            let c = sh.coefficients[0];
+            let value = (Vec3::new(c[0], c[1], c[2]) * Y00).max(Vec3::ZERO);
+            let weight = (c[3] * Y00).clamp(0.0, 1.0) * fade;
+            out = out.lerp(value, weight);
+        }
+        out * CAPTURE_SCALE
+    }
 }
 
 impl LevelProbes {
@@ -69,7 +138,22 @@ impl LevelProbes {
         let total = probes.len();
         let mut out = Vec::new();
         let mut sky = SkySum::default();
+        let mut sh = Vec::new();
+        let mut best: Option<(f32, String, String)> = None;
         for p in probes.iter().filter(|p| p.enabled) {
+            if let Some(path) = p.capture(lighting).and_then(|c| c.sh.as_deref()) {
+                match read_sh(vfs, path) {
+                    Ok(coefficients) => sh.push(ProbeSh {
+                        transform: p.transform,
+                        shape: p.shape,
+                        radius: p.radius,
+                        size: p.size,
+                        transition_distance: p.transition_distance,
+                        coefficients,
+                    }),
+                    Err(e) => eprintln!("probe {}: harmonics: {e}", p.name),
+                }
+            }
             match load_probe(vfs, p, lighting) {
                 Ok(Some(m)) => out.push(m),
                 Ok(None) => {}
@@ -77,19 +161,60 @@ impl LevelProbes {
             }
             if let Some(c) = p.capture(lighting)
                 && let (Some(rgb), Some(alpha)) = (&c.specular, &c.specular_alpha)
-                && let Err(e) = sky.add(vfs, rgb, alpha)
             {
-                eprintln!("probe {}: sky texels: {e}", p.name);
+                match sky.add(vfs, rgb, alpha) {
+                    Ok(share) if best.as_ref().is_none_or(|b| share > b.0) => {
+                        best = Some((share, p.name.clone(), rgb.clone()));
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("probe {}: sky texels: {e}", p.name),
+                }
             }
         }
         let sky = sky.mean();
+        let background = best.and_then(|(share, name, path)| {
+            match vfs
+                .read(&path)
+                .map_err(anyhow::Error::from)
+                .and_then(|d| cubemap(&d))
+            {
+                Ok(image) => {
+                    eprintln!(
+                        "probes: background from {name} ({:.0} % sky texels)",
+                        100.0 * share
+                    );
+                    Some((name, image))
+                }
+                Err(e) => {
+                    eprintln!("probe {name}: background: {e}");
+                    None
+                }
+            }
+        });
         eprintln!(
             "probes: {} of {total} with a capture for lighting {lighting}; sky {:?} cd/m²",
             out.len(),
             sky.map(|s| s * CAPTURE_SCALE)
         );
-        Self { probes: out, sky }
+        Self {
+            probes: out,
+            sky,
+            sh,
+            background,
+        }
     }
+}
+
+/// `_SH.dat`: four little-endian `float4`s.
+fn read_sh(vfs: &Vfs, path: &str) -> anyhow::Result<[[f32; 4]; 4]> {
+    let data = vfs.read(path)?;
+    anyhow::ensure!(data.len() >= 64, "{} bytes, expected 64", data.len());
+    Ok(std::array::from_fn(|i| {
+        std::array::from_fn(|c| {
+            let o = (i * 4 + c) * 4;
+            f32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]])
+        })
+    }))
 }
 
 fn load_probe(vfs: &Vfs, p: &Bg3Probe, lighting: &str) -> anyhow::Result<Option<ProbeMaps>> {
@@ -140,7 +265,8 @@ struct SkySum {
 }
 
 impl SkySum {
-    fn add(&mut self, vfs: &Vfs, rgb: &str, alpha: &str) -> anyhow::Result<()> {
+    /// Add a capture's sky texels; returns the share of its texels that are sky.
+    fn add(&mut self, vfs: &Vfs, rgb: &str, alpha: &str) -> anyhow::Result<f32> {
         let rgb = vfs.read(rgb)?;
         let alpha = vfs.read(alpha)?;
         let (rgb_h, a_h) = (
@@ -164,8 +290,9 @@ impl SkySum {
         let (Some(r_last), Some(a_last), Some(r_mip), Some(a_mip)) =
             (rl.last(), al.last(), rl.get(mip), al.get(mip))
         else {
-            return Ok(());
+            return Ok(0.0);
         };
+        let (mut sky_texels, mut texels_seen) = (0u32, 0u32);
         let r_face = r_last.2.end - rgb_h.data_offset();
         let a_face = a_last.2.end - a_h.data_offset();
         let blocks = r_mip.0.div_ceil(4) as usize * r_mip.1.div_ceil(4) as usize;
@@ -180,7 +307,9 @@ impl SkySum {
                 bcdec_rs::bc6h_float(rb, &mut texels, 12, signed);
                 let a = bg3_material::bc::decode_bc4(ab);
                 for (i, &a) in a.iter().enumerate() {
+                    texels_seen += 1;
                     if f32::from(a) / 255.0 < SKY_COVERAGE {
+                        sky_texels += 1;
                         for c in 0..3 {
                             self.sum[c] += f64::from(texels[i * 3 + c]);
                         }
@@ -189,7 +318,7 @@ impl SkySum {
                 }
             }
         }
-        Ok(())
+        Ok(sky_texels as f32 / texels_seen.max(1) as f32)
     }
 
     fn mean(&self) -> Option<Vec3> {
@@ -204,13 +333,36 @@ impl SkySum {
     }
 }
 
-/// A uniform sky behind the level, as a skybox (so it is exposed like the scene).
+/// The background, as a skybox (so it is exposed like the scene). The game draws its sky,
+/// clouds and the atmosphere's environment effect into the emissive buffer, none of which the
+/// viewer renders; the probes' specular captures recorded them. **Assumption**: the capture
+/// that saw the most sky (texels with no geometry coverage) stands in for the background in
+/// every direction, as is (no probe `Intensity`); the geometry it saw near its probe shows
+/// wherever the level has none. Without one (or with `BG3_UNIFORM_SKY=1`), a uniform sky of the
+/// mean sky texel.
 pub fn apply_sky(
     mut commands: Commands,
-    probes: Res<LevelProbes>,
+    mut probes: ResMut<LevelProbes>,
     mut images: ResMut<Assets<Image>>,
     cameras: Query<Entity, Added<Camera3d>>,
+    mut background: Local<Option<Handle<Image>>>,
 ) {
+    // `BG3_UNIFORM_SKY=1`: the uniform mean sky (A/B checks only).
+    if let Some((_, image)) = probes.background.take()
+        && std::env::var_os("BG3_UNIFORM_SKY").is_none()
+    {
+        *background = Some(images.add(image));
+    }
+    if let Some(handle) = background.as_ref() {
+        for e in &cameras {
+            commands.entity(e).insert(bevy::light::Skybox {
+                image: Some(handle.clone()),
+                brightness: CAPTURE_SCALE,
+                ..default()
+            });
+        }
+        return;
+    }
     let Some(sky) = probes.sky else {
         return;
     };
@@ -300,5 +452,61 @@ pub fn spawn_probes(
             ParallaxCorrection::Auto,
             p.transform,
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probe(shape: u8, position: [f32; 3], value: f32, coverage: f32) -> ProbeSh {
+        // Band 0 of a constant radiance L is L / Y00.
+        let c = |v: f32| v / 0.282_095;
+        ProbeSh {
+            transform: bg3_world::Transform {
+                position,
+                ..Default::default()
+            },
+            shape,
+            radius: 10.0,
+            size: [20.0, 10.0, 20.0],
+            transition_distance: 2.0,
+            coefficients: [
+                [c(value), c(value), c(value), c(coverage)],
+                [0.0; 4],
+                [0.0; 4],
+                [0.0; 4],
+            ],
+        }
+    }
+
+    #[test]
+    fn sphere_and_box_fades() {
+        let s = probe(0, [0.0; 3], 1.0, 1.0);
+        assert_eq!(s.fade([0.0, 0.0, 0.0]), 1.0);
+        assert_eq!(s.fade([0.0, 11.0, 0.0]), 0.0);
+        // Halfway through the 2 m band: smoothstep(0.5).
+        assert!((s.fade([9.0, 0.0, 0.0]) - 0.5).abs() < 1e-5);
+        let b = probe(1, [0.0; 3], 1.0, 1.0);
+        assert_eq!(b.fade([0.0, 0.0, 0.0]), 1.0);
+        assert_eq!(b.fade([0.0, 5.5, 0.0]), 0.0);
+        // 1 m into the 2 m band below the top face.
+        assert!((b.fade([0.0, 4.0, 0.0]) - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn fog_ambient_lays_probes_over_in_order() {
+        let probes = LevelProbes {
+            sh: vec![
+                probe(0, [0.0; 3], 0.2, 1.0),
+                probe(0, [5.0, 0.0, 0.0], 0.6, 0.5),
+            ],
+            ..Default::default()
+        };
+        // Only the first probe: its value × 100.
+        assert!((probes.fog_ambient_at([-5.0, 0.0, 0.0]).x - 20.0).abs() < 1e-3);
+        // Both: the second over the first by its coverage 0.5.
+        assert!((probes.fog_ambient_at([2.0, 0.0, 0.0]).x - 40.0).abs() < 1e-3);
+        assert_eq!(probes.fog_ambient_at([50.0, 0.0, 0.0]), Vec3::ZERO);
     }
 }

@@ -64,6 +64,9 @@ pub struct CharacterExtension {
     pub t6: Option<Handle<Image>>,
     #[texture(109)]
     pub t7: Option<Handle<Image>>,
+    /// The level's box lights (`lights::BOX_LIGHTS`), read by the game's light loop.
+    #[storage(120, read_only)]
+    pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
 }
 
 impl MaterialExtension for CharacterExtension {
@@ -345,6 +348,7 @@ impl CharacterTemplates {
                 t5,
                 t6,
                 t7,
+                box_lights: crate::lights::BOX_LIGHTS,
             },
         })))
     }

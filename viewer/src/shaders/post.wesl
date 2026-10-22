@@ -39,7 +39,9 @@ fn exposure_scale(ev100: f32) -> f32 {
 struct ExposureState {
     ev100: f32,
     frames: u32,
-    pad: vec2<f32>,
+    // The last metered target EV100 before adaptation and clamping (`BG3_POST_DEBUG`).
+    target_ev: f32,
+    pad: f32,
     histogram: array<atomic<u32>, 256>,
 }
 
@@ -152,6 +154,7 @@ fn average() {
         ev = post.metering.w;
     } else if total > 0.0 {
         let target_ev = sum / max(count, 1e-4) - post.exposure.z;
+        state.target_ev = target_ev;
         if state.frames == 0u {
             // First frame: straight to the target (the game's immediate adaptation mode).
             ev = target_ev;

@@ -28,6 +28,9 @@ bg3-vfs.workspace = true
 clap.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+[dev-dependencies]
+bcdec_rs.workspace = true
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

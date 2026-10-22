@@ -2214,6 +2214,7 @@ name = "bg3x"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bcdec_rs",
  "bg3-dialog",
  "bg3-gr2",
  "bg3-install",
