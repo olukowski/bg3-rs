@@ -17,6 +17,7 @@ mod lights;
 mod materials;
 mod meshes;
 mod nav;
+mod pick;
 mod play;
 mod post;
 mod probes;
@@ -170,7 +171,7 @@ fn main() -> Result<()> {
     let terrain_levels: Vec<String> = std::iter::once(args.level.clone())
         .chain(args.terrain_levels.iter().cloned())
         .collect();
-    let terrain = terrain::LevelTerrain::load(&vfs, &terrain_levels)?;
+    let terrain = terrain::LevelTerrain::load(&vfs, &terrain_levels, &level.banks)?;
     let started = std::time::Instant::now();
     let meshes = meshes::VisualMeshes::load(&vfs, &level);
     eprintln!(
@@ -379,6 +380,11 @@ fn main() -> Result<()> {
     }
     if args.no_follow || app.world().contains_resource::<framing::FrameTarget>() {
         app.insert_resource(fly_camera::CombatCamera::disabled());
+    }
+    if let Some(points) = pick::requested() {
+        app.insert_resource(pick::PickPoints(points))
+            .add_systems(PostUpdate, pick::mark_backfaces)
+            .add_systems(Last, pick::pick_at_shot);
     }
     if let Some(path) = args.shot {
         app.insert_resource(ShotRequest(path, args.shot_after))

@@ -98,3 +98,11 @@ the engine default material with no flag that hides it; the zero-size door-handl
 dummies do too. Whether the game draws them (destruction meshes may only show once broken)
 is not established. Decals, fog volumes and triggers are not loaded by the viewer
 (`OBJECT_DIRS` is `Scenery`, `Items`, `Characters`), so none of them were among the shapes.
+
+**Not missing geometry: the lower deck's "gaps".** Close-ups of the imp fight showed the deck as
+straight-cut slabs with a pink-orange surface below. Neither was level data: the cuts were the
+`--frame` screenshot camera's near plane, pulled up to the subject and slicing the floor in front
+of it (now capped where the view meets the subject's floor level), and the pink-orange surface
+was the lower deck's terrain (`WLD_TUT_Avernus_C_Lower_A`) in the viewer's old flat placeholder
+colours, now drawn with its brush textures (`docs/research/terrain.md`, Drawing). The deck pieces
+there (`WALL_MF_Nautiloid_Interior_A_Bottom_L_Piece_22n5_E`) are complete LOD0 meshes.

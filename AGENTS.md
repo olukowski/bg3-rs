@@ -102,7 +102,11 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `--dialog <name>` runs a dialog in an on-screen panel (number keys pick options).
   `--play --frame <NAME> [--frame-mode face|body] [--frame-yaw <degrees>]` frames a character
   from the front by name substring (default: whole body, yaw 0), hiding UI, clipping foreground
-  obstructions and holding the camera through capture.
+  obstructions (never the floor in view) and holding the camera through capture.
+  `BG3_PICK=x,y[;x,y…]` (window fractions, 0..1 from the top left) prints every level mesh and
+  terrain under those points when the screenshot is taken (which object draws a pixel);
+  `cargo run --release -p bg3x --example terrain_probe -- LEVEL x,y,z` prints the terrain cells
+  (height, hole, layer weights and brushes) around a point.
   `--no-follow` keeps the camera at `--camera` during combat (close-up shots);
   `BG3_STANDARD_CHARACTERS=1` draws characters without the character shaders (A/B checks).
   `--play --cc` opens a character creation screen first (Start re-runs the viewer with
