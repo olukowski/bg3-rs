@@ -43,6 +43,9 @@ pub(crate) enum Usage {
     /// Layer of a virtual texture as stored (no channel re-packing), for character shaders
     /// that read the channels themselves (`char_materials.rs`).
     VirtualLayerRaw(usize),
+    /// DDS colour data as the game samples it: single-channel maps stay red-only (the glow
+    /// passes read `.rgb` of BC4 glow maps as (r, 0, 0)).
+    ColorRaw { srgb: bool },
 }
 
 /// Everything needed to build one `StandardMaterial`, with texture slots as indices into
@@ -53,6 +56,8 @@ struct Plan {
     normal: Option<usize>,
     physical: Option<usize>,
     emissive: Option<usize>,
+    /// Game shading of a drawn level material (`level_materials.rs`), with its raw glow map.
+    level: Option<(crate::level_materials::LevelPlan, Option<usize>)>,
 }
 
 /// CPU-side result of resolving and decoding every material a level needs.
@@ -161,6 +166,14 @@ impl PreparedMaterials {
             if let Some(cp) = crate::char_materials::plan(path, &material, banks, &mut keys) {
                 char_plans.insert((*id).to_owned(), cp);
             }
+            let level = (!material.invisible && crate::level_materials::enabled()).then(|| {
+                let glow = tex(Slot::Emissive)
+                    .and_then(|t| keys.texture(banks, &t, |s| Usage::ColorRaw { srgb: s }));
+                (
+                    crate::level_materials::plan(path, &material, banks, &mut keys),
+                    glow,
+                )
+            });
             plans.insert(
                 (*id).to_owned(),
                 Plan {
@@ -169,6 +182,7 @@ impl PreparedMaterials {
                     normal,
                     physical,
                     emissive,
+                    level,
                 },
             );
         }
@@ -237,6 +251,7 @@ fn load_texture(
             }
         }
         Usage::VirtualLayerRaw(layer) => vt_layer(vts, banks, key, layer)?,
+        Usage::ColorRaw { srgb } => (convert::passthrough(&vfs.read(key)?)?, srgb),
         Usage::Normal => (convert::normal_map(&vfs.read(key)?)?, false),
         Usage::Physical => (convert::physical_map(&vfs.read(key)?)?, false),
         Usage::Color { srgb } => {
@@ -372,8 +387,8 @@ fn fit_mip_chain(
     Ok((data, levels))
 }
 
-/// Emissive scale: glow colours are ~1, Bevy's default exposure needs a few hundred nits to
-/// read as glowing. Tuned by eye; the real value depends on BG3's exposure/tonemapping.
+/// Emissive scale of the `StandardMaterial` path only (`BG3_STANDARD_LEVEL=1`), tuned by eye;
+/// the game-shaded materials use the glow graphs' own units (`level_materials.rs`).
 const GLOW_NITS: f32 = 150.0;
 
 /// Neutral stand-in for surfaces whose maps live in virtual textures.
@@ -385,6 +400,7 @@ pub fn upload(
     mut prepared: ResMut<PreparedMaterials>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut level_materials: ResMut<Assets<crate::level_materials::LevelMaterial>>,
 ) {
     let handles: Vec<Option<Handle<Image>>> = std::mem::take(&mut prepared.images)
         .into_iter()
@@ -394,6 +410,7 @@ pub fn upload(
     let mut out = LevelMaterials::default();
     let char_plans = std::mem::take(&mut prepared.char_plans);
     let mut char_templates = crate::char_materials::CharacterTemplates::default();
+    let mut game = crate::level_materials::LevelGameMaterials::default();
     for (id, plan) in std::mem::take(&mut prepared.plans) {
         let m = &plan.material;
         if m.invisible {
@@ -446,8 +463,23 @@ pub fn upload(
         if let Some(cp) = char_plans.get(&id) {
             char_templates.add(&id, cp, &material, &handles);
         }
-        out.by_id.insert(id, Some(materials.add(material)));
+        let handle = materials.add(material);
+        if let Some((lp, glow)) = &plan.level {
+            let standard = materials.get(&handle).expect("just added");
+            game.add(
+                &handle,
+                standard,
+                lp,
+                get(*glow),
+                get(plan.physical),
+                &handles,
+                |p| char_templates.sss_slot(p),
+                &mut level_materials,
+            );
+        }
+        out.by_id.insert(id, Some(handle));
     }
+    commands.insert_resource(game);
     commands.insert_resource(out);
     commands.insert_resource(crate::sss::SssKernels::new(char_templates.sss_profiles()));
     commands.insert_resource(char_templates);

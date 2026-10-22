@@ -286,7 +286,8 @@ lights without one. Ambient: Lambert + split sum, evaluated with N and −N and 
 ### Our port (viewer)
 
 `character.wesl` replaces Bevy's `apply_pbr_lighting` for every character material with
-`char_lighting`: a loop over Bevy's clustered point/spot lights and directional lights (the
+`game_lighting` (`shaders/game_lighting.wesl`, shared with the level materials, see
+`materials.md`): a loop over Bevy's clustered point/spot lights and directional lights (the
 game's falloff via `game_light.wesl`, Bevy's cone and shadow lookups; see `lighting.md`), the game's
 BRDFs above per shading model, the level's light probes (and Bevy's uniform ambient, zero with
 probes) through Bevy's split-sum environment-map code, and

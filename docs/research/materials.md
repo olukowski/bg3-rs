@@ -115,36 +115,118 @@ before the modules.
 - The `VFX_Model_*` graphs glow from a vertex-colour mask unless `_Use_GlowMap_InsteadOfVCMask`
   is set (their glow map is then an engine default), so the viewer gives them no glow.
 
-## Viewer approximation (`viewer/src/materials.rs`)
+### Which graphs cover the Nautiloid
 
-`StandardMaterial` per material ID: base colour + alpha mode, BC5 normal map, swizzled physical map
-as both `metallic_roughness_texture` and `occlusion_texture`, glow map as emissive (colour ×
-multiplier clamped to 10 × 150 nits, tuned by eye). Virtual-textured materials use their three
-VT layers (via `bg3-vt`, BC3 tiles kept compressed, converted like the DDS maps) from mip 1
-(`BG3_VT_LEVEL` overrides; 0 = full resolution). Textures are deduplicated by (file or VT, usage)
-and loaded with rayon. On an M5 Pro: 298 textures (55 DDS + 243 VT layers) = 276 MiB in ~65 ms at
-mip 1; 785 MiB in ~200 ms at mip 0.
+Mesh uses per graph (`bg3x materials TUT_Avernus_C`, LOD0): `Base_SSS_VT` 844 (flesh walls,
+cables, organic doors), `ENV_DetailMap_VT` 720 (deck/ground, pods, tables), `Base_VT` 505,
+`Base_AlphaTest_2s_SSS_VT` 429 (the destroyed walls), `Base_Translucency_VT` 322, then the
+glow graphs (`Base_GM_VT` 84, `Base_GM_Wind_VT` 74, `Base_GM_Pulse_Bouncing_AlphaTest_VT` 56,
+`Base_GM_Pulse_VT` 50, `Base_Glass_Glow` 36, …). Screen coverage was not measured; these
+use counts decided what was ported.
 
-### Lighting differences from the game
+## Level shading (from the compiled shaders)
 
-Level surfaces are lit by Bevy's PBR with the game's light units, falloff (patched in, see
-`lighting.md`), exposure and display transform, and by the level's probes as Bevy reflection
-probes. What still differs from the game's deferred lighting (`ClusteredLighting_*`, described in
-`character-shaders.md`, "Lighting"): Bevy's diffuse is Lambert-like Burley without the game's
-renormalisation (`lerp(1, 1/1.51, r)`), its specular visibility uses α² where the game uses the
-remapped `((r + 1)/2)²`, there is no geometric specular anti-aliasing or sun-disc specular, F0 is
-`0.16 · reflectance²` with reflectance fixed at Bevy's default instead of the G-buffer's
-`Reflectance`, no light channels, and the probes are blended as described in `lighting.md`. The
-emissive scale (`GLOW_NITS`) is still tuned by eye. A level material on the game's light loop (as
-`character.wesl` does for characters) would close these.
+Read from the `DEF` (G-buffer writer) and `EMI` (emissive) passes of each graph in
+`Materials.metallib` (`bg3x metallib --extract …`, `llvm-dis`; disassembly kept in `.cache/`)
+and the deferred lighting `ClusteredLighting_4` in `Core.metallib`, 4.1.1.7631656.
+
+**Common G-buffer** of every `Base_*`/`ENV_*` graph (targets as in `character-shaders.md`):
+albedo = `sat(VT layer 0 .rgb)` (or the `basecolor` map), occlusion = physical **B**, the
+normal map decoded as described above, roughness = `sat(physical G)`, reflectance =
+`sat(Reflectance)` (graph default 0.5; glass instances use 3.5, i.e. 1), metalness =
+`sat(physical R)`, flags = shading model + 8 (receives decals) + light channel. So Bevy's
+standard inputs carry everything except the reflectance, which the viewer now passes.
+
+Per graph:
+
+| Graph | Model | Target 3 / extras |
+|---|---|---|
+| `Base_VT`, `Base_AlphaTest_VT`, `Base_2S_VT` | 0 | — |
+| `Base_SSS_VT` | 3 | profile slot, amount 1, thickness `sat(SSS_Thickness.r)`, transmission on |
+| `Base_AlphaTest_2s_SSS_VT` | 3 | amount `sat(SSS_Radius · SSS_MSK.r)` (Nautiloid `SSS_Radius` 0: no blur), thickness 0, transmission on |
+| `Base_Translucency_VT`, `Base_GM_*_Translucency_VT` | 4 | profile slot, thickness `sat(physical A)` |
+| `ENV_DetailMap_VT` | 0 | micro detail layer (below) |
+
+**Model 4 (translucent)** in the lighting: the BSDF takes the profile's scatter colour and
+distance, tint, thickness remap and thick-object flag like model 3, but the scatter amount
+stays 1 (target 3's green is not read) and transmission is always on; there is no
+screen-space blur, no dual-lobe specular, and the diffuse keeps its albedo. Point and spot
+lights add the model-3 transmission term (`DoClusteredLight_Translucent`); the sun is lit with
+the default BRDF only (no transmission). The Nautiloid's translucent graphs have no profile,
+so slot 0 (`Engine_Default_DiffusionProfile`, distance 0) applies: no transmission except
+where the thickness is 0.
+
+**`ENV_DetailMap_VT` micro detail.** Detail UV = `uv · MicroDetailTiling · s`, where `s` is the
+object's scale (distance of the pixel from the object origin over the length of its local
+position). `MicroDetailNormalMap` (decoded like every normal map, normalised) times
+`DetailNormalStrength`, with its normal component zeroed, is added to the main tangent-space
+normal before normalising; occlusion ×= `clamp(pow(MicroDetailMap.r, DetailAOStrength))`;
+roughness = `sat(physical G + DetailRoughnessStrength · (1 − MicroDetailMap.g))`.
+
+**Glow (`EMI` passes).** With `GM` the glow map, `c` the glow colour and
+`sel = mix(GM.r · c, GM.rgb, step(UseGMColor))` (`floor` clamped to 0–1):
+
+| Graph | Emissive |
+|---|---|
+| `Base_GM_VT` | `sel · GlowMultiplier` |
+| `Base_GM_Pulse_VT` | `sel · GlowMultiplier · lerp(MinGlow, MaxGlow, ½ + ½cos(t · PulseSpeed)) · exposure` |
+| `Base_GM_Pulse_VT_FX` | the same without the exposure |
+| `Base_GM_Pulse_AlphaTest_Translucency_VT` | `GM.rgb · c · GlowMultiplier · pulse` |
+| `Base_GM_Wind_VT`, `…_Wind_Translucency_VT` | `sel · lerp(GlowMin, GlowMax, ½ + ½sin(t · GlowPulseSpeed))` (no multiplier) |
+| `Base_GM_Pulse_Bouncing_AlphaTest_VT` | `GM.rgb · c · GlowMultiplier · lerp(MinGlow, MaxGlow, s)`, `s` = smoothstep of the triangle wave `|2 fract(t · PulseSpeed + |object origin| + local y / MeshPulseSize + vertex colour B + ½) − 1|` |
+| `Base_Glass_Glow` | `c · GM.rgb · GlowMap_Color · GlowIntensity · mix(1, smoothstep(GlowGradientMinHeight, …MaxHeight, local y), sat(Height_Mask))` |
+
+`t` is `g_CurrentTime` (s). Only `Base_GM_Pulse_VT` multiplies by the camera exposure (which
+is why its multipliers are in the hundreds); the others write display-referred values that
+the emissive buffer adds unexposed. A BC4 glow map samples as (r, 0, 0).
+
+### In the viewer (`viewer/src/level_materials.rs`, `shaders/level.wesl`)
+
+Textures (`materials.rs`): virtual-textured materials use their three VT layers (via
+`bg3-vt`, BC3 tiles kept compressed, converted like the DDS maps) from mip 1
+(`BG3_VT_LEVEL` overrides; 0 = full resolution). Textures are deduplicated by (file or VT,
+usage) and loaded with rayon. On an M5 Pro: 298 textures (55 DDS + 243 VT layers) = 276 MiB in
+~65 ms at mip 1; 785 MiB in ~200 ms at mip 0 (before the detail, thickness and raw glow maps
+were added).
+
+Each level material is still built as a `StandardMaterial` (`materials.rs`, unchanged:
+base colour + alpha mode, BC5 normal map, R↔B-swapped physical map for roughness/metalness
+and occlusion), and a game-shaded `ExtendedMaterial` over it replaces it on every spawned
+mesh (`swap_level_materials`). The extension adds the reflectance, the model and subsurface
+inputs, the detail layer and the glow (`bg3_material::level` classifies graphs and packs the
+uniform, unit-tested), and lights the surface with the game's loop, shared with characters
+(`shaders/game_lighting.wesl`: Burley/GGX/remapped Smith, specular anti-aliasing, sun-disc
+specular, dual-lobe specular and profile transmission for 3, transmission without the sun for
+4, the game's falloff, the level's probes). Subsurface pixels are marked for the screen-space
+scattering pass like skin, with profile kernel slots shared with the characters.
+`BG3_STANDARD_LEVEL=1` keeps the old `StandardMaterial`s for A/B.
+
+Exact: the G-buffer channel use, reflectance, model-3/4 inputs and lighting (as exact as the
+character port), the detail layer's UV scale, normal, roughness and occlusion, and the glow
+formulas and units. Approximated:
+
+- The detail normal is added in world space after Bevy's normal mapping (equal for an
+  orthonormal tangent frame); normal maps reconstruct Z from X/Y instead of reading B.
+- `Bouncing` glow: our level meshes carry no vertex colours, so that phase term is 0.
+- Screen-space scattering blurs the final colour (pre-scatter texturing), as for skin.
+- Not ported: the VFX model graphs' vertex-colour glow, `Base_SSS_Fresnel_GM_VT` and
+  `ENV_GM_Pulse_Fluid_VT` (one material each, no glow here), wind/vertex animation
+  (`Base_GM_Wind_*`, `Base_UV_Deform_VT`), glass dithering (still alpha-blended), light
+  channels, SSAO.
+
+A/B, centre luma: imp deck view (`--play --combat-test --no-follow --camera=-42,14.5,-409
+--look-at=-46.6,3.5,-402.8`) 21.4 (game shading) against 22.8 (standard); the framed imp shot
+22.6 (game shading), 26.5 (game inputs on Bevy's lighting, `BG3_LEVEL_BEVY_LIGHTING=1`), 27.6
+(standard). The renormalised Burley diffuse
+(`lerp(1, 1/1.51, r)`) loses some energy on rough surfaces; glow maps now show their
+detail at the graph's intensity instead of the earlier guessed 150 nits.
 
 ## Open
 
 Character graphs (skin, hair, eyes, clothing palettes, vertex-colour cuts) have their own
 material: see `character-shaders.md`.
 
-- Detail maps (`ENV_DetailMap*`: `MicroDetailMap`, tiling, strengths), SSS, translucency, glow
-  animation, `Reflectance`, vertex-colour masks, world-position offset — would need a custom Bevy
-  material/shader.
+- Vertex-colour masks, world-position offset and wind animation; the non-VT `ENV_DetailMap`,
+  `Base_Glass*` forward passes and the VFX graphs are on the common path without their extras.
 - The glass dithering and the exact alpha-test threshold; `BlendStateID`s other than 0 and 7.
 - Streaming/feedback-driven VT residency (we extract whole textures up front).

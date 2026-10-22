@@ -4,6 +4,7 @@
 //! (`materials.rs`); objects without a drawn mesh (effects, …) are shown as small boxes with
 //! `--placeholders`.
 
+mod bloom;
 mod cc_ui;
 mod char_materials;
 mod characters;
@@ -13,6 +14,7 @@ mod fly_camera;
 mod fog;
 mod framing;
 mod level;
+mod level_materials;
 mod lights;
 mod materials;
 mod meshes;
@@ -287,8 +289,10 @@ fn main() -> Result<()> {
     .add_plugins(fly_camera::FlyCameraPlugin)
     .add_plugins(characters::CharactersPlugin)
     .add_plugins(char_materials::CharacterMaterialsPlugin)
+    .add_plugins(level_materials::LevelMaterialsPlugin)
     .add_plugins(sss::SssPlugin)
     .add_plugins(post::GamePostPlugin)
+    .add_plugins(bloom::GameBloomPlugin)
     .add_plugins(lights::GameLightPlugin)
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)

@@ -104,7 +104,9 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   from the front by name substring (default: whole body, yaw 0), hiding UI, clipping foreground
   obstructions and holding the camera through capture.
   `--no-follow` keeps the camera at `--camera` during combat (close-up shots);
-  `BG3_STANDARD_CHARACTERS=1` draws characters without the character shaders (A/B checks).
+  `BG3_STANDARD_CHARACTERS=1` draws characters without the character shaders and
+  `BG3_STANDARD_LEVEL=1` level surfaces on Bevy's `StandardMaterial` (A/B checks);
+  `BG3_NO_BLOOM=1` turns the game's bloom off.
   `--play --cc` opens a character creation screen first (Start re-runs the viewer with
   `--character <spec>`; default character: the trace's deep gnome cleric).
   `--nav` draws the AI grid (green = standable for a humanoid); left click moves the controlled

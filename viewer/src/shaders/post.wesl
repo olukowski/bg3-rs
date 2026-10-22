@@ -184,6 +184,15 @@ fn average() {
 @if(!EXPOSURE)
 @group(0) @binding(6) var lut_sampler: sampler;
 
+struct Vignette {
+    // (VignetteColor, on)
+    color: vec4<f32>,
+    // (VignetteIntensity, VignettePower, 0, 0)
+    params: vec4<f32>,
+}
+@if(!EXPOSURE)
+@group(0) @binding(7) var<uniform> vignette: Vignette;
+
 // Linear sRGB → ACES AP1 (with the D65 → D60 adaptation).
 const SRGB_TO_AP1: mat3x3<f32> = mat3x3<f32>(
     vec3(0.613094151, 0.070195667, 0.020615595),
@@ -472,7 +481,15 @@ fn tonemap(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     }
     let graded = grade(max(c.rgb * k, vec3(0.0)));
     // The game samples its LUTs at the raw coordinate (no half-texel remap); so do we.
-    let encoded = textureSampleLevel(display_lut, lut_sampler, acescc(gamut_compress(graded)), 0.0).rgb;
+    var encoded = textureSampleLevel(display_lut, lut_sampler, acescc(gamut_compress(graded)), 0.0).rgb;
+    // The vignette step (after the tonemap, on the display-encoded colour): towards the
+    // vignette colour by sat(Intensity · |(|2(uv − ½)|)^Power|).
+    // bg3: PPVignette_PS, ls::PostProcessStep_Vignette::ExecuteWTKernel (4.1.1.7631656)
+    if vignette.color.w > 0.5 {
+        let d = pow(max(abs((in.uv - 0.5) * 2.0), vec2(1e-4)), vec2(vignette.params.y));
+        let w = saturate(vignette.params.x * length(d));
+        encoded = mix(encoded, vignette.color.rgb, w);
+    }
     // The LUT outputs display-encoded sRGB; Bevy's sRGB swapchain re-encodes linear values.
     return vec4(srgb_to_linear(encoded), 1.0);
 }
