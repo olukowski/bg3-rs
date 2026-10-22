@@ -88,18 +88,49 @@ lighting applies to it.
 FarPlane }`, and `PostProcessing` (bloom, god rays, DOF, LUT, white balance,
 `ExposureSettings/Object { Exposure, ExposureMin, ExposureMax, ExposureCompensation, … }`). There
 are two `ExposureSettings` entries: (14, 16, 0) and (0, 16, −1). Which one applies when is not
-known. Levels may also switch lighting at runtime (atmosphere/lighting triggers); we don't handle
-that yet.
+known. Levels also switch lighting and atmosphere where the camera is, with triggers (next
+section).
 
 ### Lighting and atmosphere triggers
 
 The level's `meta.lsf` resources are only the default. Polygon triggers in the level's
-`Triggers/_merged.lsf` replace them where the camera/player is: root template `TriggerType`
+`Triggers/_merged.lsf` replace them where the camera is: root template `TriggerType`
 `TriggerAtmosphere` (template `AtmosphereTrigger`) and `TriggerLighting` (`LightingTrigger`), with
 `ResourceIDs/ResourceID` (one or more resource IDs), `FadeTime` (s), `Height` and `Points` (the
-prism shape of `PhysicsType` 3, as in `bg3-sim`). `crates/bg3-world/src/atmosphere.rs` reads them;
-`LevelLighting::load_at` picks the innermost trigger containing a point (`bg3-world` tells
-lighting from atmosphere triggers by which bank the first resource is in).
+prism shape of `PhysicsType` 3, which both templates set, with `Height` 2).
+`crates/bg3-world/src/atmosphere.rs` reads them (level and `Globals` triggers, as the sim does);
+`LightingSources::zones_at` picks the trigger in effect (`bg3-world` tells lighting from
+atmosphere triggers by which bank the first resource is in).
+
+#### Trigger volumes and selection
+
+Read in the binary (4.1.1.7631656); implemented once in `crates/bg3-world/src/trigger.rs` and
+used by both this selection and the sim's `EnteredTrigger`/`LeftTrigger` (the server's
+`esv::trigger::TrackingSystem` calls the same hit test):
+
+- **Hit test** (`ls::trigger::HitTest`). The point is taken relative to the trigger's
+  position and turned by the conjugate of its rotation (`ls::Trigger::InitTriggerPhysics_Legacy`
+  stores it); `Scale` is not applied. Sphere: distance from the position ≤ `Radius` (rotation
+  ignored). Box: every local coordinate within ±`Extents` (half sizes, faces inside). Polygon:
+  fewer than three points never contain anything; otherwise the local point must be inside the
+  local bounds — whose y range is spanned by the vertices `(x, 0, z)` and `(x, Height, z)` built
+  by `CalculateVertices`, i.e. **local y from 0 to `Height`: up from the position** (down for a
+  negative height) — and inside the `Points` polygon by the even-odd rule
+  (`IsPointInPoly`; an edge counts when one end is below the point's z and the other at or
+  above it). A bounding-sphere pre-check is a superset and changes nothing.
+- **Which point** (`ecl::CameraSystem::CheckTriggers`, `ecl::TimelineCameraSystem::UpdateCameras`):
+  the camera's eye position (the camera controller's world translation, set from the camera
+  entity's transform in `ls::CameraSystem::OnTranslationChanged`), re-checked when the camera
+  moves — not the player character's position.
+- **Overlaps** (`ecl::GetLightingTrigger`, `ecl::CameraSystem::SwitchAtmosphereTrigger` with the
+  sort in `ecl::CreateAtmosphereInstanceAndGetTrigger`): of the triggers of the kind found at the
+  point (`eoc::trigger::GetTriggersOfTypeAtPosition`) that pass the hit test, the one with the
+  smallest local bounding radius in the horizontal plane (`CalculatePhysicsBounds`, the first
+  bounds field): sphere `Radius`, box `√(Extents.x² + Extents.z²)`, polygon the largest distance
+  of a point from the mean of the points (height ignored). No priority field. Lighting keeps
+  the first candidate on a tie; atmosphere sorts with an unstable quicksort (**assumption**:
+  ties keep the earlier trigger in file order; the engine's candidate order comes from its
+  trigger tree).
 
 The Nautiloid (`TUT_Avernus_C`; level default `LTN_Default`/`ATM_Default`, EV 14–16, sun
 100000) has four:
@@ -116,13 +147,28 @@ So in play the Nautiloid is lit by `LTN_Default_EV10_Avernus_Ext` (sun 500 at 35
 darker than the level default. Light probes are baked per lighting resource and exist for exactly
 the three resources of the lighting trigger, which confirms it is the one in use. The astral-plane
 resources are also keyed in the `TUT_Helm_Transponder` timeline (the helm vision).
-**Assumptions:** the first resource is the default one; nested triggers resolve to the innermost
-(smallest area); the prism extends `Height` up from the trigger position (as `bg3-sim` assumes;
-with it the imp room deck, y ≈ 3, lies below `…_Interior` (y 14–62) and gets the exterior
-atmosphere; the two differ only in `ExposureMax` and the second entry's compensation). Blending
-over `FadeTime` and the story calls `TriggerSetAtmosphere`/`TriggerSetLighting` (not used on the
-Nautiloid) are not implemented: the viewer picks the resources once, at the avatar's (or
-`--look-at`) position.
+**Assumption:** the first resource is the default one. On the imp deck (y ≈ 2.8) the camera
+decides: a camera below y 14.1 (close-ups, the viewer's `--frame` shots) is only in
+`…_Exterior`; a camera more than ~11 m above the deck is also inside `…_Interior` (bound
+radius 143 m against the exterior's 317 m), which wins. `…_UnderDeck` (y 3.2–15.8) lies west of
+the deck (x −127…−69) and does not cover it. The two atmospheres differ only in `ExposureMax` and
+the second entry's compensation. Blending over `FadeTime` and the story calls
+`TriggerSetAtmosphere`/`TriggerSetLighting` (not used on the Nautiloid) are not implemented. The
+viewer starts with the triggers at its start camera position (`--camera`, the play camera, or
+the avatar / `--look-at` until `--frame` places the camera) and then follows the camera for the
+atmosphere (`lights::follow_camera_triggers`, switching at once); switching the lighting
+resource at runtime (sun, probes, fog) is not implemented.
+
+Evidence from the references (camera positions unknown, compared by eye):
+`laezel-combat.png` looks down at the deck in blue shade, with warm gold light only far off to
+one side; `laezel-sheathed.png` looks out of the opening into strong golden haze. Viewer shots
+looking at the party (`--play --combat-test --no-follow --look-at=-46.6,3.5,-402.8`) from a
+high camera (`--camera=-42,14.5,-409`, interior atmosphere) look most like `laezel-combat`:
+cool blue deck and warm light only in the distance. From a low camera (`-43.5,8,-407.5`,
+exterior atmosphere) the deck looks warmer. Because the atmospheres differ only in exposure range, the tint
+comes from what the camera sees, not from the trigger. Centre-region luma against
+`laezel-combat`: high 22.7, low 31.2, reference 37.8. The framings differ too much (UI,
+geometry in front of the high camera) to call either one right.
 
 ### Light probes
 
@@ -331,7 +377,7 @@ screenshots of the original; game content, kept in `.cache/`), luma ours / refer
 
 The remaining differences are mostly framing (our framed shots are from further away and see
 other geometry) and level objects the game doesn't draw (large flat helper planes catching
-light); nothing was tuned to these numbers. Unit tests cover the trigger prisms, probe and fog
+light); nothing was tuned to these numbers. Unit tests cover the trigger shapes and selection (`bg3_world::trigger`), probe and fog
 template inheritance, the fog edge weights, the post-processing fields and the engine blackbody;
 the install test `nautiloid_triggers_choose_lighting_probes_and_fog` checks the Nautiloid's
 trigger choice, probe captures and fog volumes.
@@ -341,7 +387,7 @@ trigger choice, probe captures and fog volumes.
 - `CombinedLights`: how the gameplay half is evaluated (`eoc::GameplayLightComponent`:
   `m_Radius`, `m_EdgeSharpening`, `m_SpotLightAngle`, `m_DirectionalDimensions`, `m_IsSunlight`,
   `m_PointLightVerticalLimit`).
-- Trigger prism height convention and trigger blending (`FadeTime`); probe list order
+- Trigger blending (`FadeTime`) and its curve; probe list order
   (`ls::LightProbeHierarchySystem`); the distant probe.
 - The sun's transmittance precompute; the flat sky colour; `TimelineFog`.
 - Bloom parameter mapping; which camera uses the second `ExposureSettings` entry.
