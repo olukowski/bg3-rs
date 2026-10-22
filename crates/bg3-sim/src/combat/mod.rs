@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use bg3_rules::context::{Ability, DamageType, Hand, Resistance, Weapon};
 use bg3_rules::natives::RollEvent;
 pub use bg3_world::unsheath::UnsheathState;
+use bg3_world::unsheath::WeaponSet;
 
 pub use action::{CastReport, CombatError};
 pub use ai::AiAction;
@@ -53,6 +54,9 @@ pub struct Equipment {
     pub ranged_main: Option<String>,
     pub body: Option<String>,
     pub shield: Option<String>,
+    /// The active weapon set (`eoc::WeaponSetComponent`), from the equipment's
+    /// `initialweaponset`. The sim does not model switching it.
+    pub weapon_set: WeaponSet,
 }
 
 /// A character's combat state.
@@ -362,7 +366,14 @@ impl Sim {
             .and_then(|s| self.data.characters.get(s))
             .map_or(sheet.armor_class, |c| c.armor);
         let oc = self.object_combat(id);
-        let mut equipment = Equipment::default();
+        let mut equipment = Equipment {
+            weapon_set: oc
+                .equipment
+                .as_deref()
+                .and_then(|n| d.initial_weapon_sets.get(n).copied())
+                .unwrap_or_default(),
+            ..Equipment::default()
+        };
         // Each `add equipmentgroup` holds alternatives; the first entry with stats is taken.
         // *Approximate*: the engine's choice between alternatives is not known.
         for group in oc
@@ -698,23 +709,28 @@ impl Sim {
         self.combat_event(CombatEvent::Unsheathed { entity: id, state });
     }
 
-    /// Whether the character's active weapon set is the ranged one. *Assumption*: the sim does
-    /// not model weapon-set switching (`eoc::WeaponSetComponent`); a character with a ranged
-    /// weapon and no melee weapon or shield starts on the ranged set, everyone else on melee.
-    pub(crate) fn uses_ranged_set(&self, id: Guid) -> bool {
-        self.combatant(id).is_some_and(|c| {
-            let e = &c.equipment;
-            e.ranged_main.is_some()
-                && e.melee_main.is_none()
-                && e.melee_off.is_none()
-                && e.shield.is_none()
-        })
+    /// The character's active weapon set (`eoc::WeaponSetComponent`): the starting set of
+    /// its equipment (`initialweaponset` of its `Equipment` stats entry, or of a created
+    /// character's class set). *Assumption*: that is where the engine's starting set comes
+    /// from; switching sets is not modelled. Characters without equipment use the melee set.
+    pub fn weapon_set(&self, id: Guid) -> WeaponSet {
+        if let Some(c) = self.combatant(id) {
+            return c.equipment.weapon_set;
+        }
+        if let Some(c) = self.combat.created_characters.get(&id) {
+            return c.weapon_set;
+        }
+        self.object_combat(id)
+            .equipment
+            .as_deref()
+            .and_then(|n| self.data.combat.initial_weapon_sets.get(n).copied())
+            .unwrap_or_default()
     }
 
     /// Joining a fight draws the active weapon set (`esv::unsheath::CombatJoiningComponent`).
     /// *Assumption*: the set's state, as for a `WeaponSet` spell.
     fn draw_for_combat(&mut self, id: Guid) {
-        let state = bg3_world::unsheath::weapon_set_state(self.uses_ranged_set(id));
+        let state = self.weapon_set(id).state();
         self.set_unsheath(id, state);
     }
 

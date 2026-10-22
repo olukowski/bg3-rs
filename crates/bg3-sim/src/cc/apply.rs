@@ -82,7 +82,10 @@ impl Sim {
 /// proficiencies, its weapon attacks and spells. Called by `Sim::build_combatant` after the
 /// generic set-up (which gives it its race and class resources and `AddSpells` lists).
 pub fn combat_setup(d: &CombatData, c: &CreatedCharacter, out: &mut Combatant) {
-    let mut eq = crate::combat::Equipment::default();
+    let mut eq = crate::combat::Equipment {
+        weapon_set: c.weapon_set,
+        ..Default::default()
+    };
     for item in &c.equipment {
         if let Some(w) = d.weapons.get(item) {
             let slot = match w.slot {

@@ -447,11 +447,15 @@ What the sim models:
 - **Default: Sheathed.** Out of a fight every character starts sheathed (`unsheath_state`
   returns Sheathed for characters without an entry). Both reference screenshots show
   weapons on the back out of combat.
-- **Joining a fight draws the active weapon set** (`CombatJoiningComponent`). The sim does
-  not model weapon-set switching (`eoc::WeaponSetComponent`). **Assumption**: a character
-  with a ranged weapon and no melee weapon or shield is on the ranged set; everyone else is
-  on the melee set. So joining gives Melee, or Ranged for such archers. This happens after
-  `CombatStarted` / `Joined`.
+- **Joining a fight draws the active weapon set** (`CombatJoiningComponent`): Melee for the
+  melee set, Ranged for the ranged set, after `CombatStarted` / `Joined`. The active set
+  (`eoc::WeaponSetComponent::m_WeaponSet`, `EWeaponSet`) starts as the character's
+  `Equipment` stats entry's `initialweaponset` (`"Melee"` / `"Ranged"`; 552 / 143 entries in
+  the reference build, every entry has one). A created character takes its class set's value
+  (`EQP_CC_Ranger` and `EQP_CC_Rogue` are `Ranged`). **Assumption**: this is where the
+  engine's starting set comes from (the field and the component match, but the code that
+  applies it was not traced). A missing value means the melee set. The sim does not model
+  switching sets (`eocnet::SwitchCharacterWeaponSetMessage`). `Sim::weapon_set` reports it.
 - **A cast sets the state from the spell's `Sheathing` field**
   (`eoc::unsheath::ResolveStateFromSpell`). The values come from the `SpellSheathing` value
   list:
@@ -512,13 +516,24 @@ mapped the four flags to registers. The source bone starts as `Dummy_Attachment`
 - **Otherwise:** `BoneMain…` / `BoneOffHand…` for the drawn or sheathed state. Source:
   `SourceBoneSheathed` when sheathed, `Dummy_Attachment` when drawn.
 
-The client caller (`GetVisualsDesiredState`) computes the flags:
+The client caller (`(anonymous namespace)::GetVisualsDesiredState`) computes the flags:
 
 - `off_hand`: the slot is the melee or ranged off hand.
-- `versatile`: the weapon has the `Versatile` property and the opposite hand's slot is in a
-  set the function tests. **Assumption**: that set means the other hand is empty.
-- `alternative`: needs a flag the caller reads, plus a melee weapon that is `Versatile` or
-  `Twohanded` (likely raging). The sim never sets it.
+- `versatile`: the weapon's `WeaponComponent` flags have `Versatile` (0x800) **and** the
+  opposite hand's slot (a byte table: melee main ↔ melee off, ranged main ↔ ranged off,
+  none for other slots) is a key of the character's per-slot equipment visual state map
+  (`ecl::equipment::VisualsVisibilityStateComponent`). In other words, the other hand holds
+  something. So the flag means "a versatile weapon used **one-handed**", not two-handed. The
+  install's `EquipmentTypes` agree. On the versatile Battleaxe, Warhammer and Quarterstaff,
+  the plain `BoneMainUnsheathed` is `Dummy_L_Hand`, the same as the two-handed Greataxe and
+  Maul. `BoneVersatileUnsheathed` is `Dummy_R_Hand` with `SourceBoneVersatileUnsheathed`
+  `Dummy_Attachment_Versatile`, the one-handed grip beside a shield. A lone versatile weapon
+  therefore keeps the plain bones. For the Longsword both sets of bones are the same
+  (`Dummy_R_Hand`, `Dummy_Sheath_Upper_R`), so only the animation tells the grips apart.
+  (Membership of that map is read as "the slot has an equipped item"; how
+  `VisualsVisibilityStateSystem` fills it was only read for weapon slots, below.)
+- `alternative`: a flag of the character (from `GetSourceCharacterData`) plus weapon flags
+  `Melee|Versatile` or `Melee|Twohanded` (likely raging). The sim never sets it.
 - `unsheathed`: one flag per slot. **Assumption**: Melee draws the melee slots, Ranged the
   ranged slots, Instrument the instrument, Sheathed nothing. This is consistent with the
   slots `ResolveSubSetFromState` reads.
@@ -526,18 +541,45 @@ The client caller (`GetVisualsDesiredState`) computes the flags:
 `WeaponFlags` bit positions come from the install's `ValueLists.txt` (`Twohanded` 0x400,
 `Versatile` 0x800, `Melee` 0x1000).
 
+#### Which weapons are shown: the active weapon set
+
+`ecl::equipment::VisualsVisibilityStateSystem::ProcessEquipmentVisualState` decides which
+equipped items get a visual. It loops over the slots. For the weapon slots it first decides
+whether the slot is drawn, using the client's `ecl::unsheath::VisualStateComponent`. That
+component holds a main-hand and an off-hand state (default 4, none). The melee main/off slots
+are drawn when the main/off state is Melee, the ranged slots when it is Ranged, and the
+instrument when the main state is Instrument (a jump table over slot − 3). Then:
+
+- A **drawn** weapon is shown (in the hand).
+- A weapon that is **not drawn** is shown only when its slot is in the **active weapon set**.
+  The function reads `eoc::WeaponSetComponent`'s set as a byte: melee slots need 0, ranged
+  slots need 1. The other set's weapons get no visual at all.
+- The melee off-hand also hides an item with a non-zero `ArmorComponent` byte (the shield)
+  when it is not drawn. This is consistent with the `Shield` type naming no sheathed bone.
+- Other cases (`repose` state, `EquipmentVisualComponent`, the dummies used in dialogs) were
+  not traced.
+
+So Lae'zel (`EQ_Laezel`: `initialweaponset "Melee"`, longsword + shortbow) shows only the
+sword on her back out of combat. In Melee she shows only the sword, in her hand. In Ranged
+the bow is in her hand and the sword stays sheathed on her back, because the sword is in the
+active (melee) set. The players' report agrees: switching to the bow set shows the bow on
+the back instead. `bg3_world::unsheath::slot_shown` / `WeaponPlacement::shown` implement
+this. The viewer hides the rest. The instrument's sheathed visibility depends on state that
+was not traced, so the viewer keeps showing it.
+
 Consequences, checked by the ignored test
 `weapons_sheath_on_the_back_and_select_weapon_subsets`:
 
-- Lae'zel's lone longsword (versatile) is sheathed on `Dummy_Sheath_Upper_R` with source
-  `Dummy_Sheath` and drawn in `Dummy_R_Hand`.
-- Her shortbow hangs on `Dummy_Sheath_Ranged` while sheathed or in Melee, and goes to
-  `Dummy_L_Hand` in Ranged.
+- Lae'zel starts on the melee set. Her lone longsword is sheathed on `Dummy_Sheath_Upper_R`
+  with source `Dummy_Sheath` and drawn in `Dummy_R_Hand`. It stays on her back while the
+  bow is drawn.
+- Her shortbow (`Dummy_Sheath_Ranged` when sheathed) is not shown while sheathed or in Melee.
+  It goes to `Dummy_L_Hand` in Ranged.
+- A versatile battleaxe alone uses `Dummy_L_Hand` (the two-handed grip) and the `Generic2H`
+  subset. Beside a shield it uses `Dummy_R_Hand` with `Dummy_Attachment_Versatile`.
 - The CC cleric's mace hangs on `Dummy_Sheath_Upper_R`.
 - The `Shield` type names no sheathed bone. A sheathed shield is not attached, and the viewer
   hides it. The avatar reference screenshot shows no shield on the back either.
-- Both weapons are always shown, on their sheath bone or in the hand. The old viewer rule
-  "ranged only without melee" is gone.
 
 #### Animation subset
 
@@ -565,12 +607,34 @@ identified.
 Observed with the install (`BG3_CHAR_DEBUG=1` viewer log; ignored test output):
 
 - Lae'zel, Melee: (`Sword2H`, `Unarmed1H`) → `808afd36-…`. Idle
-  `GTY_F_Rig_2HS_IDLE_Still_Peace_01`, run `HUM_F_Rig_2HS_LOCO_Run_F_Peace_01`, melee
-  `GTY_F_Rig_2HS_CMBT_Melee_RHand_01_Attack`.
-- Lae'zel, Ranged: (`Bow2H`, `Unarmed1H`) → `f709f223-…`. Idle and ranged attack are `BOW`
-  clips.
+  `GTY_F_Rig_2HS_IDLE_Still_Combat_01` (see below), run
+  `HUM_F_Rig_2HS_LOCO_Run_F_Peace_01`, melee `GTY_F_Rig_2HS_CMBT_Melee_RHand_01_Attack`.
+- Lae'zel, Ranged: (`Bow2H`, `Unarmed1H`) → `f709f223-…`. Idle
+  (`GTY_F_Rig_BOW_IDLE_Still_Combat_01`) and ranged attack are `BOW` clips.
 - Lae'zel, sheathed: her own `GTY_F_Rig_Lae'zel_DFLT_IDLE_Still_Peace_01`.
 - The deep-gnome cleric, Melee: (`Slashing1H`, `Shield1H`) → `fbddf847-…`.
+
+The two-handed (versatile) pairing for a lone versatile weapon is the engine's rule.
+`eoc::unsheath::ResolveSubSetFromState` passes the melee main and off-hand slot entities (3,
+4) to `eoc::ResolveWeaponData`. `GetWeaponData` sets "two-handed" from `WeaponComponent`
+flags & 0xC00, and a single weapon uses its `WeaponType_TwoHanded`. That is why Lae'zel's
+lone longsword plays `2HS` clips. It is different from the *visual* versatile flag above,
+which means one-handed beside another item.
+
+**Drawn idle: the combat idle.** The viewer used to play the blueprint's default idle type
+(`IDLE_Still_Peace_01`) in the weapon subset, so drawn Lae'zel held the sword upright in front
+of her with both hands. Neither reference shows that. Weapon subsets have
+`*_IDLE_Still_Combat_01` clips (`GTY_F_Rig_2HS_IDLE_Still_Combat_01`, `…_BOW_…`), and the
+blueprint has the variables for it (`IDLE_DesiredStillShortName`, `ATT_CombatShortname`,
+`IDLE_Still_Combat_0N_Valid`). **Assumption**: while weapons are drawn, the idle type is
+`IDLE_Still_Combat_01` (`bg3_world::characters::IDLE_STILL_COMBAT`, its GUID read from
+`ShortNames.lsx`), falling back to the peace idle. The blueprint's compiled logic was not
+interpreted: it is a state machine in a bytecode `CodePage`. In that clip the sword is held
+low in the right hand with the blade angled up behind her and the left hand free, as in the
+imp-fight reference (`laezel.png`). The second reference (`laezel-combat.png`: left hand on
+the hip, blade upright by the right shoulder) is probably another frame of the idle or one
+of the `IDLE_Random_Combat_*` / `IDLE_Neutral_Combat_*` clips the blueprint mixes in. Those
+are not played.
 
 The viewer resolves the idle, run and combat clips per drawn state with the existing set
 order (**assumption**, see "Combat clips"). It swaps them in on `CombatEvent::Unsheathed`. A
@@ -583,9 +647,12 @@ before.
   - every branch of the bone selection, the untyped fallback and unnamed (hidden) bones;
   - the weapon-type pairs;
   - the subset per state;
-  - versatile only with a free hand;
+  - the versatile (one-handed) bones only beside another item in the other hand;
+  - only the active weapon set shown while not drawn;
   - spell `Sheathing`;
   - reading both files with the engine defaults.
+- `the_equipment_initial_weapon_set_is_drawn_for_the_fight` (bg3-sim) checks that
+  `initialweaponset "Ranged"` draws the ranged set on joining.
 - `weapons_are_drawn_for_the_fight_by_spell_and_sheathed_after` (bg3-sim) checks the order
   draw-after-`CombatStarted` and switch-before-`SpellCast`, and that the end of the fight
   sheathes.
@@ -601,27 +668,46 @@ Screenshots (local, `.cache/shots/`):
   --camera=51.3,18.9,-424.6 --look-at=53.06,18.45,-426.5`) and `sheath-ooc-avatar-b.png`
   (front, `--camera=54.9,18.9,-428.4`): `--play --shot-after 8`, out of combat. The cleric's mace hangs diagonally across his back, handle up at
   his right shoulder, and the shield is not shown. This matches the reference screenshot.
-- `sheath-combat.png`: `--play --combat-test --shot-after 10`. Lae'zel holds the longsword
-  two-handed in the `2HS` idle with the bow sheathed on her back. The avatar has the mace in
-  his right hand and the shield on his left arm.
+- `sheath-combat.png` (before the weapon-set rule): `--play --combat-test --shot-after 10`.
+  Lae'zel held the longsword in the `2HS` peace idle with the bow sheathed on her back (both
+  are now different, see below). The avatar has the mace in his right hand and the shield on
+  his left arm.
 - `sheath-after-combat.png`, `sheath-laezel-after-a.png` / `-b.png`: `--combat-autoplay`
   until the fight ends. Both are sheathed again in their peace idles. The `-a`/`-b` shots add
   `--no-follow --camera=-42.3,4.2,-400.6` / `--camera=-37.8,4.2,-396.3` with
   `--look-at=-40.05,3.7,-398.43`.
 
-**Reference screenshot (Lae'zel):** it was taken during the imp fight, so her longsword is
-drawn, not sheathed; the earlier "other diagonal" discrepancy was a misreading. It does show her
-holding the longsword **one-handed** (grip in the right hand by her hip, blade angled up behind
-her, left hand free), whereas we pick the versatile (two-handed) pairing and its clips when the
-other hand is empty. That is evidence against the "versatile means the other hand is empty"
-**assumption**; how the engine decides the versatile grip is not yet read.
+**Reference screenshots (Lae'zel, local, `.cache/reference/`, never committed):**
+
+- `laezel.png` and `laezel-combat.png` were taken in the imp fight. The sword is drawn, held
+  in the right hand low by the hip with the blade up. The left hand is free (in front of her
+  belly, or on her hip). There is no bow. This is the `Sword2H` combat idle, not a one-handed
+  pairing. The earlier "one-handed, so the versatile assumption is wrong" reading mixed up the
+  grip with the pose. The engine's pairing for a lone versatile weapon *is* two-handed (see
+  above).
+- `laezel-sheathed.png` was taken after the fight, from behind. The longsword is diagonal on
+  her back, grip up at her right shoulder, blade towards her left hip (`Dummy_Sheath_Upper_R`).
+  No bow is shown: the active weapon set rule.
+
+Ours (2026-10-22, `.cache/shots/`):
+
+- `grip.png`: `--play --combat-test --frame Lae --frame-mode body --shot-after 10`. The drawn
+  longsword is in her right hand, low by the hip, the blade angled up behind her, with the
+  left hand free and no bow. It matches `laezel.png`. Before this change she stood in the
+  `2HS` *peace* idle, holding the sword upright in front of her with both hands.
+- `sheathed-back.png`: `--play --frame Lae --frame-mode body --frame-yaw 180
+  --shot-after 10`. The sword is diagonal on her back, grip up at her right shoulder, and no
+  bow. It matches `laezel-sheathed.png`. The lighting at her start position leaves her
+  mostly in silhouette.
 
 ## Open
 
 - Character shaders: what remains open is listed in `character-shaders.md`.
-- Sheathing: the state arbitration (`EPriority`, the other causes), weapon sets, script
-  overrides, sheathe/unsheathe animations, the alternative (rage) grip, and when the
-  versatile (two-handed) grip applies (the reference shows Lae'zel one-handed).
+- Sheathing: the state arbitration (`EPriority`, the other causes), switching weapon sets
+  (and whether a melee/ranged attack switches the active set), where `initialweaponset` is
+  applied, script overrides, sheathe/unsheathe animations, the alternative (rage) grip, the
+  blueprint's idle selection (combat idle, random/neutral combat idles), and the
+  instrument's sheathed visibility.
 - Helmet hair, camp-outfit switching and automatic visual attachments.
 - Facial animation and physics/cloth for the extra mesh bones.
 - Initial death/lying poses for scenery corpses (combat deaths now animate).

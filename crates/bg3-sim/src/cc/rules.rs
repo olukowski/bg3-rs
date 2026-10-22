@@ -354,6 +354,8 @@ pub struct CreatedCharacter {
     pub spells: Vec<String>,
     /// Starting equipment: item stats names (race set, class set, picks).
     pub equipment: Vec<String>,
+    /// The active weapon set the character starts with.
+    pub weapon_set: bg3_world::unsheath::WeaponSet,
     pub spellcasting_ability: Option<Ability>,
     /// The tags the engine gives the character (background, class, subclass, deity, the
     /// custom origin's appearance and "really" tags), in the order the trace announces them.
@@ -823,6 +825,12 @@ impl CcData {
             .subclass
             .and_then(|s| self.class(s)?.equipment.clone())
             .or_else(|| class.equipment.clone());
+        // Assumption: the class set's `initialweaponset` is the starting weapon set (race
+        // sets hold no weapons); without a class set, the melee set.
+        let weapon_set = class_set
+            .as_ref()
+            .and_then(|s| self.initial_weapon_sets.get(s).copied())
+            .unwrap_or_default();
         for set in race_sets.chain(class_set) {
             equipment.extend(self.equipment_sets.get(&set).cloned().unwrap_or_default());
         }
@@ -999,6 +1007,7 @@ impl CcData {
             passives: g.passives.clone(),
             spells,
             equipment,
+            weapon_set,
             spellcasting_ability: class.spellcasting_ability,
             tags,
         })

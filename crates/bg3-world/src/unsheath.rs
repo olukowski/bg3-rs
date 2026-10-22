@@ -60,24 +60,46 @@ impl UnsheathState {
 pub fn state_from_sheathing(
     sheathing: &str,
     current: UnsheathState,
-    ranged_set: bool,
+    active: WeaponSet,
 ) -> UnsheathState {
     match sheathing.trim() {
         "Instrument" => UnsheathState::Instrument,
         "Melee" => UnsheathState::Melee,
         "Ranged" => UnsheathState::Ranged,
-        "WeaponSet" => weapon_set_state(ranged_set),
+        "WeaponSet" => active.state(),
         "DontChange" | "Somatic" | "" => current,
         _ => UnsheathState::Sheathed,
     }
 }
 
-/// The state of the active weapon set (`eoc::WeaponSetComponent`): ranged → Ranged, else Melee.
-pub fn weapon_set_state(ranged_set: bool) -> UnsheathState {
-    if ranged_set {
-        UnsheathState::Ranged
-    } else {
-        UnsheathState::Melee
+/// A character's active weapon set (`eoc::WeaponSetComponent::m_WeaponSet`, `EWeaponSet`):
+/// the melee slots or the ranged slots. The player switches it in the game.
+// bg3: (ecl) VisualsVisibilityStateSystem::ProcessEquipmentVisualState reads it as a byte,
+// 0 for the melee slots and 1 for the ranged slots (4.1.1.7631656).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum WeaponSet {
+    #[default]
+    Melee,
+    Ranged,
+}
+
+impl WeaponSet {
+    /// From an `Equipment` stats entry's `initialweaponset` (`"Melee"` / `"Ranged"`).
+    /// Assumption: a missing or unknown value starts on the melee set (the engine's
+    /// `EWeaponSet` zero value); every Equipment entry in the reference build sets it.
+    pub fn from_initial(initial: Option<&str>) -> Self {
+        match initial.map(str::trim) {
+            Some("Ranged") => Self::Ranged,
+            _ => Self::Melee,
+        }
+    }
+
+    /// The state drawing this set (joining a fight, a `WeaponSet` spell).
+    pub fn state(self) -> UnsheathState {
+        match self {
+            Self::Melee => UnsheathState::Melee,
+            Self::Ranged => UnsheathState::Ranged,
+        }
     }
 }
 
@@ -102,6 +124,15 @@ impl WeaponSlot {
             "MusicalInstrument" => Self::Instrument,
             _ => return None,
         })
+    }
+
+    /// The weapon set the slot belongs to (`None` for the instrument).
+    pub fn set(self) -> Option<WeaponSet> {
+        match self {
+            Self::MeleeMain | Self::MeleeOff => Some(WeaponSet::Melee),
+            Self::RangedMain | Self::RangedOff => Some(WeaponSet::Ranged),
+            Self::Instrument => None,
+        }
     }
 
     pub fn is_off_hand(self) -> bool {
@@ -174,7 +205,9 @@ impl EquipmentType {
 pub struct Grip {
     pub unsheathed: bool,
     pub off_hand: bool,
-    /// A `Versatile` weapon with the other hand empty (wielded two-handed).
+    /// A `Versatile` weapon with something in the other hand, so wielded one-handed (the
+    /// `BoneVersatile*` / `SourceBoneVersatile*` bones). A versatile weapon alone uses the
+    /// plain bones, which the install sets up as the two-handed grip.
     pub versatile: bool,
     /// The alternative grip (`SourceBoneAlternativeUnsheathed`, e.g. while raging); not
     /// modelled by the sim, always false there.
@@ -419,21 +452,46 @@ impl WeaponPlacement {
             &self.sheathed
         }
     }
+
+    /// Where the weapon is shown in `state` with `active` the character's weapon set, or
+    /// `None` when it is not shown. A drawn weapon is always shown (in the hand); a weapon
+    /// that is not drawn is shown sheathed only when its slot belongs to the active weapon
+    /// set, so the other set's weapons are not shown at all. The instrument is not limited
+    /// by the weapon set (its sheathed visibility depends on state that was not traced).
+    // bg3: ecl::equipment::VisualsVisibilityStateSystem::ProcessEquipmentVisualState
+    // (4.1.1.7631656): melee/ranged main/off slots count as drawn when the client unsheath
+    // visual state of that hand is Melee/Ranged; a slot that is not drawn is kept only when
+    // `eoc::WeaponSetComponent` names its set (melee slots for 0, ranged slots for 1).
+    pub fn shown(&self, state: UnsheathState, active: WeaponSet) -> Option<&Attachment> {
+        if !slot_shown(self.slot, state, active) {
+            return None;
+        }
+        let a = self.for_state(state);
+        a.bone.as_ref().map(|_| a)
+    }
 }
 
-/// Placements of `item` among the character's `items`. Assumption: the client's versatile
-/// flag means "a `Versatile` weapon whose other hand (same weapon set) is empty" (the engine
-/// tests the opposite slot against a set of slots that is not traced).
+/// Whether a weapon in `slot` is shown at all: drawn, or in the active weapon set (see
+/// [`WeaponPlacement::shown`]).
+pub fn slot_shown(slot: WeaponSlot, state: UnsheathState, active: WeaponSet) -> bool {
+    state.draws(slot) || slot.set().is_none_or(|s| s == active)
+}
+
+/// Placements of `item` among the character's `items`.
+// bg3: (anonymous namespace)::GetVisualsDesiredState (ecl, 4.1.1.7631656): the versatile flag
+// is the weapon's `Versatile` flag and the opposite hand's slot (melee main ↔ off, ranged main
+// ↔ off) being among the character's equipment visual slots, i.e. the other hand holds
+// something. A lone versatile weapon keeps the plain bones (the two-handed grip).
 pub fn placement(data: &WeaponData, item: &WeaponItem, items: &[WeaponItem]) -> WeaponPlacement {
     let ty = data.equipment_type(item.equipment_type);
-    let other_empty = item
+    let other_held = item
         .slot
         .opposite()
-        .is_none_or(|o| !items.iter().any(|i| i.slot == o));
+        .is_some_and(|o| items.iter().any(|i| i.slot == o));
     let grip = |unsheathed| Grip {
         unsheathed,
         off_hand: item.slot.is_off_hand(),
-        versatile: item.versatile && other_empty,
+        versatile: item.versatile && other_held,
         alternative: false,
     };
     WeaponPlacement {
@@ -659,25 +717,44 @@ mod tests {
     }
 
     #[test]
-    fn placement_uses_versatile_only_with_a_free_hand() {
+    fn placement_uses_versatile_bones_only_beside_another_weapon() {
         let d = data();
+        // Alone: the plain (two-handed) bones.
         let alone = [item(WeaponSlot::MeleeMain, "sword", true)];
         let p = placement(&d, &alone[0], &alone);
-        assert_eq!(p.sheathed, at(Some("Back_V"), "Sheath_V"));
-        assert_eq!(p.unsheathed, at(Some("Hand_V"), "Attach_V"));
+        assert_eq!(p.sheathed, at(Some("Back_R"), "Sheath"));
+        assert_eq!(p.unsheathed, at(Some("Hand_R"), DUMMY_ATTACHMENT));
+        // A ranged weapon is another set: the melee hand is still free.
+        let with_bow = [
+            item(WeaponSlot::MeleeMain, "sword", true),
+            item(WeaponSlot::RangedMain, "sword", false),
+        ];
+        let p = placement(&d, &with_bow[0], &with_bow);
+        assert_eq!(p.unsheathed, at(Some("Hand_R"), DUMMY_ATTACHMENT));
+        // With a shield: the versatile (one-handed) bones.
         let both = [
             item(WeaponSlot::MeleeMain, "sword", true),
             item(WeaponSlot::MeleeOff, "shield", false),
         ];
         let p = placement(&d, &both[0], &both);
-        assert_eq!(p.sheathed, at(Some("Back_R"), "Sheath"));
+        assert_eq!(p.sheathed, at(Some("Back_V"), "Sheath_V"));
         assert_eq!(
-            p.for_state(UnsheathState::Melee).bone.as_deref(),
-            Some("Hand_R")
+            p.for_state(UnsheathState::Melee),
+            &at(Some("Hand_V"), "Attach_V")
         );
         assert_eq!(
             p.for_state(UnsheathState::Ranged).bone.as_deref(),
-            Some("Back_R")
+            Some("Back_V")
+        );
+        // Not versatile: the plain bones even beside a shield.
+        let plain = [
+            item(WeaponSlot::MeleeMain, "sword", false),
+            item(WeaponSlot::MeleeOff, "shield", false),
+        ];
+        let p = placement(&d, &plain[0], &plain);
+        assert_eq!(
+            p.for_state(UnsheathState::Melee),
+            &at(Some("Hand_R"), DUMMY_ATTACHMENT)
         );
         let s = placement(&d, &both[1], &both);
         assert_eq!(s.for_state(UnsheathState::Sheathed).bone, None);
@@ -688,16 +765,49 @@ mod tests {
     }
 
     #[test]
+    fn only_the_active_weapon_set_is_shown_sheathed() {
+        let d = data();
+        let items = [
+            item(WeaponSlot::MeleeMain, "sword", true),
+            item(WeaponSlot::RangedMain, "sword", false),
+            item(WeaponSlot::MeleeOff, "shield", false),
+        ];
+        let p = |i: usize| placement(&d, &items[i], &items);
+        let (sword, bow, shield) = (p(0), p(1), p(2));
+        let bone = |a: Option<&Attachment>| a.and_then(|a| a.bone.clone());
+        use UnsheathState::*;
+        let (m, r) = (WeaponSet::Melee, WeaponSet::Ranged);
+        // Melee set, sheathed: the sword on the back, no bow; the sheathed shield has no bone.
+        assert_eq!(bone(sword.shown(Sheathed, m)).as_deref(), Some("Back_V"));
+        assert_eq!(bone(bow.shown(Sheathed, m)), None);
+        assert_eq!(bone(shield.shown(Sheathed, m)), None);
+        // Ranged set, sheathed: only the bow.
+        assert_eq!(bone(sword.shown(Sheathed, r)), None);
+        assert_eq!(bone(bow.shown(Sheathed, r)).as_deref(), Some("Back_R"));
+        // Drawn weapons are shown whatever the set; the other set stays hidden or sheathed.
+        assert_eq!(bone(sword.shown(Melee, r)).as_deref(), Some("Hand_V"));
+        assert_eq!(bone(bow.shown(Melee, r)).as_deref(), Some("Back_R"));
+        assert_eq!(bone(bow.shown(Melee, m)), None);
+        assert_eq!(bone(bow.shown(Ranged, m)).as_deref(), Some("Hand_R"));
+        assert_eq!(bone(sword.shown(Ranged, m)).as_deref(), Some("Back_V"));
+        assert_eq!(bone(shield.shown(Melee, m)).as_deref(), Some("Hand_L"));
+    }
+
+    #[test]
     fn spell_sheathing() {
         use UnsheathState::*;
-        assert_eq!(state_from_sheathing("Melee", Sheathed, true), Melee);
-        assert_eq!(state_from_sheathing("Ranged", Melee, false), Ranged);
-        assert_eq!(state_from_sheathing("Instrument", Melee, false), Instrument);
-        assert_eq!(state_from_sheathing("Sheathed", Melee, false), Sheathed);
-        assert_eq!(state_from_sheathing("DontChange", Ranged, false), Ranged);
-        assert_eq!(state_from_sheathing("Somatic", Melee, false), Melee);
-        assert_eq!(state_from_sheathing("WeaponSet", Sheathed, true), Ranged);
-        assert_eq!(state_from_sheathing("WeaponSet", Sheathed, false), Melee);
+        let (m, r) = (WeaponSet::Melee, WeaponSet::Ranged);
+        assert_eq!(state_from_sheathing("Melee", Sheathed, r), Melee);
+        assert_eq!(state_from_sheathing("Ranged", Melee, m), Ranged);
+        assert_eq!(state_from_sheathing("Instrument", Melee, m), Instrument);
+        assert_eq!(state_from_sheathing("Sheathed", Melee, m), Sheathed);
+        assert_eq!(state_from_sheathing("DontChange", Ranged, m), Ranged);
+        assert_eq!(state_from_sheathing("Somatic", Melee, m), Melee);
+        assert_eq!(state_from_sheathing("WeaponSet", Sheathed, r), Ranged);
+        assert_eq!(state_from_sheathing("WeaponSet", Sheathed, m), Melee);
+        assert_eq!(WeaponSet::from_initial(Some("Ranged")), r);
+        assert_eq!(WeaponSet::from_initial(Some("Melee")), m);
+        assert_eq!(WeaponSet::from_initial(None), m);
         assert!(Melee.draws(WeaponSlot::MeleeOff));
         assert!(!Melee.draws(WeaponSlot::RangedMain));
         assert!(!Sheathed.draws(WeaponSlot::MeleeMain));

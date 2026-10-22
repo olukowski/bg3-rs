@@ -776,6 +776,21 @@ fn weapons_are_drawn_for_the_fight_by_spell_and_sheathed_after() {
 }
 
 #[test]
+fn the_equipment_initial_weapon_set_is_drawn_for_the_fight() {
+    use bg3_world::unsheath::{UnsheathState, WeaponSet};
+    let mut s = sim(3);
+    assert_eq!(s.weapon_set(g(HERO1)), WeaponSet::Melee);
+    Arc::make_mut(&mut s.data)
+        .combat
+        .initial_weapon_sets
+        .insert("EQP_T_Hero".to_owned(), WeaponSet::Ranged);
+    assert_eq!(s.weapon_set(g(HERO1)), WeaponSet::Ranged);
+    s.enter_combat(g(HERO1), g(IMP1)).unwrap();
+    assert_eq!(s.unsheath_state(g(HERO1)), UnsheathState::Ranged);
+    assert_eq!(s.unsheath_state(g(IMP1)), UnsheathState::Melee);
+}
+
+#[test]
 fn hostiles_in_sight_start_a_fight() {
     let mut s = sim(3);
     for (id, x) in [(IMP1, 30.0), (IMP2, 40.0)] {

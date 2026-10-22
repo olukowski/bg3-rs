@@ -26,10 +26,12 @@ use bevy::prelude::*;
 use bg3_vfs::Vfs;
 use bg3_world::characters::{
     CombatAnimation, DEFAULT_MOVEMENT_SPEED_RUN, DEFAULT_MOVEMENT_STEP_UP_HEIGHT, EquippedItem,
-    RUN_PEACE, ResolvedCharacter, animation_simple_names, idle_simple_name, resolve_character,
-    resolve_equipment, resolve_equipment_items, weapon_items,
+    IDLE_STILL_COMBAT, RUN_PEACE, ResolvedCharacter, animation_simple_names, idle_simple_name,
+    resolve_character, resolve_equipment, resolve_equipment_items, weapon_items,
 };
-use bg3_world::unsheath::{UnsheathState, WeaponSlot, placement, subset_for_state};
+use bg3_world::unsheath::{
+    UnsheathState, WeaponSet, WeaponSlot, placement, slot_shown, subset_for_state,
+};
 use rayon::prelude::*;
 
 use crate::level::LoadedLevel;
@@ -238,6 +240,8 @@ pub struct PreparedCharacter {
     /// Clip sets of the drawn states whose weapon subset differs from the default
     /// (`animation`/`run`/`combat` are the sheathed set).
     pub drawn: HashMap<UnsheathState, PreparedClips>,
+    /// The active weapon set: only its weapons are shown while sheathed.
+    pub weapon_set: WeaponSet,
     /// `MovementSpeedRun` (m/s) and `MovementStepUpHeight` (m) from the template chain.
     pub run_speed: f32,
     pub step_height: f32,
@@ -260,6 +264,7 @@ impl LevelCharacters {
         level: &LoadedLevel,
         objects: impl Iterator<Item = &'a bg3_world::LevelObject>,
         avatar_equipment: Option<(String, &[String])>,
+        weapon_sets: &HashMap<String, WeaponSet>,
     ) -> Self {
         let started = std::time::Instant::now();
         let idle = idle_simple_name(vfs);
@@ -325,7 +330,16 @@ impl LevelCharacters {
                     if std::env::var_os("BG3_CHAR_DEBUG").is_some() {
                         eprintln!("weapon subsets {}: {subsets:?}", c.name);
                     }
-                    resolved.push((obj.transform, c, items, run, subsets));
+                    // The sim's active set with `--play`; else the equipment's starting set.
+                    let weapon_set =
+                        weapon_sets.get(&c.id).copied().unwrap_or_else(|| {
+                            WeaponSet::from_initial(
+                                c.props.equipment.as_deref().zip(stats.as_ref()).and_then(
+                                    |(e, s)| s.equipment.get(e)?.initial_weapon_set.as_deref(),
+                                ),
+                            )
+                        });
+                    resolved.push((obj.transform, c, items, run, subsets, weapon_set));
                 }
                 Err(e) => out.failed.push((obj.name.clone(), e.to_string())),
             }
@@ -333,7 +347,7 @@ impl LevelCharacters {
         let cache = GrannyCache::default();
         let results: Vec<_> = resolved
             .par_iter()
-            .map(|(t, c, items, run, subsets)| {
+            .map(|(t, c, items, run, subsets, weapon_set)| {
                 let mut p = prepare(
                     vfs,
                     &cache,
@@ -344,6 +358,7 @@ impl LevelCharacters {
                     &level.banks.weapons,
                 );
                 if let Ok(p) = &mut p {
+                    p.weapon_set = *weapon_set;
                     p.run = run
                         .as_ref()
                         .and_then(|a| a.source_file.as_deref())
@@ -375,9 +390,14 @@ impl LevelCharacters {
                             .and_then(|a| a.source_file)
                             .and_then(|path| cache.animation(vfs, &path))
                     };
+                    // Drawn weapons: the combat idle of the weapon subset (see
+                    // `IDLE_STILL_COMBAT`), else the peace idle.
+                    let combat_idle = simple_names.get(IDLE_STILL_COMBAT);
                     for (state, subset) in subsets {
                         let set = PreparedClips {
-                            idle: clip(subset, &idle),
+                            idle: combat_idle
+                                .and_then(|id| clip(subset, id))
+                                .or_else(|| clip(subset, &idle)),
                             run: clip(subset, RUN_PEACE),
                             combat: CombatAnimation::ALL
                                 .into_iter()
@@ -624,6 +644,7 @@ fn prepare(
         run: None,
         combat: HashMap::new(),
         drawn: HashMap::new(),
+        weapon_set: WeaponSet::default(),
         run_speed: c
             .props
             .movement_speed_run
@@ -804,6 +825,8 @@ pub struct CharacterRoot {
 pub struct Unsheath {
     pub state: UnsheathState,
     applied: UnsheathState,
+    /// The active weapon set: a weapon that is not drawn is shown only if it is in this set.
+    weapon_set: WeaponSet,
     weapons: Vec<(Entity, WeaponMount)>,
     /// Bound clip sets per state; the sheathed set is always present.
     clips: HashMap<UnsheathState, ClipSet>,
@@ -850,7 +873,9 @@ pub fn apply_unsheath(
         let state = u.state;
         u.applied = state;
         for (entity, m) in &u.weapons {
-            let mount = if state.draws(m.slot) {
+            let mount = if !slot_shown(m.slot, state, u.weapon_set) {
+                None
+            } else if state.draws(m.slot) {
                 m.unsheathed
             } else {
                 m.sheathed
@@ -1089,8 +1114,11 @@ pub fn spawn_characters(
                     .unwrap_or(root);
                 let mut e = commands.spawn((Mesh3d(mesh), part.local, ChildOf(parent)));
                 if let Some(pose) = &part.weapon {
-                    // Spawned sheathed; hidden when the sheathed type names no bone.
-                    if pose.sheathed.is_none() {
+                    // Spawned sheathed; hidden when the sheathed type names no bone or the
+                    // weapon is not in the active weapon set.
+                    if pose.sheathed.is_none()
+                        || !slot_shown(pose.slot, UnsheathState::Sheathed, c.weapon_set)
+                    {
                         e.insert(Visibility::Hidden);
                     }
                     let joint = |m: Option<(usize, Transform)>| {
@@ -1127,6 +1155,7 @@ pub fn spawn_characters(
         commands.entity(root).insert(Unsheath {
             state: UnsheathState::Sheathed,
             applied: UnsheathState::Sheathed,
+            weapon_set: c.weapon_set,
             weapons,
             clips,
         });
