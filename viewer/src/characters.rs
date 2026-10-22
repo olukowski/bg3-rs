@@ -91,45 +91,98 @@ impl Skeleton {
     ) -> Vec<String> {
         let mut unknown = Vec::new();
         for name in wanted {
-            if self.by_name.contains_key(name) {
-                continue;
-            }
-            let Some(mut i) = other.bones.iter().position(|b| b.name == name) else {
+            if !self.add_bone(other, name, Placement::BindWorld) {
                 unknown.push(name.to_owned());
-                continue;
-            };
-            // Chain of missing ancestors, child first.
-            let mut chain = vec![i];
-            while let Some(p) = other.bones[i].parent {
-                if self.by_name.contains_key(&other.bones[p].name) {
-                    break;
-                }
-                chain.push(p);
-                i = p;
             }
-            for &b in chain.iter().rev() {
-                let bone = &other.bones[b];
-                let parent = bone
-                    .parent
-                    .and_then(|p| self.by_name.get(&other.bones[p].name).copied());
-                let inverse_bind = inverse_bind(&bone.inverse_world);
+        }
+        unknown
+    }
+
+    /// Resolve the bones of a `NeedsSkeletonRemap` mesh (shared hair, beards) against this
+    /// skeleton. A bone this skeleton lacks comes from the skeleton of the visual owning the
+    /// mesh's `SkeletonSlot` (`slot`: the head's face rig for beards), placed where that rig
+    /// binds it, else from the mesh's own rig (`source`: braid or spring chains), placed
+    /// relative to its remapped parent. Returns the names neither has.
+    ///
+    /// The original builds each visual's skeleton from its own GR2, attaches visuals through
+    /// shared skeleton slots, and remaps the source pose by bone name before skinning. Bones
+    /// that don't map keep their local transform under their (remapped) parent.
+    // bg3: gr::GrannyVisualTemplate::InitInstance, gr::GrannyMeshBinding::RemapToSkeleton,
+    // ls::Visual::AddAttachment, ls::Visual::GetOrCreateSkeletonSlot (4.1.1.7631656).
+    // Assumption: unmapped source bones keep their authored bind-local offset.
+    pub fn extend_remapped<'a>(
+        &mut self,
+        source: Option<&bg3_gr2::Skeleton>,
+        slot: Option<&bg3_gr2::Skeleton>,
+        wanted: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<String> {
+        let mut unknown = Vec::new();
+        for name in wanted {
+            let found = slot.is_some_and(|s| self.add_bone(s, name, Placement::BindWorld))
+                || source.is_some_and(|s| self.add_bone(s, name, Placement::SourceLocal));
+            if !found {
+                unknown.push(name.to_owned());
+            }
+        }
+        unknown
+    }
+
+    /// Add bone `name` of `other` with any missing ancestors, parented to the nearest ancestor
+    /// this skeleton has (by name). False if neither skeleton has it.
+    fn add_bone(&mut self, other: &bg3_gr2::Skeleton, name: &str, placement: Placement) -> bool {
+        if self.by_name.contains_key(name) {
+            return true;
+        }
+        let Some(mut i) = other.bones.iter().position(|b| b.name == name) else {
+            return false;
+        };
+        // Chain of missing ancestors, child first.
+        let mut chain = vec![i];
+        while let Some(p) = other.bones[i].parent {
+            if self.by_name.contains_key(&other.bones[p].name) {
+                break;
+            }
+            chain.push(p);
+            i = p;
+        }
+        let bind_world = |b: usize| inverse_bind(&other.bones[b].inverse_world).inverse();
+        for &b in chain.iter().rev() {
+            let bone = &other.bones[b];
+            let parent = bone
+                .parent
+                .and_then(|p| self.by_name.get(&other.bones[p].name).copied());
+            let parent_world = parent.map_or(Mat4::IDENTITY, |p| self.world_of(p));
+            let (rest, inverse_bind) = match placement {
                 // The foreign rig's parents can sit elsewhere than ours (Lae'zel's hair rig has
                 // `Head_M` 9 cm higher than her body rig), so its local rest would move the
                 // mesh. Place the bone where its bind pose says, relative to our parent:
                 // rest_world · inverse_bind = I, as for the base skeleton. Assumption: the
                 // engine keeps attached meshes in their authored bind pose.
-                let parent_world = parent.map_or(Mat4::IDENTITY, |p| self.world_of(p));
-                let rest = Transform::from_matrix(parent_world.inverse() * inverse_bind.inverse());
-                self.by_name.insert(bone.name.clone(), self.joints.len());
-                self.joints.push(Joint {
-                    name: bone.name.clone(),
-                    parent,
-                    rest,
-                    inverse_bind,
-                });
-            }
+                Placement::BindWorld => (
+                    Transform::from_matrix(parent_world.inverse() * bind_world(b)),
+                    inverse_bind(&bone.inverse_world),
+                ),
+                // A remapped rig follows our bones: keep the bone's bind offset from its own
+                // parent, so a human braid hangs from a dwarf's hair socket, not at human height.
+                Placement::SourceLocal => {
+                    let local = bone
+                        .parent
+                        .map_or(bind_world(b), |p| bind_world(p).inverse() * bind_world(b));
+                    (
+                        Transform::from_matrix(local),
+                        (parent_world * local).inverse(),
+                    )
+                }
+            };
+            self.by_name.insert(bone.name.clone(), self.joints.len());
+            self.joints.push(Joint {
+                name: bone.name.clone(),
+                parent,
+                rest,
+                inverse_bind,
+            });
         }
-        unknown
+        true
     }
 
     /// Shared meshes reference SkeletonBank sockets as bones. The original remapper copies
@@ -191,6 +244,15 @@ impl Skeleton {
         }
         world
     }
+}
+
+/// Where [`Skeleton::add_bone`] puts a bone taken from another rig.
+#[derive(Clone, Copy)]
+enum Placement {
+    /// At the other rig's bind pose, in model space.
+    BindWorld,
+    /// At its bind offset from its parent, which may sit elsewhere in our skeleton.
+    SourceLocal,
 }
 
 /// A Granny transform (BG3 space) as a Bevy transform. Shear is dropped (only the diagonal of
@@ -624,33 +686,7 @@ fn prepare(
         .and_then(|s| s.source_file.as_deref())
         .ok_or("no skeleton resource")?;
     let base = cache.skeleton(vfs, skel_path)?;
-    // Extend the base skeleton with bones only the meshes' own skeletons have.
-    let mut extended = (*base).clone();
-    if c.parts.iter().any(|p| p.source_bind_pose)
-        && let Some(resource) = &c.skeleton
-    {
-        extended.add_sockets(&resource.sockets);
-    }
-    let mut unmapped: Vec<String> = Vec::new();
-    for part in &c.parts {
-        let Some(path) = part.visual.source_file.as_deref() else {
-            continue;
-        };
-        let scene = cache.scene(vfs, path)?;
-        let names = scene
-            .meshes
-            .iter()
-            .flat_map(|m| &m.bone_bindings)
-            .map(|b| b.bone_name.as_str());
-        match scene.skeletons.first() {
-            Some(s) => unmapped.extend(extended.extend_from(s, names)),
-            None => unmapped.extend(
-                names
-                    .filter(|n| extended.index(n).is_none())
-                    .map(str::to_owned),
-            ),
-        }
-    }
+    let (extended, mut unmapped) = assemble_skeleton(&base, c, |path| cache.scene(vfs, path))?;
     let skeleton = if extended.joints.len() == base.joints.len() {
         base
     } else {
@@ -724,6 +760,62 @@ fn prepare(
             .unwrap_or(DEFAULT_MOVEMENT_STEP_UP_HEIGHT),
         cut_bytes: c.body_masks.iter().filter_map(|m| m.value).collect(),
     })
+}
+
+/// Extend the base skeleton with the bones only the meshes' own skeletons have (and, for
+/// `NeedsSkeletonRemap` meshes, the body's sockets and the skeleton-slot owner's bones).
+/// Returns the skeleton and the bound bone names nothing provides.
+pub fn assemble_skeleton(
+    base: &Skeleton,
+    c: &ResolvedCharacter,
+    mut scene: impl FnMut(&str) -> Result<Arc<bg3_gr2::Scene>, String>,
+) -> Result<(Skeleton, Vec<String>), String> {
+    let mut extended = base.clone();
+    if c.parts.iter().any(|p| p.source_bind_pose)
+        && let Some(resource) = &c.skeleton
+    {
+        extended.add_sockets(&resource.sockets);
+    }
+    let mut unmapped: Vec<String> = Vec::new();
+    // Visuals that own a skeleton slot (the head's face rig) come first, so remapped meshes
+    // naming that slot (beards) resolve against them.
+    let mut slots: HashMap<&str, Arc<bg3_gr2::Scene>> = HashMap::new();
+    for remapped in [false, true] {
+        for part in c.parts.iter().filter(|p| p.source_bind_pose == remapped) {
+            let Some(path) = part.visual.source_file.as_deref() else {
+                continue;
+            };
+            let scene = scene(path)?;
+            let names = scene
+                .meshes
+                .iter()
+                .flat_map(|m| &m.bone_bindings)
+                .map(|b| b.bone_name.as_str());
+            let own = scene.skeletons.first();
+            if remapped {
+                let slot = part
+                    .visual
+                    .skeleton_slot
+                    .as_deref()
+                    .and_then(|s| slots.get(s))
+                    .and_then(|s| s.skeletons.first());
+                unmapped.extend(extended.extend_remapped(own, slot, names));
+                continue;
+            }
+            match own {
+                Some(s) => unmapped.extend(extended.extend_from(s, names)),
+                None => unmapped.extend(
+                    names
+                        .filter(|n| extended.index(n).is_none())
+                        .map(str::to_owned),
+                ),
+            }
+            if let Some(slot) = part.visual.skeleton_slot.as_deref() {
+                slots.entry(slot).or_insert_with(|| scene.clone());
+            }
+        }
+    }
+    Ok((extended, unmapped))
 }
 
 /// Weapons and rigid wearable attachments.
@@ -1485,6 +1577,86 @@ mod tests {
         }
     }
 
+    /// `test_skeleton` raised by `lift` with extra bones `(name, parent, local position)`.
+    fn rig(lift: f32, extra: &[(&str, usize, [f32; 3])]) -> bg3_gr2::Skeleton {
+        let mut s = test_skeleton();
+        s.bones[0].transform.position[1] += lift;
+        for &(name, parent, pos) in extra {
+            s.bones
+                .push(bone(name, Some(parent), pos, [0.0, 0.0, 0.0, 1.0]));
+        }
+        fill_inverse_world(&mut s.bones);
+        s
+    }
+
+    fn translation(m: Mat4) -> Vec3 {
+        m.w_axis.truncate()
+    }
+
+    /// A taller rig's chain hanging off a socket (a human braid) follows the avatar's socket
+    /// with its own bind offset instead of staying at the taller rig's height.
+    #[test]
+    fn remapped_source_chain_keeps_local_offset_under_target_socket() {
+        let extra = [
+            ("Socket_Hair", 1, [0.0, 0.2, 0.0]),
+            ("Braid", 3, [0.0, -0.3, -0.1]),
+        ];
+        let source = rig(0.4, &extra);
+        let mut avatar = Skeleton::from_gr2(&test_skeleton());
+        avatar.add_sockets(&[bg3_world::characters::SkeletonSocket {
+            name: "Socket_Hair".into(),
+            bone: "Spine".into(),
+            position: [0.0, 0.1, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        }]);
+        assert!(
+            avatar
+                .extend_remapped(Some(&source), None, ["Socket_Hair", "Braid", "Missing"])
+                .eq(&["Missing".to_string()])
+        );
+        let world = avatar.rest_world();
+        let (socket, braid) = (avatar.index("Socket_Hair").unwrap(), 4);
+        assert_eq!(avatar.index("Braid"), Some(braid));
+        let src_world = |i: usize| inverse_bind(&source.bones[i].inverse_world).inverse();
+        let expected = world[socket] * src_world(3).inverse() * src_world(4);
+        assert!(world[braid].abs_diff_eq(expected, 1e-5));
+        // A braid vertex lands under the avatar's socket, 0.4 m below the source rig's.
+        let vertex = src_world(4).transform_point3(Vec3::new(0.0, -0.05, 0.0));
+        let poses = source_bindposes(&avatar, Some(&source));
+        let skinned = (world[braid] * poses[braid]).transform_point3(vertex);
+        let offset = |v: Vec3, s: Vec3| v - s;
+        assert!(
+            offset(skinned, translation(world[socket]))
+                .abs_diff_eq(offset(vertex, translation(src_world(3))), 1e-5)
+        );
+        assert!((vertex.y - skinned.y - 0.4).abs() < 0.11);
+    }
+
+    /// Beards bind face-rig bones of the head's skeleton slot: those come from the slot
+    /// owner's rig (the avatar's head), not from the beard's own taller rig.
+    #[test]
+    fn remapped_bone_prefers_the_skeleton_slot_rig() {
+        let head = rig(0.0, &[("beard_jaw", 1, [0.0, 0.1, 0.1])]);
+        let beard = rig(0.4, &[("beard_jaw", 1, [0.0, 0.12, 0.1])]);
+        let mut avatar = Skeleton::from_gr2(&test_skeleton());
+        assert!(
+            avatar
+                .extend_remapped(Some(&beard), Some(&head), ["beard_jaw"])
+                .is_empty()
+        );
+        let i = avatar.index("beard_jaw").unwrap();
+        let world = avatar.rest_world();
+        let head_bind = inverse_bind(&head.bones[3].inverse_world).inverse();
+        assert!(world[i].abs_diff_eq(head_bind, 1e-5));
+        // A vertex authored on the beard rig's jaw lands on the head rig's jaw.
+        let beard_bind = inverse_bind(&beard.bones[3].inverse_world).inverse();
+        let local = Vec3::new(0.01, -0.02, 0.03);
+        let poses = source_bindposes(&avatar, Some(&beard));
+        let skinned = (world[i] * poses[i]).transform_point3(beard_bind.transform_point3(local));
+        assert!(skinned.abs_diff_eq(head_bind.transform_point3(local), 1e-5));
+    }
+
     #[test]
     fn rest_pose_times_inverse_bind_is_identity_after_mirroring() {
         let s = Skeleton::from_gr2(&test_skeleton());
@@ -1690,5 +1862,122 @@ mod tests {
             panic!("ears not skinned");
         };
         assert!(j.iter().all(|v| *v == [head_m; 4]));
+    }
+
+    /// Bind-pose model-space positions of a remapped part's LOD0 meshes as the viewer skins
+    /// them.
+    fn bind_positions(skeleton: &Skeleton, scene: &bg3_gr2::Scene) -> Vec<Vec3> {
+        let world = skeleton.rest_world();
+        let poses = source_bindposes(skeleton, scene.skeletons.first());
+        let mut out = Vec::new();
+        for m in scene.meshes.iter().filter(|m| !m.name.contains("_LOD")) {
+            let joint = |i: u16| {
+                let name = &m.bone_bindings[usize::from(i)].bone_name;
+                skeleton
+                    .index(name)
+                    .unwrap_or_else(|| panic!("{name} unmapped"))
+            };
+            for (k, p) in m.positions.iter().enumerate() {
+                let v = Vec3::from_array(space::vec3(*p));
+                let (idx, w) = (m.bone_indices[k], m.bone_weights[k]);
+                let sum: f32 = w.iter().sum();
+                out.push((0..4).filter(|&n| w[n] > 0.0).fold(Vec3::ZERO, |acc, n| {
+                    let j = joint(idx[n]);
+                    acc + (world[j] * poses[j]).transform_point3(v) * (w[n] / sum)
+                }));
+            }
+        }
+        out
+    }
+
+    /// A male hill dwarf with long braids (dwarf rig, spring chain) and a human-authored beard
+    /// (`SkeletonSlot` 1, face-rig bones): both bind on his head, not at human height.
+    #[test]
+    #[ignore = "needs BG3 install"]
+    fn dwarf_cc_hair_and_beard_bind_on_the_head() {
+        use bg3_world::characters::{VisualSlot, resolve_character};
+        let install = match bg3_install::Install::locate() {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("skipping: no BG3 install ({e})");
+                return;
+            }
+        };
+        let vfs = Vfs::from_install(&install).expect("vfs");
+        let templates = bg3_world::RootTemplates::load(&vfs).expect("templates");
+        let banks = bg3_world::ResourceBanks::load(&vfs).expect("banks");
+        let template = templates
+            .templates
+            .values()
+            .find(|t| t.name == "Dwarves_Male_Hill_Player")
+            .expect("dwarf player template");
+        let obj = bg3_world::LevelObject {
+            id: "avatar".into(),
+            name: "avatar".into(),
+            kind: "character".into(),
+            template: Some(template.id.clone()),
+            visual_template: None,
+            is_blocker: None,
+            transform: Default::default(),
+            character: None,
+            module: String::new(),
+        };
+        let mut c = resolve_character(&obj, &templates, &banks, "idle").expect("dwarf");
+        let visual = |name: &str| {
+            banks
+                .visuals
+                .values()
+                .find(|v| v.name == name)
+                .unwrap_or_else(|| panic!("{name}"))
+                .id
+                .clone()
+        };
+        let chosen = [
+            ("Hair", "HAIR_DWR_M_Braids_Long_B_Spring"),
+            ("Beard", "BEARD_HUM_M_Short_D"),
+        ];
+        c.apply_appearance(
+            chosen.map(|(slot, name)| VisualSlot {
+                slot: slot.into(),
+                visual: visual(name),
+                bone: None,
+            }),
+            [],
+            &banks,
+        )
+        .expect("appearance");
+        let scene = |path: &str| -> Result<Arc<bg3_gr2::Scene>, String> {
+            let bytes = vfs.read(path).map_err(|e| format!("{path}: {e}"))?;
+            bg3_gr2::Scene::from_bytes(&bytes)
+                .map(Arc::new)
+                .map_err(|e| format!("{path}: {e}"))
+        };
+        let skel = c.skeleton.as_ref().and_then(|s| s.source_file.clone());
+        let base = Skeleton::from_gr2(&scene(&skel.expect("skeleton")).unwrap().skeletons[0]);
+        let (skeleton, _) = assemble_skeleton(&base, &c, scene).expect("assemble");
+        let head = translation(skeleton.rest_world()[skeleton.index("Head_M").unwrap()]);
+        for (slot, name) in chosen {
+            let part = c.parts.iter().find(|p| p.slot == slot).expect(slot);
+            assert!(part.source_bind_pose, "{name} is remapped");
+            let path = part.visual.source_file.as_deref().unwrap();
+            let points = bind_positions(&skeleton, &scene(path).unwrap());
+            let (lo, hi) = points.iter().fold(
+                (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+                |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+            );
+            let mean = points.iter().sum::<Vec3>() / points.len() as f32;
+            eprintln!("{name}: head {head}, bounds {lo} .. {hi}, mean {mean}");
+            // Head_M sits at the base of the skull: hair rises ≤ 0.3 m above it and the braids
+            // hang ≤ 0.5 m below; the beard covers the jaw, within 0.2 m.
+            assert!(
+                hi.y < head.y + 0.3 && lo.y > head.y - 0.5,
+                "{name}: {lo} .. {hi}"
+            );
+            let reach = if slot == "Beard" { 0.2 } else { 0.3 };
+            assert!(
+                mean.distance(head) < reach,
+                "{name}: mean {mean} vs head {head}"
+            );
+        }
     }
 }
