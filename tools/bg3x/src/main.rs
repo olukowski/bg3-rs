@@ -8,6 +8,7 @@ mod metallib;
 mod nav;
 mod play;
 mod rules;
+mod shotcmp;
 mod sim;
 
 use std::path::PathBuf;
@@ -26,6 +27,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Compare screenshots side by side with a coarse central-region sRGB colour check.
+    Shotcmp {
+        reference: PathBuf,
+        ours: PathBuf,
+        #[arg(short, long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 900, value_parser = clap::value_parser!(u32).range(1..))]
+        height: u32,
+    },
     /// Show the located install (layout, root, version) and its paks.
     Info {
         /// List every location probed for the install and whether it is valid.
@@ -320,6 +330,12 @@ fn restore_sigpipe() {
 fn main() -> Result<()> {
     restore_sigpipe();
     match Cli::parse().command {
+        Command::Shotcmp {
+            reference,
+            ours,
+            out,
+            height,
+        } => shotcmp::run(&reference, &ours, &out, height),
         Command::Info { candidates } => info(candidates),
         Command::List { pak, filter } => {
             let pak = open(&pak)?;

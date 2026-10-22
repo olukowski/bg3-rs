@@ -86,6 +86,8 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   (stats expression languages, see `docs/formats/stats-expressions.md`),
   `nav [LEVEL] [--regions] [--subgrids] [--at x,y,z] [--path=x,y,z --path=x,y,z]` (AI grid summary,
   tile probe and path finding, see `docs/formats/navcloud.md`),
+  `shotcmp <REFERENCE.png> <OURS.png> -o <OUT.png> [--height 900]` (side-by-side screenshots;
+  coarse middle-region sRGB colour/luma means, 0–255, difference = ours minus reference),
   `combat [LEVEL] --party A,B [--target X] [--seed N] [--events] [--nav] [--ai-debug]` (a fight on
   bg3-sim with the story, every side on the scoring AI; `--nav` follows the AI grid and reports
   endpoint standability and path length; `--ai-debug` prints each AI decision's best candidates
@@ -95,6 +97,9 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   `--terrain-levels A,B` adds sub-level terrain (e.g. `WLD_Crashsite_D` for `WLD_Main_A`),
   `--terrain-only` hides objects, `--light-scale` tunes local-light brightness.
   `--dialog <name>` runs a dialog in an on-screen panel (number keys pick options).
+  `--play --frame <NAME> [--frame-mode face|body] [--frame-yaw <degrees>]` frames a character
+  from the front by name substring (default: whole body, yaw 0), hiding UI, clipping foreground
+  obstructions and holding the camera through capture.
   `--no-follow` keeps the camera at `--camera` during combat (close-up shots);
   `BG3_STANDARD_CHARACTERS=1` draws characters without the character shaders (A/B checks).
   `--play --cc` opens a character creation screen first (Start re-runs the viewer with

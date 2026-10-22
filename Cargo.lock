@@ -2224,6 +2224,7 @@ dependencies = [
  "bg3-vt",
  "bg3-world",
  "clap",
+ "image",
  "libc",
 ]
 

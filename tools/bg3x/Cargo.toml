@@ -26,6 +26,7 @@ bg3-vt.workspace = true
 bg3-world.workspace = true
 bg3-vfs.workspace = true
 clap.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
