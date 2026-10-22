@@ -126,6 +126,8 @@ enum Action {
     Toggle(usize, String),
     Visual(String, i32),
     Material(String, i32),
+    Color(String, i32),
+    Intensity(String, i32),
     Start,
 }
 
@@ -235,6 +237,26 @@ impl Screen {
     }
 
     fn prune_appearance(&mut self) {
+        let colors: Vec<_> = self.choice.appearance.color_choices().collect();
+        for (kind, id) in colors {
+            if !self
+                .data
+                .color_options(&self.choice, kind)
+                .iter()
+                .any(|c| c.id == id)
+            {
+                self.choice.appearance.set_color(kind, None);
+            }
+        }
+        let available: Vec<_> = bg3_sim::cc::appearance::COLOR_PARAMETERS
+            .iter()
+            .filter(|(kind, _, _)| !self.data.color_options(&self.choice, kind).is_empty())
+            .map(|(kind, _, _)| *kind)
+            .collect();
+        self.choice
+            .appearance
+            .intensities
+            .retain(|kind, _| available.contains(&kind.as_str()));
         for (kind, id) in self.choice.appearance.material_choices() {
             if !self
                 .data
@@ -413,6 +435,41 @@ impl Screen {
                     self.prune_appearance();
                 } else {
                     self.choice.appearance.set_material(slot, id);
+                }
+                self.dirty = true;
+            }
+            Action::Color(kind, dir) => {
+                let options = self.data.color_options(&self.choice, kind);
+                let index = self
+                    .choice
+                    .appearance
+                    .color(kind)
+                    .and_then(|id| options.iter().position(|c| c.id == id))
+                    .map_or(0, |i| i + 1);
+                let next = (index as i32 + dir).rem_euclid(options.len() as i32 + 1) as usize;
+                let id = next
+                    .checked_sub(1)
+                    .and_then(|i| options.get(i))
+                    .map(|c| c.id);
+                self.choice.appearance.set_color(kind, id);
+                self.dirty = true;
+            }
+            Action::Intensity(kind, dir) => {
+                // Assumption: offer tenth steps and Template; original slider steps are unverified.
+                let current = self
+                    .choice
+                    .appearance
+                    .intensities
+                    .get(kind)
+                    .map_or(0, |v| (v * 10.0).round() as i32 + 1);
+                let next = (current + dir).rem_euclid(12);
+                if next == 0 {
+                    self.choice.appearance.intensities.remove(kind);
+                } else {
+                    self.choice
+                        .appearance
+                        .intensities
+                        .insert(kind.clone(), (next - 1) as f32 / 10.0);
                 }
                 self.dirty = true;
             }
@@ -736,6 +793,38 @@ fn redraw(mut commands: Commands, mut screen: ResMut<Screen>, root: Query<Entity
                     .unwrap_or_else(|| "Template".into());
                 appearance_cycler(col, &kind, &name, false);
             }
+            for (kind, _, intensity) in bg3_sim::cc::appearance::COLOR_PARAMETERS {
+                let options = d.color_options(c, kind);
+                if options.is_empty() {
+                    continue;
+                }
+                let name = c
+                    .appearance
+                    .color(kind)
+                    .and_then(|id| options.iter().find(|color| color.id == id))
+                    .map(|color| s.text(color.display.as_ref(), &color.name))
+                    .unwrap_or_else(|| "Template".into());
+                row(col, |r| {
+                    label(r, &format!("{kind} colour"), 170.0, GOLD);
+                    button(r, "<", Action::Color(kind.into(), -1), WHITE, false);
+                    label(r, &name, 245.0, WHITE);
+                    button(r, ">", Action::Color(kind.into(), 1), WHITE, false);
+                });
+                if intensity.is_some() {
+                    let value = c
+                        .appearance
+                        .intensities
+                        .get(kind)
+                        .map(|v| format!("{v:.1}"))
+                        .unwrap_or_else(|| "Template".into());
+                    row(col, |r| {
+                        label(r, &format!("{kind} strength"), 170.0, GOLD);
+                        button(r, "<", Action::Intensity(kind.into(), -1), WHITE, false);
+                        label(r, &value, 245.0, WHITE);
+                        button(r, ">", Action::Intensity(kind.into(), 1), WHITE, false);
+                    });
+                }
+            }
             for (i, slot) in slots.iter().enumerate() {
                 if slot.selector.kind == SelectorKind::SelectAbilityBonus {
                     continue;
@@ -779,8 +868,10 @@ fn appearance_cycler(p: &mut ChildSpawnerCommands, name: &str, value: &str, visu
             r,
             &if visual {
                 name.to_owned()
+            } else if matches!(name, "Skin" | "Hair" | "Eye") {
+                format!("{name} colour")
             } else {
-                format!("{name} colour/material")
+                format!("{name} material")
             },
             170.0,
             GOLD,

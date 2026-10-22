@@ -183,7 +183,7 @@ pub struct Pick {
 }
 
 /// What the player chose.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CharacterChoice {
     pub race: Guid,
     pub subrace: Option<Guid>,
@@ -674,6 +674,32 @@ impl CcData {
                 });
             }
         }
+        for (kind, id) in choice.appearance.color_choices() {
+            if !self
+                .color_options(choice, kind)
+                .iter()
+                .any(|color| color.id == id)
+            {
+                errs.push(CcError::NotAnOption {
+                    slot: format!("appearance {kind} colour"),
+                    item: id.to_string(),
+                });
+            }
+        }
+        for (kind, value) in &choice.appearance.intensities {
+            if !super::appearance::COLOR_PARAMETERS
+                .iter()
+                .any(|(k, _, intensity)| k == kind && intensity.is_some())
+                || self.color_options(choice, kind).is_empty()
+                || !value.is_finite()
+                || !(0.0..=1.0).contains(value)
+            {
+                errs.push(CcError::NotAnOption {
+                    slot: format!("appearance {kind} intensity (0..1)"),
+                    item: value.to_string(),
+                });
+            }
+        }
         if !self.playable_races().iter().any(|r| r.id == choice.race) {
             errs.push(CcError::UnknownRace(choice.race));
         }
@@ -1068,6 +1094,12 @@ impl CharacterChoice {
         for (kind, id) in self.appearance.material_choices() {
             out.push(format!("material={kind}:{id}"));
         }
+        for (kind, id) in self.appearance.color_choices() {
+            out.push(format!("color={kind}:{id}"));
+        }
+        for (kind, value) in &self.appearance.intensities {
+            out.push(format!("intensity={kind}:{value}"));
+        }
         for p in &self.picks {
             out.push(format!(
                 "pick={}:{}:{}",
@@ -1127,6 +1159,31 @@ impl CharacterChoice {
                         c.appearance.set_visual(name.trim(), id);
                     } else {
                         c.appearance.set_material(name.trim(), id);
+                    }
+                }
+                "color" | "intensity" => {
+                    let (kind, value) = v
+                        .split_once(':')
+                        .ok_or_else(|| format!("bad appearance {v:?}"))?;
+                    let kind = kind.trim();
+                    let mapping = super::appearance::COLOR_PARAMETERS
+                        .iter()
+                        .find(|(k, _, _)| *k == kind)
+                        .ok_or_else(|| format!("unknown colour category {kind:?}"))?;
+                    if k.trim() == "color" {
+                        c.appearance.set_color(kind, opt(value)?);
+                    } else {
+                        let value: f32 = value
+                            .trim()
+                            .parse()
+                            .map_err(|_| format!("bad intensity {v:?}"))?;
+                        if mapping.2.is_none()
+                            || !value.is_finite()
+                            || !(0.0..=1.0).contains(&value)
+                        {
+                            return Err(format!("{kind} intensity must be supported and in 0..1"));
+                        }
+                        c.appearance.intensities.insert(kind.to_owned(), value);
                     }
                 }
                 "pick" => {

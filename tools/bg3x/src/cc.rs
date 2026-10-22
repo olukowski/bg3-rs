@@ -67,6 +67,35 @@ pub struct Args {
     pub hair_color: Option<String>,
     #[arg(long)]
     pub eye_color: Option<String>,
+    #[arg(long)]
+    pub hair_highlight: Option<String>,
+    #[arg(long)]
+    pub hair_graying: Option<String>,
+    #[arg(long)]
+    pub makeup: Option<String>,
+    #[arg(long)]
+    pub lips: Option<String>,
+    #[arg(long)]
+    pub tattoo_color: Option<String>,
+    #[arg(long)]
+    pub horn_color: Option<String>,
+    #[arg(long)]
+    pub horn_tip_color: Option<String>,
+    /// Strength in 0..1; omitted preserves the template/preset.
+    #[arg(long)]
+    pub hair_highlight_intensity: Option<f32>,
+    /// Strength in 0..1; omitted preserves the template/preset.
+    #[arg(long)]
+    pub hair_graying_intensity: Option<f32>,
+    /// Strength in 0..1; omitted preserves the template/preset.
+    #[arg(long)]
+    pub makeup_intensity: Option<f32>,
+    /// Strength in 0..1; omitted preserves the template/preset.
+    #[arg(long)]
+    pub lips_intensity: Option<f32>,
+    /// Strength in 0..1; omitted preserves the template/preset.
+    #[arg(long)]
+    pub tattoo_intensity: Option<f32>,
     /// Print the choice as a `bg3-viewer --character` spec.
     #[arg(long)]
     pub spec: bool,
@@ -310,6 +339,41 @@ pub fn run(a: Args) -> Result<()> {
             choice.appearance.set_material(kind, Some(id));
         }
     }
+    for (kind, query) in [
+        ("HairHighlight", &a.hair_highlight),
+        ("HairGraying", &a.hair_graying),
+        ("Makeup", &a.makeup),
+        ("LipsMakeup", &a.lips),
+        ("Tattoo", &a.tattoo_color),
+        ("HornColor", &a.horn_color),
+        ("HornTipColor", &a.horn_tip_color),
+    ] {
+        if let Some(query) = query {
+            let id = find_appearance(
+                kind,
+                query,
+                cc.color_options(&choice, kind).iter().map(|color| {
+                    (
+                        color.id,
+                        color.id,
+                        names.text(color.display.as_ref(), &color.name),
+                    )
+                }),
+            )?;
+            choice.appearance.set_color(kind, Some(id));
+        }
+    }
+    for (kind, value) in [
+        ("HairHighlight", a.hair_highlight_intensity),
+        ("HairGraying", a.hair_graying_intensity),
+        ("Makeup", a.makeup_intensity),
+        ("LipsMakeup", a.lips_intensity),
+        ("Tattoo", a.tattoo_intensity),
+    ] {
+        if let Some(value) = value {
+            choice.appearance.intensities.insert(kind.to_owned(), value);
+        }
+    }
     // Picks from the flags, distributed over the selectors of each kind in order.
     let lists: [(&[SelectorKind], Vec<String>); 5] = [
         (&[SelectorKind::SelectSkills], a.skills.clone()),
@@ -477,6 +541,21 @@ fn list(cc: &CcData, names: &Names<'_>, choice: &CharacterChoice) {
                 m.id,
                 m.preset,
                 m.ui_color.as_deref().unwrap_or("")
+            );
+        }
+    }
+    for (kind, parameter, intensity) in bg3_sim::cc::appearance::COLOR_PARAMETERS {
+        let options = cc.color_options(choice, kind);
+        if options.is_empty() {
+            continue;
+        }
+        println!("  {kind} colours ({parameter}, intensity={intensity:?}):");
+        for color in options {
+            println!(
+                "    {} [{}] {}",
+                names.text(color.display.as_ref(), &color.name),
+                color.id,
+                color.argb
             );
         }
     }

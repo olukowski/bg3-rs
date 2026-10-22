@@ -33,7 +33,31 @@ pub(super) fn read_race_palettes(
         .collect()
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Literal colour categories, their material parameter and optional strength parameter.
+// bg3: Lists/ColorDefinitions, CC MaterialPresetBank, CHAR_Horns (4.1.1.7631656).
+pub const COLOR_PARAMETERS: [(&str, &str, Option<&str>); 7] = [
+    (
+        "HairHighlight",
+        "Highlight_Color",
+        Some("Highlight_Intensity"),
+    ),
+    (
+        "HairGraying",
+        "Hair_Graying_Color",
+        Some("Graying_Intensity"),
+    ),
+    ("Makeup", "MakeupColor", Some("MakeupIntensity")),
+    (
+        "LipsMakeup",
+        "Lips_Makeup_Color",
+        Some("LipsMakeupIntensity"),
+    ),
+    ("Tattoo", "TattooColor", Some("TattooIntensity")),
+    ("HornColor", "NonSkinColor", None),
+    ("HornTipColor", "NonSkinTipColor", None),
+];
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Appearance {
     pub head: Option<Guid>,
     pub hair: Option<Guid>,
@@ -45,11 +69,52 @@ pub struct Appearance {
     pub skin_color: Option<Guid>,
     pub hair_color: Option<Guid>,
     pub eye_color: Option<Guid>,
+    pub hair_highlight: Option<Guid>,
+    pub hair_graying: Option<Guid>,
+    pub makeup: Option<Guid>,
+    pub lips: Option<Guid>,
+    pub tattoo_color: Option<Guid>,
+    pub horn_color: Option<Guid>,
+    pub horn_tip_color: Option<Guid>,
+    /// Optional strengths; unspecified preserves the template/preset parameter.
+    pub intensities: BTreeMap<String, f32>,
     pub other_visuals: BTreeMap<String, Guid>,
     pub materials: BTreeMap<String, Guid>,
 }
 
 impl Appearance {
+    pub fn color(&self, kind: &str) -> Option<Guid> {
+        match kind {
+            "HairHighlight" => self.hair_highlight,
+            "HairGraying" => self.hair_graying,
+            "Makeup" => self.makeup,
+            "LipsMakeup" => self.lips,
+            "Tattoo" => self.tattoo_color,
+            "HornColor" => self.horn_color,
+            "HornTipColor" => self.horn_tip_color,
+            _ => None,
+        }
+    }
+
+    pub fn set_color(&mut self, kind: &str, id: Option<Guid>) {
+        match kind {
+            "HairHighlight" => self.hair_highlight = id,
+            "HairGraying" => self.hair_graying = id,
+            "Makeup" => self.makeup = id,
+            "LipsMakeup" => self.lips = id,
+            "Tattoo" => self.tattoo_color = id,
+            "HornColor" => self.horn_color = id,
+            "HornTipColor" => self.horn_tip_color = id,
+            _ => {}
+        }
+    }
+
+    pub fn color_choices(&self) -> impl Iterator<Item = (&'static str, Guid)> + '_ {
+        COLOR_PARAMETERS
+            .into_iter()
+            .filter_map(|(kind, _, _)| self.color(kind).map(|id| (kind, id)))
+    }
+
     pub fn visual(&self, slot: &str) -> Option<Guid> {
         match slot {
             "Head" => self.head,
@@ -175,11 +240,40 @@ pub struct CcMaterialSwap {
     pub inactive: Option<Guid>,
 }
 
+/// A literal ARGB colour from Lists/ColorDefinitions.lsx.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AppearanceColor {
+    pub id: Guid,
+    pub name: String,
+    pub display: Option<String>,
+    pub argb: String,
+    pub rgb: [f32; 3],
+}
+
+impl AppearanceColor {
+    fn read(n: &bg3_lsf::Node) -> Option<Self> {
+        let argb = s(n, "Color")?;
+        let hex = argb.strip_prefix('#')?;
+        if hex.len() != 8 || !hex.is_ascii() {
+            return None;
+        }
+        let value = u32::from_str_radix(hex, 16).ok()?;
+        Some(Self {
+            id: guid_attr(n, "UUID")?,
+            name: s(n, "Name").unwrap_or_default(),
+            display: handle(n, "DisplayName"),
+            argb,
+            rgb: [16, 8, 0].map(|shift| ((value >> shift) & 255) as f32 / 255.0),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AppearanceData {
     pub visuals: Vec<AppearanceVisual>,
     pub materials: Vec<AppearanceMaterial>,
     pub material_swaps: Vec<CcMaterialSwap>,
+    pub colors: Vec<AppearanceColor>,
 }
 
 /// Bevy-free, resolved resources sent from the sim to the viewer.
@@ -189,6 +283,17 @@ pub struct ResolvedAppearance {
     pub visuals: Vec<(String, Guid, Option<String>)>,
     /// Category, MaterialPresetBank UUID, in application order.
     pub presets: Vec<(String, Guid)>,
+    /// Selected ColorDefinition UUIDs; absent selections retain template values.
+    pub hair_highlight: Option<Guid>,
+    pub hair_graying: Option<Guid>,
+    pub makeup: Option<Guid>,
+    pub lips: Option<Guid>,
+    pub tattoo_color: Option<Guid>,
+    pub horn_color: Option<Guid>,
+    pub horn_tip_color: Option<Guid>,
+    pub intensities: BTreeMap<String, f32>,
+    /// Named vector/scalar overrides, applied after presets.
+    pub parameters: Vec<(String, Vec<f32>)>,
 }
 
 impl AppearanceData {
@@ -274,6 +379,13 @@ impl AppearanceData {
                 }
             },
         )?;
+        each_module(vfs, "Lists/ColorDefinitions.lsx", |res| {
+            for n in nodes(res, "ColorDefinitions", "ColorDefinition") {
+                if let Some(color) = AppearanceColor::read(n) {
+                    upsert(&mut out.colors, color, |c| c.id);
+                }
+            }
+        })?;
         Ok(out)
     }
 
@@ -295,11 +407,34 @@ impl CcData {
     /// empty lists inherit (e.g. rock gnome colours).
     // bg3: Races/Races.lsx, ParentGuid and *Colors/Object (4.1.1.7631656).
     pub fn material_options(&self, c: &CharacterChoice, kind: &str) -> Vec<&AppearanceMaterial> {
-        // Other *Colors lists reference Lists/ColorDefinitions.lsx, not appearance
-        // material entries. Those selectors choose patterns/default presets, not colours.
+        // Literal colours have separate color_options; these select patterns/default presets.
         if !matches!(kind, "Skin" | "Hair" | "Eye") {
             return self.appearance.material_options(kind);
         }
+        self.palette(c, kind).map_or_else(Vec::new, |ids| {
+            self.appearance
+                .material_options(kind)
+                .into_iter()
+                .filter(|m| ids.contains(&m.id))
+                .collect()
+        })
+    }
+
+    /// Uses the same nearest non-empty race palette rule as Skin/Hair/Eye.
+    pub fn color_options(&self, c: &CharacterChoice, kind: &str) -> Vec<&AppearanceColor> {
+        if !COLOR_PARAMETERS.iter().any(|(k, _, _)| *k == kind) {
+            return Vec::new();
+        }
+        self.palette(c, kind).map_or_else(Vec::new, |ids| {
+            self.appearance
+                .colors
+                .iter()
+                .filter(|color| ids.contains(&color.id))
+                .collect()
+        })
+    }
+
+    fn palette(&self, c: &CharacterChoice, kind: &str) -> Option<&[Guid]> {
         let mut next = c.subrace.or(Some(c.race));
         let mut seen = Vec::new();
         while let Some(id) = next {
@@ -307,20 +442,13 @@ impl CcData {
                 break;
             }
             seen.push(id);
-            let Some(race) = self.race(id) else {
-                break;
-            };
+            let race = self.race(id)?;
             if let Some(ids) = race.palettes.get(kind).filter(|ids| !ids.is_empty()) {
-                return self
-                    .appearance
-                    .material_options(kind)
-                    .into_iter()
-                    .filter(|m| ids.contains(&m.id))
-                    .collect();
+                return Some(ids);
             }
             next = race.parent;
         }
-        Vec::new()
+        None
     }
 
     /// bg3: CharacterCreationAppearanceVisuals/{RaceUUID,BodyType,BodyShape,RootTemplate},
@@ -403,6 +531,30 @@ impl CcData {
         }
     }
 
+    fn color_parameters(&self, a: &Appearance) -> Vec<(String, Vec<f32>)> {
+        let mut out = Vec::new();
+        for (kind, parameter, intensity) in COLOR_PARAMETERS {
+            if let Some(color) = a
+                .color(kind)
+                .and_then(|id| self.appearance.colors.iter().find(|c| c.id == id))
+            {
+                out.push((parameter.to_owned(), color.rgb.to_vec()));
+            }
+            if let Some(parameter) = intensity
+                && let Some(value) = a.intensities.get(kind)
+            {
+                // Assumption: one CC tattoo strength controls the red atlas channel.
+                let value = if kind == "Tattoo" {
+                    vec![*value, 0.0, 0.0, 0.0]
+                } else {
+                    vec![*value]
+                };
+                out.push((parameter.to_owned(), value));
+            }
+        }
+        out
+    }
+
     pub fn resolve_appearance(&self, a: &Appearance) -> ResolvedAppearance {
         ResolvedAppearance {
             visuals: a
@@ -416,8 +568,17 @@ impl CcData {
                         .map(|v| (slot, v.visual, v.bone.clone()))
                 })
                 .collect(),
+            hair_highlight: a.hair_highlight,
+            hair_graying: a.hair_graying,
+            makeup: a.makeup,
+            lips: a.lips,
+            tattoo_color: a.tattoo_color,
+            horn_color: a.horn_color,
+            horn_tip_color: a.horn_tip_color,
+            intensities: a.intensities.clone(),
+            parameters: self.color_parameters(a),
             // Assumption: selected presets follow template presets; colour lists precede
-            // the other material choices in stable category order. Own parameters stay last.
+            // the other material choices in stable category order.
             presets: a
                 .material_choices()
                 .into_iter()
@@ -461,6 +622,130 @@ impl AppearanceVisual {
 mod tests {
     use super::*;
     use bg3_lsf::{Node, Value};
+
+    #[test]
+    fn literal_colors_parse_validate_inherit_and_resolve_separately_from_patterns() {
+        let node = Node::new("ColorDefinition")
+            .with_attr("UUID", Value::FixedString(Guid(100).to_string()))
+            .with_attr("Name", Value::FixedString("Synthetic".into()))
+            .with_attr("Color", Value::LSString("#804080FF".into()));
+        let color = AppearanceColor::read(&node).unwrap();
+        assert_eq!(color.rgb, [64.0 / 255.0, 128.0 / 255.0, 1.0]);
+        assert!(AppearanceColor::read(&Node::new("ColorDefinition")).is_none());
+        let mut data = CcData::default();
+        data.appearance.colors.push(color);
+        data.races = vec![
+            super::super::CcRace {
+                id: Guid(1),
+                palettes: COLOR_PARAMETERS
+                    .iter()
+                    .map(|(k, _, _)| ((*k).into(), vec![Guid(100)]))
+                    .collect(),
+                ..Default::default()
+            },
+            super::super::CcRace {
+                id: Guid(2),
+                parent: Some(Guid(1)),
+                ..Default::default()
+            },
+        ];
+        let mut choice = CharacterChoice {
+            race: Guid(1),
+            subrace: Some(Guid(2)),
+            ..Default::default()
+        };
+        for (kind, parameter, intensity) in COLOR_PARAMETERS {
+            assert_eq!(data.color_options(&choice, kind).len(), 1);
+            choice.appearance.set_color(kind, Some(Guid(100)));
+            if intensity.is_some() {
+                choice.appearance.intensities.insert(kind.into(), 0.4);
+            }
+            let resolved = data.resolve_appearance(&choice.appearance);
+            assert!(
+                resolved
+                    .parameters
+                    .contains(&(parameter.into(), vec![64.0 / 255.0, 128.0 / 255.0, 1.0]))
+            );
+        }
+        assert!(
+            data.resolve_appearance(&choice.appearance)
+                .presets
+                .is_empty()
+        );
+        assert!(
+            !data
+                .validate(&choice)
+                .iter()
+                .any(|e| matches!(e, super::super::CcError::NotAnOption { .. }))
+        );
+        choice.appearance.horn_color = Some(Guid(101));
+        assert!(data.validate(&choice).iter().any(|e| matches!(e, super::super::CcError::NotAnOption { slot, .. } if slot == "appearance HornColor colour")));
+        // A non-empty child palette replaces the parent's list, including unresolved UUIDs.
+        data.races[1]
+            .palettes
+            .insert("HornColor".into(), vec![Guid(101)]);
+        assert!(data.color_options(&choice, "HornColor").is_empty());
+        data.races[0].parent = Some(Guid(2)); // ancestry cycles terminate
+        assert!(data.color_options(&choice, "Unknown").is_empty());
+        assert_eq!(CharacterChoice::from_spec(&choice.to_spec()), Ok(choice));
+    }
+
+    #[test]
+    #[ignore = "needs BG3 install"]
+    fn tiefling_horn_color_spec_resolves_to_material_parameter() {
+        let install = match bg3_install::Install::locate() {
+            Ok(install) => install,
+            Err(error) => {
+                eprintln!("skipping: {error}");
+                return;
+            }
+        };
+        let vfs = bg3_vfs::Vfs::from_install(&install).expect("vfs");
+        let stats = bg3_stats::install::load(vfs.packages(), bg3_vfs::modules::BASE_LOAD_ORDER)
+            .expect("stats");
+        let data = CcData::load(&vfs, &stats).expect("CC data");
+        let race = data
+            .races
+            .iter()
+            .find(|race| race.name == "Tiefling")
+            .expect("Tiefling");
+        let mut choice = crate::start::trace_choice();
+        choice.race = race.id;
+        choice.subrace = None;
+        data.complete(&mut choice);
+        let colors = data.color_options(&choice, "HornColor");
+        let color = colors
+            .last()
+            .expect("tiefling horn palette must not be empty");
+        choice.appearance.horn_color = Some(color.id);
+        assert_eq!(
+            CharacterChoice::from_spec(&choice.to_spec()),
+            Ok(choice.clone())
+        );
+        assert!(
+            data.validate(&choice).is_empty(),
+            "{:?}",
+            data.validate(&choice)
+        );
+        let resolved = data.resolve_appearance(&choice.appearance);
+        assert_eq!(resolved.horn_color, Some(color.id));
+        assert!(
+            resolved
+                .parameters
+                .contains(&("NonSkinColor".into(), color.rgb.to_vec()))
+        );
+        for race in &data.races {
+            for (kind, _, _) in COLOR_PARAMETERS {
+                for id in race.palettes.get(kind).into_iter().flatten() {
+                    assert!(
+                        data.appearance.colors.iter().any(|color| color.id == *id),
+                        "{} {kind}: missing {id}",
+                        race.name
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn visual_parsing_and_module_replacement_preserve_absent_filters() {

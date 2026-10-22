@@ -296,6 +296,8 @@ pub struct PreparedPart {
     /// CC mesh source bind matrices, indexed by the assembled skeleton.
     pub inverse_bindposes: Option<Vec<Mat4>>,
     pub material_id: Option<String>,
+    /// CHAR_Horns albedo evaluated from its mask and per-character parameters.
+    pub horn_albedo: Option<Image>,
     /// For rigid (unskinned) meshes: joint to attach to.
     pub attach_joint: Option<usize>,
     /// Transform relative to the attachment joint.
@@ -400,6 +402,19 @@ impl LevelCharacters {
                             continue;
                         }
                     }
+                    if let Some((id, _, appearance)) = &avatar_equipment
+                        && *id == c.id
+                    {
+                        bg3_world::appearance::apply_cc_parameters(
+                            &mut c.character_visual.material_overrides,
+                            appearance.parameters.iter().map(|(parameter, value)| {
+                                bg3_world::appearance::ParamAssignment {
+                                    parameter: parameter.clone(),
+                                    value: value.clone(),
+                                }
+                            }),
+                        );
+                    }
                     let items = if let (Some((id, names, _)), Some(stats)) =
                         (&avatar_equipment, &stats)
                         && *id == c.id
@@ -481,6 +496,9 @@ impl LevelCharacters {
                     &level.banks.weapons,
                 );
                 if let Ok(p) = &mut p {
+                    for part in &mut p.parts {
+                        part.horn_albedo = prepare_horn_albedo(vfs, &level.banks, part);
+                    }
                     p.weapon_set = *weapon_set;
                     p.run = run
                         .as_ref()
@@ -670,6 +688,143 @@ impl GrannyCache {
     }
 }
 
+/// Evaluate the static horn colour layers at texture texels. The other material channels
+/// retain the existing StandardMaterial path. See character-creation.md for filtering limits.
+// bg3: Shared_Characters_CHAR_Horns_ST_DEF_fragmentMain (4.1.1.7631656), AIR and CHAR_Horns.lsf.
+fn prepare_horn_albedo(
+    vfs: &Vfs,
+    banks: &bg3_world::banks::ResourceBanks,
+    part: &PreparedPart,
+) -> Option<Image> {
+    use bg3_material::{convert, graph::ShaderGraph, resolve::resolve};
+    let material = banks.materials.get(part.material_id.as_deref()?)?;
+    let path = material.source_file.as_deref()?;
+    if !path.ends_with("/CHAR_Horns.lsf") {
+        return None;
+    }
+    let resource = bg3_lsf::parse(&vfs.read(path).ok()?).ok()?;
+    let graph = ShaderGraph::from_resource(&resource)?;
+    let resolved = resolve(path, Some(&graph), &material.params);
+    let mut params = bg3_material::character::ParamSet::from_material(&resolved);
+    for assignment in part.look.overrides.iter() {
+        params.set_declared(&assignment.parameter, &assignment.value);
+    }
+    let texture = |parameter: &str| {
+        let id = &resolved.textures.iter().find(|t| t.param == parameter)?.id;
+        let texture = banks.textures.get(id)?;
+        let bytes = vfs.read(texture.source_file.as_deref()?).ok()?;
+        Some((convert::rgba(&bytes).ok()?, texture.srgb))
+    };
+    let (mut base, base_srgb) = texture("basecolor")?;
+    let (mask, mask_srgb) = texture("SkinGradientHorn_MSK")?;
+    let colors = ["NonSkinColor", "NonSkinTipColor", "SkinApproxColor"]
+        .map(|name| params.rgb(name, [1.0; 3]));
+    // Bake every authored mip. Sampling the baked result is an approximation to filtering
+    // base/mask independently in the fragment shader; texel colour math is the original's.
+    let mut base_offset = 0;
+    let mut mask_offset = 0;
+    for mip in 0..base.mip_count {
+        let w = (base.width >> mip).max(1);
+        let h = (base.height >> mip).max(1);
+        let mask_mip = mip.min(mask.mip_count - 1);
+        let mw = (mask.width >> mask_mip).max(1);
+        let mh = (mask.height >> mask_mip).max(1);
+        for y in 0..h {
+            for x in 0..w {
+                let sample = |sx: i32, sy: i32| {
+                    let index = mask_offset
+                        + (sy.rem_euclid(mh as i32) as usize * mw as usize
+                            + sx.rem_euclid(mw as i32) as usize)
+                            * 4;
+                    [0, 1, 2]
+                        .map(|channel| decode_color_byte(mask.data[index + channel], mask_srgb))
+                };
+                let u = (x as f32 + 0.5) * mw as f32 / w as f32 - 0.5;
+                let v = (y as f32 + 0.5) * mh as f32 / h as f32 - 0.5;
+                let samples = [
+                    sample(u.floor() as i32, v.floor() as i32),
+                    sample(u.floor() as i32 + 1, v.floor() as i32),
+                    sample(u.floor() as i32, v.floor() as i32 + 1),
+                    sample(u.floor() as i32 + 1, v.floor() as i32 + 1),
+                ];
+                let mix = |a: f32, b: f32, t: f32| a + (b - a) * t;
+                let mask = std::array::from_fn(|i| {
+                    mix(
+                        mix(samples[0][i], samples[1][i], u - u.floor()),
+                        mix(samples[2][i], samples[3][i], u - u.floor()),
+                        v - v.floor(),
+                    )
+                });
+                let index = base_offset + (y as usize * w as usize + x as usize) * 4;
+                let rgb = [0, 1, 2].map(|i| decode_color_byte(base.data[index + i], base_srgb));
+                let rgb = horn_color(rgb, mask, colors);
+                for (i, value) in rgb.into_iter().enumerate() {
+                    base.data[index + i] = encode_color_byte(value);
+                }
+                base.data[index + 3] = 255;
+            }
+        }
+        base_offset += (w * h * 4) as usize;
+        if mip < mask.mip_count - 1 {
+            mask_offset += (mw * mh * 4) as usize;
+        }
+    }
+    use bevy::asset::RenderAssetUsages;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: base.width,
+            height: base.height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.data = Some(base.data);
+    image.texture_descriptor.mip_level_count = base.mip_count;
+    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::Repeat,
+        address_mode_v: bevy::image::ImageAddressMode::Repeat,
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        mipmap_filter: bevy::image::ImageFilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..default()
+    });
+    Some(image)
+}
+
+fn decode_color_byte(byte: u8, srgb: bool) -> f32 {
+    let value = byte as f32 / 255.0;
+    if !srgb {
+        value
+    } else if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn encode_color_byte(linear: f32) -> u8 {
+    let value = linear.clamp(0.0, 1.0);
+    let value = if value <= 0.0031308 {
+        value * 12.92
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    };
+    (value * 255.0).round() as u8
+}
+
+// bg3: Shared_Characters_CHAR_Horns_ST_DEF_fragmentMain (4.1.1.7631656).
+fn horn_color(base: [f32; 3], mask: [f32; 3], colors: [[f32; 3]; 3]) -> [f32; 3] {
+    std::array::from_fn(|i| {
+        let tint = colors[0][i] + (colors[1][i] - colors[0][i]) * mask[1];
+        let horn = base[i] * (tint + (1.0 - tint) * mask[2]);
+        (horn + (colors[2][i] - horn) * mask[0]).clamp(0.0, 1.0)
+    })
+}
+
 fn prepare(
     vfs: &Vfs,
     cache: &GrannyCache,
@@ -714,6 +869,7 @@ fn prepare(
                     .then(|| source_bindposes(&skeleton, scene.skeletons.first())),
                 mesh: bevy_mesh,
                 material_id: obj.material_id.clone(),
+                horn_albedo: None,
                 attach_joint,
                 local: Transform::default(),
                 look: looks.part(&part.visual, mesh),
@@ -886,6 +1042,7 @@ fn rigid_equipment_parts(
                     mesh: crate::meshes::to_bevy_mesh(mesh),
                     inverse_bindposes: None,
                     material_id: obj.material_id.clone(),
+                    horn_albedo: None,
                     attach_joint,
                     local,
                     look: Default::default(),
@@ -1212,6 +1369,7 @@ pub fn spawn_characters(
     mut characters: ResMut<LevelCharacters>,
     level_materials: Res<crate::materials::LevelMaterials>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     templates: Option<Res<crate::char_materials::CharacterTemplates>>,
@@ -1260,7 +1418,8 @@ pub fn spawn_characters(
             .clone();
         let mut weapons: Vec<(Entity, WeaponMount)> = Vec::new();
         for mut part in c.parts {
-            let Some(material) = crate::char_materials::part_material(
+            let horn_albedo = part.horn_albedo.take();
+            let Some(mut material) = crate::char_materials::part_material(
                 &mut part,
                 &c.cut_bytes,
                 templates.as_deref(),
@@ -1270,6 +1429,15 @@ pub fn spawn_characters(
             ) else {
                 continue; // helper material the game doesn't draw
             };
+            if let (Some(albedo), crate::char_materials::SpawnMaterial::Standard(handle)) =
+                (horn_albedo, &mut material)
+                && let Some(base) = materials.get(handle.id())
+            {
+                let mut base = base.clone();
+                base.base_color = Color::WHITE;
+                base.base_color_texture = Some(images.add(albedo));
+                *handle = materials.add(base);
+            }
             let skinned = part.mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX).is_some();
             let mesh = meshes.add(part.mesh);
             if skinned {
@@ -1457,6 +1625,21 @@ mod tests {
             time: 0.0,
             playback: Playback::Loop,
             incapacitated: false,
+        }
+    }
+
+    #[test]
+    fn horn_mask_channels_select_base_tip_untinted_and_skin() {
+        let base = [0.6, 0.4, 0.2];
+        let colors = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.2, 0.3, 0.4]];
+        assert_eq!(horn_color(base, [0.0, 0.0, 0.0], colors), [0.6, 0.0, 0.0]);
+        assert_eq!(horn_color(base, [0.0, 1.0, 0.0], colors), [0.0, 0.4, 0.0]);
+        assert_eq!(horn_color(base, [0.0, 0.0, 1.0], colors), base);
+        for (actual, expected) in horn_color(base, [1.0, 0.0, 0.0], colors)
+            .into_iter()
+            .zip(colors[2])
+        {
+            assert!((actual - expected).abs() < 1e-6);
         }
     }
 
