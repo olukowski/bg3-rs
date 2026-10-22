@@ -141,6 +141,9 @@ pub struct GameData {
     pub story: crate::story_data::StoryData,
     /// Character creation: races, classes, backgrounds, progressions, … ([`crate::cc`]).
     pub cc: crate::cc::CcData,
+    /// Blood type, death puddles and bounds of character templates and placed characters,
+    /// by template or object id (see [`crate::surface::BloodInfo`]).
+    pub blood: HashMap<Guid, crate::surface::BloodInfo>,
 }
 
 impl GameData {
@@ -299,6 +302,8 @@ pub struct Sim {
     pub combat: crate::combat::CombatState,
     pub story: crate::story_misc::StoryState,
     pub item_uses: crate::use_item::ItemUses,
+    /// Surfaces of the loaded level (see [`crate::surface`]).
+    pub surfaces: crate::surface::SurfaceState,
 }
 
 /// An argument of an observed engine event: the declared Osiris type name of the parameter
@@ -668,6 +673,7 @@ impl Sim {
     /// Advance the clock: fire due timers (queued as events) and merge tags.
     pub fn advance(&mut self, dt: f64) {
         self.now += dt.max(0.0);
+        self.update_surfaces(dt);
         self.fire_timers();
         self.update_tags();
     }

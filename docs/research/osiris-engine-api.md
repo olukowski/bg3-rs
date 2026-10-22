@@ -1012,3 +1012,17 @@ requested APIs, and are not replaced with successful no-ops:
   `IntegerToString/2`, `IsGameStateRunning/1`, `NotifyCharacterCreationFinished/0`, `Random/2`,
   `StartCharacterCreation/0`. Character creation work is owned separately; random-story
   semantics and lifecycle side effects were not inferred here.
+
+## Surfaces (2026-10-22)
+
+`surface` (`crates/bg3-sim/src/surface.rs`, see [surfaces.md](surfaces.md)) answers the story's
+surface functions on the level's AI grid (`Sim::set_surface_grid`; without a grid the calls do
+nothing and the queries are left to the caller). The Nautiloid's story calls none of them, so
+the opening's replay is unaffected.
+
+| Functions | State / answer | Limits |
+|---|---|---|
+| `CreateSurface/4`, `CreateSurface/5`, `CreateSurfaceAtPosition/6`, `CreateSurfaceAtPosition/7` | the type on the connected tiles within the radius around the object or point; duration in turns (×6 s, negative: permanent); `SurfaceNone` clears both layers | *Approximate*: appears at once (the game grows it); no surface interactions. |
+| `CreatePuddle/7` | a growing puddle (`esv::CreatePuddleAction`): cell and step counts drawn from the given ranges, a step every grow timer | The draws use the sim's surface generator, not the game's. |
+| `RemoveSurfaceLayer/3`, `RemoveSurfaceLayerAtPosition/5` | removes the `Ground` or `Cloud` layer within the radius | |
+| `GetSurfaceGroundAt/2`, `GetSurfaceCloudAt/2` | the type name (`SurfaceBlood`, `SurfaceNone`, …) at the object's tile | Needs a grid. |

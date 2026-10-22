@@ -35,16 +35,23 @@ pub fn run(o: Options) -> Result<()> {
     let navigation = if o.nav {
         let install = bg3_install::Install::locate()?;
         let vfs = bg3_vfs::Vfs::from_install(&install)?;
-        let grid = bg3_nav::NavGrid::new(bg3_nav::load_aigrid(&vfs, &o.level)?);
-        Some(Arc::new(bg3_sim_nav::GridPathfinder::new(Arc::new(grid))))
+        let grid = Arc::new(bg3_nav::NavGrid::new(bg3_nav::load_aigrid(&vfs, &o.level)?));
+        Some((
+            Arc::new(bg3_sim_nav::GridPathfinder::new(grid.clone())),
+            Arc::new(bg3_sim_nav::GridSurfaces::new(grid)),
+        ))
     } else {
         None
     };
     let mut sim = Sim::with_data(Arc::new(data));
-    if let Some(nav) = &navigation {
+    if let Some((nav, _)) = &navigation {
         sim.set_pathfinder(Some(nav.clone()));
     }
     sim.load_level(&o.level);
+    if let Some((_, surfaces)) = &navigation {
+        sim.set_surface_grid(Some(surfaces.clone()));
+    }
+    let painted = sim.surfaces.ground.len();
     sim.dice = bg3_sim::rules::SimDice::new(o.seed);
     let target = find(&sim, &o.target).with_context(|| format!("no object {}", o.target))?;
     let mut party = Vec::new();
@@ -150,7 +157,7 @@ pub fn run(o: Options) -> Result<()> {
                 if let AiAction::Nothing = action {
                     println!("({} does nothing)", name(&game.sim, *who));
                 }
-                if let Some(nav) = &navigation
+                if let Some((nav, _)) = &navigation
                     && let Some(&end) = action.path().last()
                 {
                     let length: f32 = action
@@ -177,6 +184,20 @@ pub fn run(o: Options) -> Result<()> {
             },
             turns.len()
         );
+        if game.sim.surfaces.grid().is_some() {
+            game.sim.update_surfaces(5.0);
+            let mut by_type = std::collections::BTreeMap::<&str, usize>::new();
+            for (_, ty) in game
+                .sim
+                .surface_cells(bg3_sim::surface::SurfaceLayer::Ground)
+            {
+                *by_type.entry(bg3_sim::surface::type_name(ty)).or_default() += 1;
+            }
+            println!(
+                "surfaces: {} ground cells ({painted} painted at level load): {by_type:?}",
+                game.sim.surfaces.ground.len()
+            );
+        }
         if let Some(flag) = game
             .sim
             .data

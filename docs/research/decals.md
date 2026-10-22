@@ -75,7 +75,8 @@ objects need `AllowReceiveDecalWhenAnimated`).
   emissive game-decal stage, and effect decals (`ls::FxDecal`).
 - Surfaces (blood, water, fire on the ground) are drawn by `ecl::SurfaceDeferredRenderer`, which
   creates its own unit-box decal objects (`InitializeDecalObject`). They are a separate system,
-  driven by the surface grid, not by level decal objects.
+  driven by the surface grid, not by level decal objects: see [surfaces.md](surfaces.md) (the
+  imp deck's blood pools are combat blood).
 
 ## Shading (`Engine_Default_Decal_Deferred`, `DEF` pass)
 
@@ -143,8 +144,7 @@ Approximated:
 - Texture gradients come from the world position's derivatives (no mip blow-ups at box edges as
   with implicit derivatives); textures are resampled into arrays.
 - Not drawn: the fire VFX decals (animated graph), other decal graphs, emissive and effect decals,
-  surfaces (`ecl::SurfaceDeferredRenderer`: the large blood pools around the imp fight in the
-  reference captures are most likely these or combat blood, not level decals), editor layer
+  editor layer
   visibility (`LayerList`, which the viewer doesn't apply to any level object), and decals on
   characters.
 

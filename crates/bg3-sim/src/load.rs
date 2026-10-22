@@ -171,7 +171,19 @@ pub(crate) fn game_objects(res: &bg3_lsf::Resource) -> impl Iterator<Item = &Nod
 
 /// Root templates (name, type, parent, tags).
 pub fn load_templates(vfs: &Vfs) -> Result<HashMap<Guid, TemplateInfo>, LoadError> {
+    Ok(load_templates_and_blood(vfs)?.0)
+}
+
+pub type TemplatesAndBlood = (
+    HashMap<Guid, TemplateInfo>,
+    HashMap<Guid, crate::surface::BloodInfo>,
+);
+
+/// Root templates, with the blood/death data of character templates
+/// ([`crate::surface::BloodInfo`]).
+pub fn load_templates_and_blood(vfs: &Vfs) -> Result<TemplatesAndBlood, LoadError> {
     let mut out = HashMap::new();
+    let mut blood = HashMap::new();
     for m in BASE_LOAD_ORDER {
         let path = format!("Public/{m}/RootTemplates/_merged.lsf");
         if !vfs.exists(&path) {
@@ -182,6 +194,14 @@ pub fn load_templates(vfs: &Vfs) -> Result<HashMap<Guid, TemplateInfo>, LoadErro
             let Some(id) = guid_attr(n, "MapKey") else {
                 continue;
             };
+            match crate::surface::BloodInfo::read(n) {
+                Some(b) => {
+                    blood.insert(id, b);
+                }
+                None => {
+                    blood.remove(&id);
+                }
+            }
             out.insert(
                 id,
                 TemplateInfo {
@@ -199,7 +219,7 @@ pub fn load_templates(vfs: &Vfs) -> Result<HashMap<Guid, TemplateInfo>, LoadErro
             );
         }
     }
-    Ok(out)
+    Ok((out, blood))
 }
 
 /// Weight categories (`Public/<Module>/WeightCategories/WeightCategories.lsx`:
@@ -461,6 +481,29 @@ pub fn load_globals(vfs: &Vfs) -> Result<Vec<PlacedObject>, LoadError> {
     Ok(out)
 }
 
+/// Blood/death data set on a level's own characters (`Levels/<Level>/Characters`).
+fn load_level_blood(
+    vfs: &Vfs,
+    level: &str,
+    out: &mut HashMap<Guid, crate::surface::BloodInfo>,
+) -> Result<(), LoadError> {
+    for m in BASE_LOAD_ORDER {
+        let path = format!("Mods/{m}/Levels/{level}/Characters/_merged.lsf");
+        if !vfs.exists(&path) {
+            continue;
+        }
+        let res = parse(vfs, &path)?;
+        for n in game_objects(&res) {
+            if let (Some(id), Some(b)) =
+                (guid_attr(n, "MapKey"), crate::surface::BloodInfo::read(n))
+            {
+                out.insert(id, b);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A level's own (non-global) objects.
 pub fn load_level_objects(vfs: &Vfs, level: &str) -> Result<Vec<PlacedObject>, LoadError> {
     let mut out = Vec::new();
@@ -482,12 +525,13 @@ impl GameData {
     /// Load everything the sim needs, with the objects of the given levels (none given: the
     /// module's character-creation and startup levels, where a new game begins).
     pub fn load(vfs: &Vfs, stats: &bg3_stats::Stats, levels: &[&str]) -> Result<Self, LoadError> {
+        let (templates, blood) = load_templates_and_blood(vfs)?;
         let mut data = Self {
             loca: crate::names::load_localization(vfs, "English")?,
             flags: load_flags(vfs)?,
             tags: load_tags(vfs)?,
             statuses: StatusDefs::from_stats(stats),
-            templates: load_templates(vfs)?,
+            templates,
             races: load_races(vfs)?,
             factions: load_factions(vfs)?,
             module_levels: load_module_levels(vfs)?,
@@ -505,6 +549,7 @@ impl GameData {
             combat: crate::combat::CombatData::new(),
             story: crate::story_data::StoryData::default(),
             cc: crate::cc::CcData::load(vfs, stats)?,
+            blood,
         };
         let mut names: Vec<String> = levels.iter().map(|l| (*l).to_owned()).collect();
         if names.is_empty() {
@@ -522,6 +567,7 @@ impl GameData {
             .collect();
         data.combat = crate::combat::CombatData::load(vfs, stats, &names)?;
         for l in names {
+            load_level_blood(vfs, &l, &mut data.blood)?;
             let objs = load_level_objects(vfs, &l)?;
             data.levels.insert(l, objs);
         }

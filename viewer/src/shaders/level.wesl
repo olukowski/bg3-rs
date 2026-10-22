@@ -33,6 +33,8 @@ import bevy_pbr::render::{
 import bg3_viewer::shaders::game_lighting::{GameShading, game_lighting};
 @if(!PREPASS_PIPELINE)
 import bg3_viewer::shaders::decals::{DecalSurface, apply_decals};
+@if(!PREPASS_PIPELINE)
+import bg3_viewer::shaders::surfaces::apply_surfaces;
 
 struct LevelUniform {
     // Shading model (bits 0–2), FLAG_* above.
@@ -210,6 +212,8 @@ fn fragment(
         ds.reflectance = pbr_input.material.reflectance.x;
         ds.metallic = pbr_input.material.metallic;
         ds = apply_decals(ds, in.world_position.xyz, view_bindings::view.world_position, dp_x, dp_y);
+        // Surfaces (blood, …) after the level decals (`surfaces.wesl`).
+        ds = apply_surfaces(ds, in.world_position.xyz, view_bindings::view.world_position, dp_x, dp_y);
         pbr_input.material.base_color = vec4(ds.albedo, pbr_input.material.base_color.a);
         pbr_input.N = ds.normal;
         pbr_input.material.perceptual_roughness = ds.roughness;

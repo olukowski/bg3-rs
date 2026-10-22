@@ -206,6 +206,7 @@ mod tests {
                 fog: None,
                 decal: None,
                 receive_decal: None,
+                surface: None,
             },
         );
         let capture = Node::new("CaptureDesc")

@@ -74,6 +74,23 @@ pub struct LevelExtension {
     pub decal_normal: Option<Handle<Image>>,
     #[texture(115, dimension = "2d_array")]
     pub decal_physical: Option<Handle<Image>>,
+    /// Surfaces (`surfaces.rs`, `shaders/surfaces.wesl`): the fixed `surfaces::SURFACE_*`
+    /// handles, shared by every level material.
+    #[storage(130, read_only)]
+    pub surface_params: Handle<ShaderBuffer>,
+    #[texture(131, sample_type = "float", filterable = false)]
+    pub surface_mask: Handle<Image>,
+    #[texture(132, sample_type = "float", filterable = false)]
+    pub surface_height: Handle<Image>,
+    #[texture(133, dimension = "2d_array")]
+    #[sampler(134)]
+    pub surface_base: Handle<Image>,
+    #[texture(135, dimension = "2d_array")]
+    pub surface_noise: Handle<Image>,
+    #[texture(136, dimension = "2d_array")]
+    pub surface_normal: Handle<Image>,
+    #[texture(137, dimension = "2d_array")]
+    pub surface_physical: Handle<Image>,
 }
 
 impl MaterialExtension for LevelExtension {
@@ -247,6 +264,13 @@ impl LevelGameMaterials {
                 decal_albedo: self.decals.albedo.clone(),
                 decal_normal: self.decals.normal.clone(),
                 decal_physical: self.decals.physical.clone(),
+                surface_params: crate::surfaces::SURFACE_PARAMS,
+                surface_mask: crate::surfaces::SURFACE_MASK,
+                surface_height: crate::surfaces::SURFACE_HEIGHT,
+                surface_base: crate::surfaces::SURFACE_BASE,
+                surface_noise: crate::surfaces::SURFACE_NOISE,
+                surface_normal: crate::surfaces::SURFACE_NORMAL,
+                surface_physical: crate::surfaces::SURFACE_PHYSICAL,
             },
         });
         self.by_standard.insert(standard_handle.id(), handle);

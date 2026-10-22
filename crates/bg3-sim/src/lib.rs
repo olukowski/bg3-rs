@@ -25,6 +25,8 @@
 //!   much of the story's behaviour the sim reproduces.
 //! * [`driver`]: deliver the sim's events to the story without a trace; [`Game`] owns the
 //!   story VM and the sim, ticks them and takes the player's input.
+//! * [`surface`]: surfaces (blood, fire, clouds …) on the level's AI grid: the level's
+//!   painted ones, death puddles and hit blood, the story's surface functions.
 //! * [`load`]: [`GameData`] from the install.
 //!
 //! No Bevy, no I/O besides [`load`]; the same inputs give the same results.
@@ -52,6 +54,7 @@ pub mod start;
 pub mod status;
 pub mod story_data;
 pub mod story_misc;
+pub mod surface;
 pub mod tags;
 pub mod timers;
 pub mod use_item;

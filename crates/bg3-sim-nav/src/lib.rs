@@ -1,10 +1,11 @@
-//! Optional glue between the simulation's path hook and the game's AI grid.
+//! Optional glue between the simulation's path and surface hooks and the game's AI grid.
 //! Neither core crate depends on the other (or on Bevy).
 
 use std::sync::Arc;
 
-use bg3_nav::{Agent, NavGrid};
+use bg3_nav::{Agent, NavGrid, TileRef};
 use bg3_sim::combat::Pathfinder;
+use bg3_sim::surface::{Cell, SurfaceGrid, SurfaceLayer};
 
 /// Shares the same read-only level grid with the presentation layer and diagnostics.
 pub struct GridPathfinder {
@@ -48,5 +49,63 @@ impl Pathfinder for GridPathfinder {
             points.insert(0, from);
         }
         Some(points)
+    }
+}
+
+/// The level's AI grid as the sim's surface grid: a cell is a [`TileRef`] packed into a `u64`.
+pub struct GridSurfaces {
+    pub grid: Arc<NavGrid>,
+}
+
+impl GridSurfaces {
+    pub fn new(grid: Arc<NavGrid>) -> Self {
+        Self { grid }
+    }
+
+    pub fn cell(t: TileRef) -> Cell {
+        u64::from(t.subgrid) << 32 | u64::from(t.x) << 16 | u64::from(t.y)
+    }
+
+    pub fn tile(c: Cell) -> TileRef {
+        TileRef {
+            subgrid: (c >> 32) as u32,
+            x: (c >> 16) as u16,
+            y: c as u16,
+        }
+    }
+}
+
+impl SurfaceGrid for GridSurfaces {
+    fn cells_in_column(&self, column: (i32, i32)) -> Vec<Cell> {
+        self.grid.tiles_in_column(column).map(Self::cell).collect()
+    }
+
+    fn column(&self, cell: Cell) -> (i32, i32) {
+        self.grid.column(Self::tile(cell))
+    }
+
+    fn height(&self, cell: Cell) -> f32 {
+        self.grid.height(Self::tile(cell))
+    }
+
+    fn flags(&self, cell: Cell) -> u64 {
+        self.grid.tile(Self::tile(cell)).flags
+    }
+
+    fn painted_cells(&self) -> Vec<Cell> {
+        let mask = SurfaceLayer::Ground.painted(0xff) | 0xff << 32;
+        let mut out = Vec::new();
+        for (i, s) in self.grid.file.subgrids.iter().enumerate() {
+            for (j, t) in s.tiles.iter().enumerate() {
+                if !t.is_empty() && t.flags & mask != 0 {
+                    out.push(Self::cell(TileRef {
+                        subgrid: i as u32,
+                        x: (j % s.width as usize) as u16,
+                        y: (j / s.width as usize) as u16,
+                    }));
+                }
+            }
+        }
+        out
     }
 }

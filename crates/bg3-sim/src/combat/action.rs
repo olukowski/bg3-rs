@@ -453,6 +453,15 @@ impl Sim {
                 if *hp_after <= 0 && !hit_zero.iter().any(|(v, _)| *v == t) {
                     hit_zero.push((t, s));
                 }
+                // Surfaces raise no story events, so the order against the events above
+                // doesn't matter.
+                self.hit_blood(s, t, damage_type.name(), *amount);
+                if *hp_after <= 0 {
+                    self.surfaces.death_types.insert(
+                        t,
+                        crate::surface::death_type::from_damage(damage_type.name()),
+                    );
+                }
             }
             ExecEvent::StatusApplied { target, status, .. } => {
                 let t = g(self, *target);
@@ -622,6 +631,12 @@ impl Sim {
             );
         }
         self.push_event("Died", vec![SimValue::Guid(v)]);
+        let death_type = self
+            .surfaces
+            .death_types
+            .remove(&victim)
+            .unwrap_or(crate::surface::death_type::PHYSICAL);
+        self.death_blood(victim, death_type);
     }
 
     fn end_turn_if_active(&mut self, who: Guid) {
