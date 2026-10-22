@@ -52,3 +52,49 @@ HLOD assets under `Generated/Public/GustavDev/Assets/HLOD`.
   parallelised.
 - First milestone rendering can use the LOD0 mesh with flat or debug shading. Proper materials need
   the shader-graph resources, DDS textures and, for many surfaces, virtual textures.
+
+## What the game doesn't draw
+
+Status: found with `cargo run --release -p bg3x --example object_survey` (every LOD0 mesh of a
+level with its template, GR2 flags, material and size) and screenshots with categories hidden;
+the rules come from the macOS binary (4.1.1.7631656). Before this, the viewer drew 137
+Nautiloid meshes the game doesn't (102 blockers, 35 cloth simulation sheets): grey slabs, wedges and 48 m discs cutting through the deck
+and walls.
+
+**Scenery blockers.** `ecl::EntityManager::LoadEntity` builds the client scenery's flags from its
+template; `IsBlocker` is bit `0x200`. With it set, the scenery gets no `VisualLoadDesciption` /
+`VisualComponent` at all, only a `LocalBoundComponent` taken from the visual resource's bounds:
+it blocks (movement, camera, pointer) but is never drawn. `IsBlocker` is a template field like
+the others (value + is-set pairs in `eoc::SceneryTemplate::Visit`), so a level object's own
+value wins, else the first template up the `ParentTemplateId` chain that sets it (the same
+inheritance assumption as for `VisualTemplate`, consistent with the data: e.g.
+`CAM_InvisibleBlocker_Nautiloid_Disc_Slider_A` sets nothing and inherits `true` from
+`CAM_InvisibleSlider_2x2_1H_A`). Game-wide only helper templates resolve to `true` (`PUZ_*`
+invisible blockers, `CAM_*` invisible camera sliders, `FADE_*` fade helpers); their meshes use
+`Engine_Default_Mesh_Lit_Opaque` or `Helper_Invisible*`. 102 Nautiloid scenery objects. The rule
+is scenery-only (the code path is the `ecl::Scenery` one); items set `IsBlocker` too (the
+Nautiloid's rigged tentacles, to `false`) and keep their visuals.
+`bg3_world::LevelObject::draws_visual` implements it.
+
+**Meshes without a renderable model.** `gr::FactoryGr2::Parse` reads each mesh's
+`UserMeshProperties.Flags`: a MeshProxy (`Flags[0] & 0x01`) becomes an `rf::ModelProxy` and an
+Occluder (`Flags[0] & 0x80`) only an `rf::OcclusionModel`; neither is drawn. A cloth mesh whose
+`Flags[2] & 0x300 == 0x100` (ClothPhysics) is the flat simulation sheet: its renderable object is
+created without its drawn bit (`ls::RenderableObjectTemplate::CreateInstance`), the visible
+cloth being a separate mesh of the same visual (`…_Cloth_Mesh` next to `…_Mesh` on the
+Nautiloid's hanging pods, flesh fleeces and hanging flesh: 7 visuals, 35 placed objects). See `docs/formats/gr2.md`;
+`bg3_gr2::Mesh::is_drawn`.
+
+**Story-controlled objects.** Items the story takes off stage (`SetOnStage(…, 0)`, e.g. the
+helper cube `S_TUT_Lab_BrainReader`) are hidden by `viewer --play` as the sim says.
+
+**Effects.** Objects whose visual is an `EffectBank` resource are VFX, not meshes; the viewer
+doesn't play them. It used to draw a 0.2 m box for each (and for objects whose visual didn't
+resolve); those boxes are now off unless `--placeholders` is given.
+
+Open: one Nautiloid destruction mesh
+(`WALL_MF_Nautiloid_Interior_A_Mid_D_Piece_45_E_Membrane_Destruction_Mesh`, a 25 m bar) carries
+the engine default material with no flag that hides it; the zero-size door-handle and anchor
+dummies do too. Whether the game draws them (destruction meshes may only show once broken)
+is not established. Decals, fog volumes and triggers are not loaded by the viewer
+(`OBJECT_DIRS` is `Scenery`, `Items`, `Characters`), so none of them were among the shapes.
