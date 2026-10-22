@@ -139,6 +139,18 @@ pub struct TerrainExtension {
     /// The level's box lights (`lights::BOX_LIGHTS`), read by the shared game light loop.
     #[storage(120, read_only)]
     pub box_lights: Handle<bevy::render::storage::ShaderBuffer>,
+    /// Shared level decals, in the same binding range as `LevelExtension` and `DecalExtension`.
+    #[storage(130, read_only)]
+    pub decals: Handle<bevy::render::storage::ShaderBuffer>,
+    #[storage(131, read_only)]
+    pub decal_grid: Handle<bevy::render::storage::ShaderBuffer>,
+    #[texture(132, dimension = "2d_array")]
+    #[sampler(133)]
+    pub decal_albedo: Option<Handle<Image>>,
+    #[texture(134, dimension = "2d_array")]
+    pub decal_normal: Option<Handle<Image>>,
+    #[texture(135, dimension = "2d_array")]
+    pub decal_physical: Option<Handle<Image>>,
 }
 
 impl MaterialExtension for TerrainExtension {
@@ -680,6 +692,7 @@ fn tile_mesh(t: &Terrain, tile: [usize; 2], game_coords: bool) -> Option<Mesh> {
 pub fn spawn_terrain(
     mut commands: Commands,
     terrain: Res<LevelTerrain>,
+    decals: Res<crate::decals::DecalBindings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -699,7 +712,7 @@ pub fn spawn_terrain(
                     .iter()
                     .zip(inputs)
                     .map(|(t, inp)| {
-                        let ext = terrain_extension(t, inp, &mut images, bevy_lighting);
+                        let ext = terrain_extension(t, inp, &mut images, bevy_lighting, &decals);
                         terrain_materials.add(TerrainMaterial {
                             base: StandardMaterial::default(),
                             extension: TerrainExtension {
@@ -763,6 +776,7 @@ fn terrain_extension(
     inp: &TerrainInputs,
     images: &mut Assets<Image>,
     bevy_lighting: bool,
+    decals: &crate::decals::DecalBindings,
 ) -> TerrainExtension {
     let [cw, ch] = t.cells.map(|c| c.max(1) as u32);
     let clamp = |mips| sampler(ImageAddressMode::ClampToEdge, mips, 1);
@@ -844,6 +858,11 @@ fn terrain_extension(
             flags: if bevy_lighting { FLAG_BEVY_LIGHTING } else { 0 },
         },
         box_lights: crate::lights::BOX_LIGHTS,
+        decals: decals.decals.clone(),
+        decal_grid: decals.grid.clone(),
+        decal_albedo: decals.albedo.clone(),
+        decal_normal: decals.normal.clone(),
+        decal_physical: decals.physical.clone(),
         layers,
         base_color_array: Handle::default(),
         normal_array: Handle::default(),

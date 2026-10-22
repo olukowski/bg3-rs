@@ -31,6 +31,7 @@ import bevy_pbr::render::{
 };
 @if(!PREPASS_PIPELINE)
 import bg3_viewer::shaders::game_lighting::{GameShading, game_lighting};
+// Shared material bindings 130–135, also used by both terrain paths.
 @if(!PREPASS_PIPELINE)
 import bg3_viewer::shaders::decals::{DecalSurface, apply_decals};
 
