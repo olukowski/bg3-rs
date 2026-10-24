@@ -483,6 +483,7 @@ pub fn spawn_lights(
         };
         let mut e = commands.spawn((
             Name::new("sun"),
+            Sun,
             DirectionalLight {
                 color: color(c),
                 illuminance: lux,
@@ -498,6 +499,11 @@ pub fn spawn_lights(
             },
             bevy::light::CascadeShadowConfigBuilder {
                 maximum_distance: sun.shadow_far_plane,
+                // A/B switch for attributing the cascades' cost (`docs/performance.md`).
+                num_cascades: std::env::var("BG3_SUN_CASCADES")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(4),
                 ..default()
             }
             .build(),
@@ -1133,6 +1139,58 @@ pub fn follow_camera_triggers(
             post.uniform = lights.post_uniform(screen);
         }
         None => exposure.ev100 = lights.ev100(),
+    }
+}
+
+/// The level's sun (its cascaded shadows: [`sun_shadow_stats`]).
+#[derive(Component)]
+pub struct Sun;
+
+/// `BG3_SHADOW_STATS=1`: log, once a second, each sun cascade's texel size, its shadow casters
+/// and how many of them cover less than 1, 2, 4 and 8 texels (bounding sphere diameter over the
+/// texel size). Culling those small casters was tried and doesn't pay (`docs/performance.md`).
+pub fn sun_shadow_stats(
+    sun: Query<
+        (
+            &bevy::light::Cascades,
+            &bevy::camera::visibility::CascadesVisibleEntities,
+        ),
+        With<Sun>,
+    >,
+    casters: Query<(&bevy::camera::primitives::Aabb, &GlobalTransform)>,
+    time: Res<Time>,
+    mut last_log: Local<f32>,
+) {
+    if std::env::var_os("BG3_SHADOW_STATS").is_none() || time.elapsed_secs() - *last_log < 1.0 {
+        return;
+    }
+    *last_log = time.elapsed_secs();
+    let diameter = |e: Entity| {
+        casters.get(e).ok().map(|(aabb, t)| {
+            let (scale, _, _) = t.to_scale_rotation_translation();
+            2.0 * (Vec3::from(aabb.half_extents) * scale.abs()).length()
+        })
+    };
+    for (cascades, visible) in &sun {
+        for (view, lists) in &visible.entities {
+            let Some(view_cascades) = cascades.cascades.get(view) else {
+                continue;
+            };
+            for (i, (cascade, list)) in view_cascades.iter().zip(lists).enumerate() {
+                let texel = cascade.texel_size;
+                let mut under = [0usize; 4];
+                for &e in &list.entities {
+                    let d = diameter(e).unwrap_or(f32::INFINITY) / texel;
+                    for (n, limit) in under.iter_mut().zip([1.0, 2.0, 4.0, 8.0]) {
+                        *n += usize::from(d < limit);
+                    }
+                }
+                eprintln!(
+                    "sun cascade {i}: texel {texel:.3} m, {} casters, under 1/2/4/8 texels {under:?}",
+                    list.entities.len(),
+                );
+            }
+        }
     }
 }
 

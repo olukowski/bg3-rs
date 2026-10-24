@@ -354,6 +354,14 @@ fn main() -> Result<()> {
         readout: args.fps,
         bench: args.bench,
     })
+    // Directional shadow map size, shared by the sun's cascades and the box light carriers
+    // (Bevy's default 2048); `BG3_SHADOW_MAP=<n>` is an A/B switch (`docs/performance.md`).
+    .insert_resource(bevy::light::DirectionalLightShadowMap {
+        size: std::env::var("BG3_SHADOW_MAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2048),
+    })
     .insert_resource(GameData { install, vfs })
     .insert_resource(level)
     .insert_resource(meshes)
@@ -406,6 +414,8 @@ fn main() -> Result<()> {
             lights::cull_box_shadow_casters
                 .after(bevy::light::SimulationLightSystems::UpdateLightFrusta)
                 .before(bevy::light::SimulationLightSystems::CheckLightVisibility),
+            lights::sun_shadow_stats
+                .after(bevy::light::SimulationLightSystems::CheckLightVisibility),
         ),
     );
     if args.terrain_only {

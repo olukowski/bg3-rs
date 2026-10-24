@@ -258,11 +258,35 @@ No measurable change on the Nautiloid (few characters, all close to the camera; 
 rounds of `BG3_LOD_SCALE=0` against the default within ±1 ms in all three views), and the static
 wide and deck shots match (mean luma difference ≤ 0.02).
 
+**Sun cascades.** What the sun's shadows cost depends on the number of cascades, not on map
+size (medians, ms, one run each):
+
+| Switch | Combat | Wide | Start pod |
+|------|------|------|------|
+| Default (4 cascades, 2048) | 18.0 | 21.7 | 16.9 |
+| `BG3_SUN_CASCADES=1` | 14.4 | 16.0 | 11.9 |
+| `BG3_SUN_CASCADES=2` | 15.3 | 16.0 | 13.7 |
+| `BG3_SHADOW_MAP=1024` | 17.2 | 21.8 | 16.0 |
+| `BG3_SHADOW_MAP=4096` | 18.8 | 21.1 | 16.4 |
+| `BG3_NO_SUN_SHADOWS=1` | 11.0 | 13.9 | 10.2 |
+
+So the shadow passes are bound by casters and draws, not by fill. In the wide view one cascade
+instead of four saves 2.5 ms of render graph CPU (encoding) and ~1.6 ms of extract–prepare.
+`BG3_SHADOW_STATS=1` logs each cascade's casters. In the wide view the four cascades (texels 8,
+18, 39 and 83 mm with `ShadowFarPlane` 100) get 330, 971, 2097 and 3387 casters. Only 375 of the
+far cascade's casters cover less than 8 texels. Dropping casters under 4 or 8 texels from a
+cascade's list (tried, removed) gained ≤ 1.4 ms in combat and *lost* 2–5 ms in the wide view.
+That is probably bin churn from rewriting the lists every frame. The game's cascade split and
+caching rules are the next lever (`docs/research/shadows.md`).
+
 ## Switches
 
 - `BG3_BOX_SHADOW_CASCADES=1`: box light shadows on Bevy's four camera cascades, with casters
   culled to the boxes (`cull_box_shadow_casters`), instead of one map per box. Sharper near the
   camera, 10–25 % slower; the look before this change.
+- `BG3_SUN_CASCADES=<n>`: number of sun cascades (default 4). `BG3_SHADOW_MAP=<n>`: directional
+  shadow map size for the sun and box carriers (default 2048). `BG3_SHADOW_STATS=1`: log the sun
+  cascades' casters every second.
 - `BG3_LOD_SCALE=<f>`: multiplier on the level's LOD switch distances (default 1; 0 draws LOD 0
   only).
 - `BG3_FOG_STEP_M=<m>`: fog ray-march step length (default 0.5; a tiny value gives Bevy's fixed
