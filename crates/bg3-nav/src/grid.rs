@@ -60,6 +60,8 @@ pub struct NavGrid {
     /// Global tile column of each subgrid's tile (0, 0).
     origins: Vec<(i32, i32)>,
     buckets: HashMap<(i32, i32), Vec<u32>>,
+    /// Portal links between tiles ([`crate::portal`]).
+    pub(crate) portal_links: HashMap<TileRef, Vec<TileRef>>,
 }
 
 /// Global tile column containing a world position (`floor(x * 2), floor(z * 2)`).
@@ -91,6 +93,7 @@ impl NavGrid {
             file,
             origins,
             buckets,
+            portal_links: HashMap::new(),
         }
     }
 

@@ -29,7 +29,22 @@ pub fn run(o: Options) -> Result<()> {
     let install = Install::locate()?;
     let vfs = Vfs::from_install(&install)?;
     let file = bg3_nav::load_aigrid(&vfs, &o.level).context("AI grid")?;
-    let grid = NavGrid::new(file);
+    let mut grid = NavGrid::new(file);
+    let portals = bg3_nav::load_portals(&vfs, &o.level);
+    let attached = grid.set_portals(&portals);
+    for p in &portals {
+        println!(
+            "portal {}: {:?} -> {:?} (tiles {:?} -> {:?})",
+            p.id,
+            p.source,
+            p.target,
+            grid.portal_tile(p.source).map(|t| grid.world_pos(t)),
+            grid.portal_tile(p.target).map(|t| grid.world_pos(t)),
+        );
+    }
+    if !portals.is_empty() {
+        println!("{attached} of {} portals attached", portals.len());
+    }
     let agent = Agent {
         size: Agent::size_from_radius(o.radius),
         ..Agent::humanoid()

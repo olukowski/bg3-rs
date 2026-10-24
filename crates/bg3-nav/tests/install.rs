@@ -177,3 +177,23 @@ fn nautiloid_deck_path() {
         assert!((grid.height(w[0]) - grid.height(w[1])).abs() <= agent.step_height);
     }
 }
+
+/// The Nautiloid's one navigation portal is the climb from the ledge below the transformation
+/// chamber up to its entrance: without it the chamber can't be reached from there.
+#[test]
+#[ignore = "needs BG3 install"]
+fn nautiloid_portal_climbs_to_the_transformation_chamber() {
+    let Some(vfs) = open_vfs() else { return };
+    let portals = bg3_nav::load_portals(&vfs, "TUT_Avernus_C");
+    assert_eq!(portals.len(), 1, "{portals:?}");
+    let agent = Agent::humanoid();
+    let (ledge, chamber) = ([-42.75, 7.5, -361.75], [-9.5, 17.6, -354.8]);
+    let plain = NavGrid::new(bg3_nav::load_aigrid(&vfs, "TUT_Avernus_C").expect("aigrid"));
+    assert!(plain.find_path(ledge, chamber, &agent).is_err());
+    let grid = bg3_nav::load_navgrid(&vfs, "TUT_Avernus_C").expect("grid");
+    let path = grid
+        .find_path(ledge, chamber, &agent)
+        .expect("through the portal");
+    eprintln!("ledge -> chamber: {} waypoints", path.waypoints.len());
+    assert!(path.waypoints.iter().any(|w| w[1] > 17.0));
+}

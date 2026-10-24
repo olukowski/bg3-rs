@@ -237,9 +237,10 @@ enum Command {
         #[arg(long)]
         talk: Option<String>,
         /// Once no dialog or fight runs, walk the avatar here along the AI grid at the default
-        /// run speed (BG3 world `x,y,z`; repeatable, in order).
-        #[arg(long, value_parser = play::vec3_arg, allow_hyphen_values = true)]
-        move_to: Vec<[f32; 3]>,
+        /// run speed (BG3 world `x,y,z`; repeatable, in order); `jump:x,y,z` jumps straight
+        /// there (a ledge the grid doesn't connect).
+        #[arg(long, value_parser = play::step_arg, allow_hyphen_values = true)]
+        move_to: Vec<play::Step>,
         /// Don't print stage/position changes.
         #[arg(long)]
         quiet: bool,

@@ -35,7 +35,7 @@ pub fn run(o: Options) -> Result<()> {
     let navigation = if o.nav {
         let install = bg3_install::Install::locate()?;
         let vfs = bg3_vfs::Vfs::from_install(&install)?;
-        let grid = Arc::new(bg3_nav::NavGrid::new(bg3_nav::load_aigrid(&vfs, &o.level)?));
+        let grid = Arc::new(bg3_nav::load_navgrid(&vfs, &o.level)?);
         Some((
             Arc::new(bg3_sim_nav::GridPathfinder::new(grid.clone())),
             Arc::new(bg3_sim_nav::GridSurfaces::new(grid)),

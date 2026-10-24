@@ -210,3 +210,46 @@ fn empty_tiles_are_holes() {
         Err(PathError::Unreachable)
     );
 }
+
+#[test]
+fn a_portal_links_a_cliff_top_and_bottom() {
+    // Left half at 0 m, right half 3 m up: no ramp, so only the portal connects them.
+    let mut s = flat(1, 24, 12, [0.0; 3]);
+    for y in 0..12 {
+        for x in 12..24 {
+            set(&mut s, x, y, |t| t.height = (3.0 / HEIGHT_SCALE) as u16);
+        }
+    }
+    let mut grid = NavGrid::new(file(vec![s]));
+    let agent = Agent::humanoid();
+    let mut goal = at(20, 6);
+    goal[1] = 3.0;
+    assert_eq!(
+        grid.find_path(at(3, 6), goal, &agent).unwrap_err(),
+        PathError::Unreachable
+    );
+    let mut top = at(13, 6);
+    top[1] = 3.0;
+    let portal = crate::portal::NavPortal {
+        id: 0,
+        source: at(10, 6),
+        target: top,
+    };
+    assert_eq!(grid.set_portals(&[portal]), 1);
+    let path = grid.find_path(at(3, 6), goal, &agent).unwrap();
+    // The climb is one step, kept as its own segment by the smoothing.
+    let climb = path
+        .tiles
+        .windows(2)
+        .position(|w| (grid.height(w[0]) - grid.height(w[1])).abs() > agent.step_height)
+        .expect("climbs through the portal");
+    assert!(
+        grid.portal_exits(path.tiles[climb])
+            .contains(&path.tiles[climb + 1])
+    );
+    assert!(
+        path.waypoints.iter().any(|w| w[1] == 0.0) && path.waypoints.iter().any(|w| w[1] == 3.0)
+    );
+    // And back down.
+    assert!(grid.find_path(goal, at(3, 6), &agent).is_ok());
+}

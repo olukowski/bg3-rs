@@ -75,8 +75,7 @@ impl Plugin for NavPlugin {
 impl Navigation {
     pub fn load(vfs: &bg3_vfs::Vfs, level: &str) -> anyhow::Result<Self> {
         let started = std::time::Instant::now();
-        let file = bg3_nav::load_aigrid(vfs, level)?;
-        let grid = NavGrid::new(file);
+        let grid = bg3_nav::load_navgrid(vfs, level)?;
         eprintln!(
             "nav: {} AI subgrids in {:.2?}",
             grid.file.subgrids.len(),

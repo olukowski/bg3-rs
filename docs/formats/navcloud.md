@@ -144,9 +144,31 @@ established; 1 is presumably open space. The search over it uses 6 or 26 neighbo
   `SplinePath`, `RemoveStraightNodes` and `GenerateCheckpointsBetweenNodes`. We string-pull
   instead: from each anchor we take the furthest tile reachable along a straight line on which
   every quarter-tile sample is standable within the step height.
+- **Portals** (`bg3_nav::portal`, `load_navgrid`): each end of a `navigationPortals.lsf` link
+  is attached to a tile. The engine (`eoc::AiGridPortal::AttachToGrid`) takes the end's closest
+  tile and floods (`eoc::ClosestToTargetFlood`, flags `0x80c`, no distance limit) to the nearest
+  tile free of those flags; `eoc::AiGrid::AddPortal` registers the portal at both end tiles.
+  We search columns within 16 tiles and 4 m for that tile, then move to the nearest
+  humanoid-standable tile, because the engine's collision test for the portal step wasn't read.
+  The step costs 100 and is never string-pulled. `HeuristicWithPortal` isn't modelled.
 - **Not modelled:** attack-of-opportunity cost (`AoOCost`), surface/path influences
-  (`CalculateInfluenceCost`), dynamic objects and doors, portals and climbing, layers, and the
-  "dangerous tile" counter (a second collision test with the extended mask).
+  (`CalculateInfluenceCost`), dynamic objects and doors (`eoc::AiGrid::AddObject`,
+  `esv::ItemHelpers::UpdateAiGrid`), climbing bits, layers, and the "dangerous tile" counter (a
+  second collision test with the extended mask).
+
+**The Nautiloid** has one portal: the climb from a ledge below the transformation chamber
+(−38.25, 8.07, −356.25) up to its entrance (−35.84, 18.78, −355.73). With it, the chamber
+connects to that ledge (`nautiloid_portal_climbs_to_the_transformation_chamber`). Two gaps
+remain on the way through the prologue (found with `nav_gap`):
+
+- The ledge is about 3 m above the lower deck and 2 m to the side, with no climbing bits on
+  either edge. The Nautiloid teaches jumping (`S_TUT_ProgressTrigger_JumpingArea`), so this is
+  probably the player's Jump; `bg3x play --move-to jump:x,y,z` stands in for it.
+- The helm door `S_TUT_Helm_Door_001` (`IsPortal` true, template `DOOR_MF_Nautiloid_Organic_A`,
+  bounds only) stands in a 2.5 m stretch of columns with no tiles at all. What fills that gap at
+  runtime isn't known yet. Candidates: the door's `eoc::item::PortalComponent`, or the item's
+  grid update (`esv::ItemHelpers::UpdateAiGrid`, `eoc::AiGrid::AddObject`). Finding the callers of
+  `AiGridPortal::AttachToGrid` needs a whole-binary xref.
 
 **Verified so far:** every v21 grid in the install parses (`every_aigrid_parses`). On the
 Nautiloid, 13,683 tiles are standable for a humanoid, and the regions they form match the
@@ -156,6 +178,8 @@ Nothing has yet been compared against paths traced from the running game.
 
 ## Tools
 
-- `bg3x nav <level> [--subgrids] [--regions] [--at x,y,z] [--path a --path b …] [--radius r]`
+- `bg3x nav <level> [--subgrids] [--regions] [--at x,y,z] [--path a --path b …] [--radius r]` (lists the level's portals and the tiles they attach to)
+- `cargo run --release -p bg3x --example nav_gap -- <level> a b`: where the regions reachable
+  from two points come closest, and the height step there
 - `bg3-viewer <level> --nav` draws the grid overlay. A left click moves the controlled character
   (`--player NAME`, `--walk-to x,y,z`).

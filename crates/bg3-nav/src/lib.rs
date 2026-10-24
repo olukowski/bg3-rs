@@ -15,11 +15,13 @@ mod compress;
 pub mod grid;
 pub mod navcloud;
 pub mod path;
+pub mod portal;
 
 pub use aigrid::{AiGridFile, Subgrid, Tile};
 pub use grid::{Agent, NavGrid, TileRef};
 pub use navcloud::NavCloud;
 pub use path::{Path, PathError};
+pub use portal::{NavPortal, load_portals};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -58,6 +60,13 @@ pub fn load_aigrid(vfs: &bg3_vfs::Vfs, level: &str) -> Result<AiGridFile> {
     let path = aigrid_path(vfs, level, bg3_vfs::modules::BASE_LOAD_ORDER)
         .ok_or_else(|| Error::NotFound(format!("{level}/Ai/aigrid.data")))?;
     AiGridFile::parse(&vfs.read(&path)?)
+}
+
+/// Load a level's AI grid with its navigation portals attached ([`portal`]).
+pub fn load_navgrid(vfs: &bg3_vfs::Vfs, level: &str) -> Result<NavGrid> {
+    let mut grid = NavGrid::new(load_aigrid(vfs, level)?);
+    grid.set_portals(&load_portals(vfs, level));
+    Ok(grid)
 }
 
 /// Load a level's nav cloud, if it has one (only the main levels do).

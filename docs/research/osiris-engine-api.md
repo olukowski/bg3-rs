@@ -507,7 +507,7 @@ shows, and what to fix next:
 | The helm was 3 separate fights with one devil each, plus the mind flayers and a dead body (`Helm_MindFlayer_Dead_01`) | **fixed**, see "The helm fight" below: characters placed dead (`DefaultState`) were alive, `CanFight 0` was ignored, narrative combat was missing |
 | Lae'zel stays on the lower deck | **partly fixed**, see "Party following" below: she follows on foot, but not past the leg the avatar teleports over |
 | The missing-functions list grew from 39 to 55 | the fight scripts. The most-called ones are now implemented (see "Fight queries"); the list is 55 again because the helm fight now runs further: `IsInDangerOfAttackOfOpportunity`, `GetHandlingCrimeID`, `GetItemByTagInInventory`, `AppearAt`, … |
-| The lower deck → transformation chamber leg has no path | climbing/jump links, doors (navigation fidelity, roadmap M5) |
+| The lower deck → transformation chamber leg has no path | **fixed** with the level's navigation portal (the climb) and a jump up a 3 m ledge (`--move-to jump:…`). The helm door still has no tiles, so the last leg teleports (`docs/formats/navcloud.md`) |
 
 ### The helm fight (2026-10-24)
 

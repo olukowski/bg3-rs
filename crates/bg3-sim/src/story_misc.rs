@@ -600,6 +600,32 @@ pub(crate) fn observe(sim: &mut Sim, name: &str, args: &[ObservedArg]) {
     }
 }
 
+impl Sim {
+    /// `CanFight`: the story's `SetCanFight`, else the placed object's or its template
+    /// chain's `CanFight`, else true for characters; `None` for unknown objects.
+    pub fn can_fight(&self, id: Guid) -> Option<bool> {
+        let e = self.entity(id)?;
+        let from_data = self
+            .data
+            .story
+            .objects
+            .get(&id)
+            .and_then(|o| o.can_fight)
+            .or_else(|| {
+                self.data
+                    .template_chain(e.template)
+                    .into_iter()
+                    .find_map(|t| self.data.story.objects.get(&t.id)?.can_fight)
+            });
+        Some(
+            e.story
+                .can_fight
+                .or(from_data)
+                .unwrap_or(e.kind == EntityKind::Character),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{Entity, GameData, Origin, TagDef, host::SimHost, story_data::OriginData};
@@ -688,31 +714,5 @@ mod tests {
         assert!(!sim.in_inventory(Guid(1), Guid(3)));
         sim.entities.get_mut(Guid(1)).unwrap().holder = Some(Guid(3));
         assert!(!sim.in_inventory(Guid(3), Guid(4)), "cycle must terminate");
-    }
-}
-
-impl Sim {
-    /// `CanFight`: the story's `SetCanFight`, else the placed object's or its template
-    /// chain's `CanFight`, else true for characters; `None` for unknown objects.
-    pub fn can_fight(&self, id: Guid) -> Option<bool> {
-        let e = self.entity(id)?;
-        let from_data = self
-            .data
-            .story
-            .objects
-            .get(&id)
-            .and_then(|o| o.can_fight)
-            .or_else(|| {
-                self.data
-                    .template_chain(e.template)
-                    .into_iter()
-                    .find_map(|t| self.data.story.objects.get(&t.id)?.can_fight)
-            });
-        Some(
-            e.story
-                .can_fight
-                .or(from_data)
-                .unwrap_or(e.kind == EntityKind::Character),
-        )
     }
 }

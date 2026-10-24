@@ -28,15 +28,26 @@ fn parse_vec3(s: &str) -> Result<[f32; 3], String> {
     v.try_into().map_err(|_| "expected x,y,z".to_owned())
 }
 
-pub fn vec3_arg(s: &str) -> Result<[f32; 3], String> {
-    parse_vec3(s)
+/// One `--move-to`: walk along the AI grid, or (`jump:x,y,z`) jump straight there, the way a
+/// player uses Jump to reach a ledge the grid doesn't connect.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Step {
+    Walk([f32; 3]),
+    Jump([f32; 3]),
+}
+
+pub fn step_arg(s: &str) -> Result<Step, String> {
+    match s.strip_prefix("jump:") {
+        Some(p) => parse_vec3(p).map(Step::Jump),
+        None => parse_vec3(s).map(Step::Walk),
+    }
 }
 
 pub struct Args {
     pub seconds: f64,
     pub choices: Vec<usize>,
     pub talk: Option<String>,
-    pub move_to: Vec<[f32; 3]>,
+    pub move_to: Vec<Step>,
     pub quiet: bool,
     pub triggers: Option<String>,
     pub teleport: bool,
@@ -169,7 +180,16 @@ pub fn run(a: Args) -> Result<()> {
                             walk = None;
                         }
                     }
-                } else if let Some(p) = moves.next() {
+                } else if let Some(&step) = moves.next() {
+                    let p = match step {
+                        Step::Jump(p) => {
+                            println!("[{now:.1}s] avatar jumps to {p:?}");
+                            game.sim.set_position(started.avatar, p);
+                            continue;
+                        }
+                        Step::Walk(p) => p,
+                    };
+                    let p = &p;
                     let from = game.sim.entity(started.avatar).map_or(*p, |e| e.position);
                     match plan_walk(grid.as_ref(), from, *p, a.teleport) {
                         Ok(points) => {
@@ -227,11 +247,11 @@ pub fn run(a: Args) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("play thread panicked"))?
 }
 
-/// The level's AI grid, or `None` (with a note) when it can't be read: then moves teleport
-/// and every hostile in range can see the party.
+/// The level's AI grid with its portals, or `None` (with a note) when it can't be read: then
+/// moves teleport and every hostile in range can see the party.
 fn load_grid(vfs: &bg3_vfs::Vfs, level: &str) -> Option<Arc<NavGrid>> {
-    match bg3_nav::load_aigrid(vfs, level) {
-        Ok(f) => Some(Arc::new(NavGrid::new(f))),
+    match bg3_nav::load_navgrid(vfs, level) {
+        Ok(g) => Some(Arc::new(g)),
         Err(e) => {
             eprintln!("no AI grid for {level}: {e}");
             None

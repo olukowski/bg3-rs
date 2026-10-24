@@ -161,6 +161,24 @@ impl NavGrid {
             }
             let (gc, _) = g[&cur];
             let hc = self.height(cur);
+            // Portal steps: no step-height or standability test on the exit tile (the engine
+            // attaches portals to tiles free of its own mask; see crate::portal).
+            for &n in self.portal_exits(cur) {
+                if closed.contains(&n) {
+                    continue;
+                }
+                let cost = gc + crate::portal::PORTAL_COST;
+                if g.get(&n).is_some_and(|&(old, _)| old <= cost) {
+                    continue;
+                }
+                g.insert(n, (cost, Some(cur)));
+                seq += 1;
+                open.push(Reverse((
+                    cost + heuristic(self.world_pos(n), goal_pos),
+                    seq,
+                    n,
+                )));
+            }
             for n in self.neighbours(cur) {
                 if closed.contains(&n) {
                     continue;
@@ -252,7 +270,9 @@ impl NavGrid {
         while anchor + 1 < tiles.len() {
             // Advance while the next tile is still reachable in a straight line.
             let mut next = anchor + 1;
+            // A portal step (climb, jump) is never pulled straight: both its ends stay.
             while next + 1 < tiles.len()
+                && !self.portal_exits(tiles[next]).contains(&tiles[next + 1])
                 && self.can_walk_straight(point(anchor), point(next + 1), tiles[anchor], agent)
             {
                 next += 1;
