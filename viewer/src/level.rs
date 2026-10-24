@@ -210,7 +210,7 @@ pub fn spawn_level(
     let position = start
         .position
         .unwrap_or(center + Vec3::new(0.0, 60.0, 40.0));
-    commands.spawn((
+    let mut camera = commands.spawn((
         Camera3d {
             // The subsurface pass reads the depth buffer.
             depth_texture_usages: (TextureUsages::RENDER_ATTACHMENT
@@ -223,5 +223,10 @@ pub fn spawn_level(
         Transform::from_translation(position).looking_at(target, Vec3::Y),
         FlyCamera::default(),
     ));
+    // A/B switch: a depth-only pass first, so the main pass shades each pixel once
+    // (`docs/performance.md`).
+    if std::env::var_os("BG3_DEPTH_PREPASS").is_some() {
+        camera.insert(bevy::core_pipeline::prepass::DepthPrepass);
+    }
     eprintln!("camera at {position} looking at {target} (level median {center})");
 }

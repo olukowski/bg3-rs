@@ -293,6 +293,39 @@ from the sun (`ShadowCullStage::Cull`). A port of that (tried, removed) dropped 
 Nautiloid: with the sun 21° up, only one camera plane faces away from it, and the sphere-fitted
 box already ends `r` beyond the slice centre. Frame times were unchanged.
 
+**Depth prepass.** `BG3_DEPTH_PREPASS=1` adds Bevy's `DepthPrepass` to the camera, so the main
+pass could shade each pixel only once. On the Mac it costs 0.5–2 ms (two alternating rounds:
+combat 16.6–16.9 → 17.4–18.6 ms, wide 18.6–19.3 → 20.8, static deck 16.1–16.9 → 17.1–17.4).
+Apple GPUs already remove hidden opaque pixels in hardware (TBDR), so the extra geometry pass
+only adds work. It stays off. It is a switch to try on Linux/NVIDIA, where overdraw isn't free.
+
+**Where the Mac frame goes (profile).** `sample` of the wide view (5 s, 1600×900) shows no
+waiting for drawables: the frame is bound by the **render thread's CPU**, not the GPU. 23 % of
+the render thread is in `queue_submit`. Most of that is wgpu freeing per-frame Metal buffers
+(`AGXBuffer dealloc` via `LifetimeTracker::triage_submissions`). Another ~10 % across threads
+is creating them (`StagingBuffer::new` → `create_buffer`). wgpu gives every `queue.write_buffer`
+its own staging buffer, and Bevy's `write_binned_instance_buffers` writes three buffers per
+multidrawable **batch set** per view. That makes ~2,100 Metal buffer allocations and frees per
+frame for the ~700 batch sets (`BG3_PERF_PASSES=1`: shadow views 633 sets, main 66).
+
+The number of batch sets on the Mac comes from Bevy's bindless slab limit:
+`AUTO_BINDLESS_SLAB_RESOURCE_LIMIT` is 64 resources on macOS and 2048 elsewhere. A level material
+binds ~8 textures, so a slab holds ~8 materials and the level splits into dozens of bind groups
+(e.g. 45 groups for one level pipeline in one shadow view). Our extensions can't raise the
+limit themselves. A `#[bindless(limit(512))]` wins over the base's `Auto` in the slab
+allocator, but `ExtendedMaterial` keeps `StandardMaterial`'s 64-entry binding arrays in the
+layout, and wgpu rejects the bind group ("declared with at most 64 items, but 188 items were
+provided").
+
+Measured with a local, **uncommitted** patch of `bevy_render` that sets the macOS limit to 512
+(a copy of the crate in `.cache/patched/bevy_render` and a `[patch.crates-io]` entry). Shadow
+batch sets went from 633 to 250 and main from 66 to 30, with no validation errors. Two
+alternating rounds, stock → patched: combat 17.1–17.2 → 14.6–14.9 ms, wide 19.2–19.3 → 17.5–17.6,
+start pod 14.6–15.0 → 13.3. Static wide and deck shots match (mean luma difference ≤ 0.01).
+Shipping it needs either a vendored `bevy_render` (an ADR), an upstream change (a configurable
+slab limit, or `ExtendedMaterial` sizing the shared arrays from the combined limit), or base
+materials of our own instead of `StandardMaterial`.
+
 ## Switches
 
 - `BG3_BOX_SHADOW_CASCADES=1`: box light shadows on Bevy's four camera cascades, with casters
@@ -302,6 +335,7 @@ box already ends `r` beyond the slice centre. Frame times were unchanged.
   the game's. `BG3_SUN_CASCADES=<n>`: number of sun cascades (default: the level's `CascadeCount`). `BG3_SHADOW_MAP=<n>`: directional
   shadow map size for the sun and box carriers (default 2048). `BG3_SHADOW_STATS=1`: log the sun
   cascades' casters every second.
+- `BG3_DEPTH_PREPASS=1`: a depth prepass before the main pass (slower on Apple GPUs).
 - `BG3_LOD_SCALE=<f>`: multiplier on the level's LOD switch distances (default 1; 0 draws LOD 0
   only).
 - `BG3_FOG_STEP_M=<m>`: fog ray-march step length (default 0.5; a tiny value gives Bevy's fixed
