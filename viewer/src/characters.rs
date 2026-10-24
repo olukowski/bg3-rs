@@ -306,6 +306,9 @@ pub struct PreparedPart {
     pub look: crate::char_materials::PartLook,
     /// For weapon visuals: where they go when sheathed and when drawn.
     pub weapon: Option<WeaponPose>,
+    /// Camera distance range `[near, far)` from the part's entity origin this LOD is drawn at;
+    /// `None` = always.
+    pub range: Option<(f32, f32)>,
 }
 
 /// A weapon visual's two placements: `(joint, transform relative to it)`, `None` when the
@@ -854,10 +857,7 @@ fn prepare(
         };
         let scene = cache.scene(vfs, path)?;
         let attach_joint = part.attach_bone.as_deref().and_then(|b| skeleton.index(b));
-        for obj in part.visual.drawn_lod0_objects() {
-            let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) else {
-                continue;
-            };
+        for (obj, mesh, range) in lod_meshes(&part.visual, &scene) {
             let bevy_mesh = if part.attach_bone.is_some() {
                 crate::meshes::to_bevy_mesh(mesh)
             } else {
@@ -874,6 +874,7 @@ fn prepare(
                 local: Transform::default(),
                 look: looks.part(&part.visual, mesh),
                 weapon: None,
+                range,
             });
         }
     }
@@ -1036,22 +1037,61 @@ fn rigid_equipment_parts(
             };
             (Some(joint), Transform::default(), None)
         };
-        for obj in visual.drawn_lod0_objects() {
-            if let Some(mesh) = scene.meshes.iter().find(|m| m.name == obj.mesh_name()) {
-                out.push(PreparedPart {
-                    mesh: crate::meshes::to_bevy_mesh(mesh),
-                    inverse_bindposes: None,
-                    material_id: obj.material_id.clone(),
-                    horn_albedo: None,
-                    attach_joint,
-                    local,
-                    look: Default::default(),
-                    weapon: weapon.clone(),
-                });
-            }
+        for (obj, mesh, range) in lod_meshes(visual, &scene) {
+            out.push(PreparedPart {
+                mesh: crate::meshes::to_bevy_mesh(mesh),
+                inverse_bindposes: None,
+                material_id: obj.material_id.clone(),
+                horn_albedo: None,
+                attach_joint,
+                local,
+                look: Default::default(),
+                weapon: weapon.clone(),
+                range,
+            });
         }
     }
     out
+}
+
+/// A drawn mesh of a visual with the camera distance range it is drawn at (`None` = always).
+type LodMesh<'a> = (
+    &'a bg3_world::banks::MeshObject,
+    &'a bg3_gr2::Mesh,
+    Option<(f32, f32)>,
+);
+
+/// A visual's drawn meshes of every LOD with the camera distance range each is drawn at
+/// (`meshes::lod_ranges`; `None` = always). Characters switch LODs like level objects, by the
+/// GR2's per-mesh `LodDistance` from the character's origin (`docs/research/lod.md`).
+fn lod_meshes<'a>(
+    visual: &'a bg3_world::banks::VisualResource,
+    scene: &'a bg3_gr2::Scene,
+) -> Vec<LodMesh<'a>> {
+    let found: Vec<_> = visual
+        .drawn_objects()
+        .filter_map(|obj| {
+            let mesh = scene.meshes.iter().find(|m| m.name == obj.mesh_name())?;
+            Some((obj, mesh))
+        })
+        .collect();
+    let keys: Vec<_> = found
+        .iter()
+        .map(|(obj, mesh)| {
+            let distance = mesh
+                .properties
+                .as_ref()
+                .and_then(|p| p.lod_distance)
+                .unwrap_or(f32::MAX);
+            (obj.lod, crate::meshes::lod_base(&mesh.name), distance)
+        })
+        .collect();
+    let ranges = crate::meshes::lod_ranges(&keys);
+    found
+        .into_iter()
+        .zip(ranges)
+        .filter_map(|((obj, mesh), range)| Some((obj, mesh, range?)))
+        .collect()
 }
 
 /// A selected CC mesh is authored against its own rig, not necessarily the avatar's.
@@ -1456,6 +1496,9 @@ pub fn spawn_characters(
                 if framing.is_some() {
                     e.insert(bevy::camera::visibility::DynamicSkinnedMeshBounds);
                 }
+                if let Some((near, far)) = part.range {
+                    e.insert(bevy::camera::visibility::VisibilityRange::abrupt(near, far));
+                }
                 material.insert(&mut e);
             } else {
                 let parent = part
@@ -1482,6 +1525,9 @@ pub fn spawn_characters(
                             unsheathed: joint(pose.unsheathed),
                         },
                     ));
+                }
+                if let Some((near, far)) = part.range {
+                    e.insert(bevy::camera::visibility::VisibilityRange::abrupt(near, far));
                 }
                 material.insert(&mut e);
             }

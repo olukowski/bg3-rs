@@ -92,27 +92,9 @@ fn convert_visual(vfs: &Vfs, level: &LoadedLevel, id: &str) -> Result<Vec<Visual
     if !matched {
         return Err(format!("{path}: no LOD0 meshes matched"));
     }
-    let scale = lod_scale();
+    let keys: Vec<_> = drawn.iter().map(|d| (d.0, d.1, d.2)).collect();
     let mut out = Vec::new();
-    for &(lod, base, distance, mesh, ref material) in &drawn {
-        let siblings = || drawn.iter().filter(|d| d.1 == base);
-        let range = if scale <= 0.0 {
-            // LOD 0 only.
-            (lod == 0).then_some(None)
-        } else if siblings().all(|d| d.0 <= lod) {
-            // The last LOD of its mesh: drawn from its predecessors' end on.
-            let near = siblings()
-                .filter(|d| d.0 < lod)
-                .map(|d| d.2)
-                .fold(0.0f32, f32::max);
-            Some((near > 0.0).then_some((near * scale, f32::INFINITY)))
-        } else {
-            let near = siblings()
-                .filter(|d| d.0 < lod)
-                .map(|d| d.2)
-                .fold(0.0f32, f32::max);
-            (near < distance).then_some(Some((near * scale, distance * scale)))
-        };
+    for (&(_, _, _, mesh, ref material), range) in drawn.iter().zip(lod_ranges(&keys)) {
         let Some(range) = range else { continue };
         out.push(VisualMesh {
             mesh: to_bevy_mesh(mesh),
@@ -123,9 +105,35 @@ fn convert_visual(vfs: &Vfs, level: &LoadedLevel, id: &str) -> Result<Vec<Visual
     Ok(out)
 }
 
+/// The camera distance range `[near, far)` each mesh of a visual is drawn at, from
+/// `(LOD, base name, LodDistance)` per mesh (`docs/research/lod.md`): `None` = never drawn (a
+/// LOD whose range is empty, or any LOD above 0 with `BG3_LOD_SCALE=0`), `Some(None)` = always.
+pub(crate) fn lod_ranges(meshes: &[(u8, &str, f32)]) -> Vec<Option<Option<(f32, f32)>>> {
+    let scale = lod_scale();
+    meshes
+        .iter()
+        .map(|&(lod, base, distance)| {
+            let siblings = || meshes.iter().filter(|d| d.1 == base);
+            let near = siblings()
+                .filter(|d| d.0 < lod)
+                .map(|d| d.2)
+                .fold(0.0f32, f32::max);
+            if scale <= 0.0 {
+                // LOD 0 only.
+                (lod == 0).then_some(None)
+            } else if siblings().all(|d| d.0 <= lod) {
+                // The last LOD of its mesh: drawn from its predecessors' end on.
+                Some((near > 0.0).then_some((near * scale, f32::INFINITY)))
+            } else {
+                (near < distance).then_some(Some((near * scale, distance * scale)))
+            }
+        })
+        .collect()
+}
+
 /// A LOD mesh's name without its `_LOD<n>` suffix (LOD *n* meshes are named `<mesh>_LOD<n>`,
 /// `docs/research/lod.md`).
-fn lod_base(name: &str) -> &str {
+pub(crate) fn lod_base(name: &str) -> &str {
     match name.rfind("_LOD") {
         Some(i) if name[i + 4..].bytes().all(|b| b.is_ascii_digit()) && i + 4 < name.len() => {
             &name[..i]

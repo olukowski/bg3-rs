@@ -105,7 +105,9 @@ Separate from per-mesh LODs, levels have generated cluster meshes:
 Level objects switch LODs (`meshes.rs`, `level.rs`) as recommended below, steps 1, 2 and 4:
 every drawn LOD is converted, each part gets `VisibilityRange::abrupt(near, far)` from the GR2
 `LodDistance`s, measured from the object origin; `BG3_LOD_SCALE` scales the distances (0 = LOD 0
-only). Characters still draw LOD 0. Measurements: `docs/performance.md`.
+only). Characters (`characters.rs`, `lod_meshes`) do the same per part (step 3): each skinned or
+rigid part entity gets the range of its mesh, measured from the part entity's origin (the
+character root for skinned parts, the joint for rigid ones). Measurements: `docs/performance.md`.
 
 ## Recommended implementation
 

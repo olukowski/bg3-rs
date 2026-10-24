@@ -73,6 +73,12 @@ impl VisualResource {
     pub fn drawn_lod0_objects(&self) -> impl Iterator<Item = &MeshObject> {
         self.objects.iter().filter(|o| o.lod == 0 && !o.cloth_proxy)
     }
+
+    /// The drawn meshes of every LOD (every object except cloth simulation proxies, see
+    /// [`Self::drawn_lod0_objects`]).
+    pub fn drawn_objects(&self) -> impl Iterator<Item = &MeshObject> {
+        self.objects.iter().filter(|o| !o.cloth_proxy)
+    }
 }
 
 #[derive(Debug, Clone)]

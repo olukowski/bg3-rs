@@ -193,7 +193,7 @@ steps, in the wide view and in a view through the dense red slab over the deck
 (`--camera=-30,20,-380 --look-at=-50,12,-410`), the same as between two runs.
 
 **Level LODs.** Level objects drew LOD 0 only; they now switch LODs by the GR2's per-mesh
-`LodDistance` (`docs/research/lod.md`; characters still LOD 0). Small gain on the Nautiloid, two
+`LodDistance` (`docs/research/lod.md`; characters at first LOD 0, since 2026-10-24 also by LOD). Small gain on the Nautiloid, two
 alternating runs each at 1600×900, `BG3_LOD_SCALE=0` (LOD 0 only) → default: combat
 10.1–10.2 → 9.6–9.9 ms, start pod 12.2–12.3 → 11.8, static deck 13.8–14.4 → 13.7–13.8, wide
 13.2 → 12.9–13.1; shadow passes −0.1 to −0.5 ms. Load time unchanged (~175 ms). Images: ≤ 380
@@ -252,6 +252,11 @@ A/B at 1600×900 (`scripts/bench.sh combat wide` with every switch, medians in m
 The sun's four cascades cost a third of the frame (6–6.5 ms). Every other feature costs at most
 one to two refresh intervals. The combat view's mean (20 ms) is well above its median: the fight
 runs during the benchmark, so its frame times spread (p95 31 ms).
+
+**Character LODs.** Characters now switch LODs like level objects (`characters::lod_meshes`).
+No measurable change on the Nautiloid (few characters, all close to the camera; two alternating
+rounds of `BG3_LOD_SCALE=0` against the default within ±1 ms in all three views), and the static
+wide and deck shots match (mean luma difference ≤ 0.02).
 
 ## Switches
 
