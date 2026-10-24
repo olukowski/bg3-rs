@@ -26,7 +26,12 @@ fidelity or cost for A/B checks.
   the size. Before this, benchmark windows took whatever size the tiling layout gave them and
   views differed by up to 70 % between runs (GPU-bound frames scale with pixels). **macOS** still paces a window to the display (120 Hz on the M5
   Pro: an empty view benches at exactly 8.33 ms), so Mac frame times are refresh-quantised.
-  Compare medians and treat differences below one refresh interval as noise.
+  Compare medians and treat differences below one refresh interval as noise. The bench window's
+  scale factor is forced to 1, so a Retina Mac renders 1600×900 physical pixels like the other
+  machines (it rendered 3200×1800 before 2026-10-24; `BG3_BENCH_HIDPI=1` brings that back).
+- `scripts/bench.sh [VIEW…]` runs the benchmark views below (`combat wide pod deck`) and, with
+  `SWITCHES="BG3_NO_FOG=1 …"`, one run per switch next to the default, alternating `ROUNDS` times.
+  It prints one median/mean line per run.
 - `BG3_PERF_PASSES=1` (with `--fps`) logs every render diagnostic each second (nested passes,
   CPU and GPU) and, every 120 render frames, the multidrawable batch sets per view of the
   shadow, opaque, alpha-mask and prepass phases.
@@ -217,6 +222,36 @@ With the sun's shadows off the frame is GPU-bound, and each remaining feature co
 view 23.5 → 13.4 ms, start pod 17.7 → 8.6 ms without sun shadows (both GPU-bound then). Level
 objects always draw LOD0. The main world takes ~4–5 ms (transform propagation 1.4, character
 animation 1.3–1.6, skin extraction 0.9) and runs in parallel with the render world.
+
+## Findings (2026-10-24, M5 Pro, macOS, 1600×900)
+
+The Mac re-measured after bindless materials, the box light grid, fog steps by ray length and
+level LODs (the 2026-10-22 Mac numbers above were taken at 3200×1800). Medians, one run each:
+
+| View | 3200×1800 | 1600×900 |
+|------|------|------|
+| Combat set-up | 28.4 ms | 17.2 ms |
+| Wide deck view | 42.7 ms | 19.6 ms |
+| Start pod (`--play`) | 34.3 ms | |
+| Static deck (`BG3_NO_ANIM=1`) | 35.7 ms | |
+
+A/B at 1600×900 (`scripts/bench.sh combat wide` with every switch, medians in ms):
+
+| Switch | Combat | Wide |
+|------|------|------|
+| Default | 17.2 | 19.6 |
+| `BG3_NO_SUN_SHADOWS=1` | **10.7** | **13.6** |
+| `BG3_NO_BOX_LIGHTS=1` | 15.0 | 19.3 |
+| `BG3_NO_BOX_SHADOWS=1` | 15.6 | 19.7 |
+| `BG3_STANDARD_LEVEL=1` | 16.8 | 18.0 |
+| `BG3_NO_SURFACES=1` | 17.2 | 18.5 |
+| `BG3_NO_FOG=1` | 17.4 | 18.8 |
+| `BG3_STANDARD_CHARACTERS=1` | 17.3 | 18.8 |
+| `BG3_NO_DECALS=1`, `NO_BLOOM`, `NO_SSS` | ≈ default | ≈ default |
+
+The sun's four cascades cost a third of the frame (6–6.5 ms). Every other feature costs at most
+one to two refresh intervals. The combat view's mean (20 ms) is well above its median: the fight
+runs during the benchmark, so its frame times spread (p95 31 ms).
 
 ## Switches
 

@@ -530,20 +530,34 @@ fn play_characters(
 
 /// A benchmark's window: a fixed 1600×900 that a tiling window manager can't resize (equal
 /// minimum and maximum size; Hyprland floats such windows), so frame times compare across runs.
+/// The scale factor is forced to 1 so the frame is 1600×900 physical pixels on every machine
+/// (a Retina Mac would otherwise render 3200×1800); `BG3_BENCH_HIDPI=1` keeps the display's.
+/// Bevy hands the resize constraints to winit in the OS's points, which on a Retina Mac would
+/// force a 3200×1800 window again, so macOS (no tiling layout to fight) gets none.
 fn bench_window(bench: bool) -> Window {
     if !bench {
         return Window::default();
     }
     let (w, h) = (1600.0, 900.0);
-    Window {
-        resolution: bevy::window::WindowResolution::new(w as u32, h as u32),
-        resizable: false,
-        resize_constraints: bevy::window::WindowResizeConstraints {
+    let mut resolution = bevy::window::WindowResolution::new(w as u32, h as u32);
+    let hidpi = std::env::var_os("BG3_BENCH_HIDPI").is_some();
+    if !hidpi {
+        resolution = resolution.with_scale_factor_override(1.0);
+    }
+    let resize_constraints = if cfg!(target_os = "macos") && !hidpi {
+        default()
+    } else {
+        bevy::window::WindowResizeConstraints {
             min_width: w,
             min_height: h,
             max_width: w,
             max_height: h,
-        },
+        }
+    };
+    Window {
+        resolution,
+        resizable: false,
+        resize_constraints,
         ..default()
     }
 }
