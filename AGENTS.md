@@ -79,9 +79,12 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
   --abilities 15,14,13,12,10,8 --bonus Wis,Con --skills … --spells … --passives …] [--spec]`
   (character creation headless: options, rule check, the level-1 sheet; `--spec` prints the
   choice for the viewer's `--character`, see `docs/research/character-creation.md`),
-  `play [--seconds N] [--choices 1,2] [--talk NAME] [--move-to x,y,z] [--triggers SUBSTR]`
-  (the viewer's `--play` headless: new game, dialogs with rolls, stage changes, the story
-  functions still missing; output is game text, keep it local),
+  `play [--seconds N] [--choices 1,2] [--talk NAME] [--move-to x,y,z]… [--teleport] [--no-combat]
+  [--combat-log] [--triggers SUBSTR]` (the viewer's `--play` headless: new game, dialogs with
+  rolls, stage changes, the avatar walking each `--move-to` along the AI grid at run speed
+  (goal snapped to the nearest standable tile; teleports with the reason when there is no
+  path), fights started by hostiles noticing the party and played on the AI by every side,
+  the story functions still missing; output is game text, keep it local),
   `rules eval "<expr>" --kind condition|functor|roll|expr`, `rules cast <spell>`, `rules survey`
   (stats expression languages, see `docs/formats/stats-expressions.md`),
   `nav [LEVEL] [--regions] [--subgrids] [--at x,y,z] [--path=x,y,z --path=x,y,z]` (AI grid summary,

@@ -279,7 +279,7 @@ fn print_plan(sim: &Sim, plan: &AiPlan, top: usize) {
     }
 }
 
-fn print_events(sim: &Sim, events: Vec<CombatEvent>, verbose: bool) {
+pub(crate) fn print_events(sim: &Sim, events: Vec<CombatEvent>, verbose: bool) {
     let n = |g: &Guid| name(sim, *g);
     for e in events {
         match e {

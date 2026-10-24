@@ -29,6 +29,26 @@ impl GridPathfinder {
     }
 }
 
+/// Line of sight on the AI grid (*approximate*, a stand-in for the engine's sight checks):
+/// every half metre of the straight line between the two characters' feet must be over a
+/// walkable tile near the line's height (walls and floors between decks block). Used by the
+/// viewer's `--play` and `bg3x play` when hostiles notice the party.
+pub fn line_of_sight(grid: &NavGrid, a: [f32; 3], b: [f32; 3]) -> bool {
+    let agent = Agent::humanoid();
+    let d = bg3_sim::combat::distance(a, b);
+    let steps = (d / 0.5).ceil().max(1.0) as usize;
+    (0..=steps).all(|i| {
+        let k = i as f32 / steps as f32;
+        let p = [
+            a[0] + (b[0] - a[0]) * k,
+            a[1] + (b[1] - a[1]) * k,
+            a[2] + (b[2] - a[2]) * k,
+        ];
+        grid.closest_in_column(bg3_nav::grid::column_of(p), p[1])
+            .is_some_and(|t| (grid.height(t) - p[1]).abs() < 2.5 && !grid.is_colliding(t, &agent))
+    })
+}
+
 impl Pathfinder for GridPathfinder {
     fn find_path(&self, from: [f32; 3], to: [f32; 3], radius: f32) -> Option<Vec<[f32; 3]>> {
         let agent = Agent {

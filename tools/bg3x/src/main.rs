@@ -236,7 +236,8 @@ enum Command {
         /// Once no dialog runs, click this character (name substring) to talk.
         #[arg(long)]
         talk: Option<String>,
-        /// Once no dialog runs, move the avatar here (BG3 world `x,y,z`; repeatable).
+        /// Once no dialog or fight runs, walk the avatar here along the AI grid at the default
+        /// run speed (BG3 world `x,y,z`; repeatable, in order).
         #[arg(long, value_parser = play::vec3_arg, allow_hyphen_values = true)]
         move_to: Vec<[f32; 3]>,
         /// Don't print stage/position changes.
@@ -245,6 +246,16 @@ enum Command {
         /// List the startup level's triggers whose name contains this.
         #[arg(long)]
         triggers: Option<String>,
+        /// Put the avatar at each --move-to point at once instead of walking there (the old
+        /// behaviour: skips trigger volumes on the way and hostiles that would notice).
+        #[arg(long)]
+        teleport: bool,
+        /// Don't start fights when hostiles notice the party.
+        #[arg(long)]
+        no_combat: bool,
+        /// Print every combat log line and status, not just turns, rolls and damage.
+        #[arg(long)]
+        combat_log: bool,
     },
     /// Stats expression languages: evaluate an expression, survey the install, cast a spell.
     Rules {
@@ -454,6 +465,9 @@ fn main() -> Result<()> {
             move_to,
             quiet,
             triggers,
+            teleport,
+            no_combat,
+            combat_log,
         } => play::run(play::Args {
             seconds,
             choices,
@@ -461,6 +475,9 @@ fn main() -> Result<()> {
             move_to,
             quiet,
             triggers,
+            teleport,
+            no_combat,
+            combat_log,
         }),
         Command::Combat {
             level,

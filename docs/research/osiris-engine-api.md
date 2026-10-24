@@ -484,6 +484,31 @@ to 29**; newly reached initialization branches account for some of what remains:
 Uncounted data gaps remain visible in replay (notably platform DLC entitlements and custom
 names); being registered does not imply that every call has enough data to answer.
 
+### Walking the prologue headless (2026-10-24)
+
+`bg3x play --move-to …` walks the avatar along the AI grid at the default run speed (each goal
+snapped to the nearest standable tile within 8 m) and pauses while a dialog or fight runs.
+Fights start the way the viewer starts them (`Game::start_combat_on_sight_with` with
+`bg3_sim_nav::line_of_sight`, the stand-in shared with the viewer) and every side plays on the
+AI (`Game::combat_auto`, one turn per tick). Without a path, the avatar teleports and the
+reason is printed. Earlier, `--move-to` always teleported, so trigger volumes on the way and
+the imp fight were skipped.
+
+A route through the start room, lab, lower deck, transformation chamber and helm (trigger
+positions from `--triggers TUT_`) walks as far as the lower deck. On the way: the devourer
+victim's ambient line, Lae'zel's lower-deck dialog, then the imp fight with the avatar and
+Lae'zel. From the lower deck on it teleports: the way up to the transformation chamber is
+"goal unreachable" (no climbing/jump links or doors in our path finding yet). With teleports
+the story still runs the mind flayer call, the dragon, and fights at the helm. What that run
+shows, and what to fix next:
+
+| Observation | Likely cause |
+|---|---|
+| The helm is 3 separate fights with one devil each, plus the mind flayers and a dead body (`Helm_MindFlayer_Dead_01`) | noticing starts a fight with the nearest hostile only. Combat groups (`GetCombatGroupID`, missing), joining nearby combatants and excluding the dead are not modelled |
+| Lae'zel stays on the lower deck | the sim has no party following (and no `SetNoFollowFlag`); the viewer has the same gap |
+| The missing-functions list grows from 39 to 55 | fight scripts: `IsBoss` (47 calls), `GetHitpointsPercentage` (29), `IsControlled` (26), `IsOnStage` (24), `GetCombatGroupID` (20), `GetHandlingCrimeID` (20), `GetDistanceTo` (17), `IsAlly`, `GetEnterCombatRange`, `CreateNarrativeCombat`, `AppearAtPosition`, `StartVoiceBark` |
+| The lower deck → transformation chamber leg has no path | climbing/jump links, doors (navigation fidelity, roadmap M5) |
+
 ## RE notes (symbols, 4.1.1.7631656)
 
 - `esv::OsirisDialogFunctions::SetFlag/GetFlag/ClearFlag` → `scr::SetFlag`, `scr::GetFlag`:

@@ -209,8 +209,10 @@ impl CombatThread {
     pub fn tick(&mut self, game: &mut Game) -> CombatOut {
         if self.current.is_none() {
             let grid = self.grid.clone();
-            let can_see =
-                |a: [f32; 3], b: [f32; 3]| grid.as_ref().is_none_or(|g| grid_sight(g, a, b));
+            let can_see = |a: [f32; 3], b: [f32; 3]| {
+                grid.as_ref()
+                    .is_none_or(|g| bg3_sim_nav::line_of_sight(g, a, b))
+            };
             if let Some(cid) = game.start_combat_on_sight_with(can_see) {
                 eprintln!("combat: hostiles noticed the party, fight {cid}");
             }
@@ -305,25 +307,6 @@ pub fn use_item(game: &mut Game, user: Guid, item: Guid) -> Option<String> {
     let ok = game.use_item(user, item);
     let what = game.sim.render(item);
     (!ok).then(|| format!("Can't use {what}"))
-}
-
-/// Line of sight on the AI grid (*approximate*, the viewer's stand-in for the engine's sight
-/// checks): every half metre of the straight line between the two characters' feet must be
-/// over a walkable tile near the line's height (walls and floors between decks block).
-fn grid_sight(grid: &bg3_nav::NavGrid, a: [f32; 3], b: [f32; 3]) -> bool {
-    let agent = Agent::humanoid();
-    let d = bg3_sim::combat::distance(a, b);
-    let steps = (d / 0.5).ceil().max(1.0) as usize;
-    (0..=steps).all(|i| {
-        let k = i as f32 / steps as f32;
-        let p = [
-            a[0] + (b[0] - a[0]) * k,
-            a[1] + (b[1] - a[1]) * k,
-            a[2] + (b[2] - a[2]) * k,
-        ];
-        grid.closest_in_column(bg3_nav::grid::column_of(p), p[1])
-            .is_some_and(|t| (grid.height(t) - p[1]).abs() < 2.5 && !grid.is_colliding(t, &agent))
-    })
 }
 
 /// One AI turn of the current group: the first member still to act (a non-player one, or
