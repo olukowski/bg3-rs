@@ -40,6 +40,7 @@ pub mod driver;
 pub mod entity;
 pub mod events;
 pub mod flags;
+pub mod follow;
 pub mod guid;
 pub mod host;
 pub mod inventory;

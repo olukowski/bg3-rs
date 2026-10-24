@@ -254,6 +254,8 @@ pub struct Stage {
     /// Osiris functions (`Name/arity`) the live story used that nothing implements, with
     /// counts: the to-do list of a live game.
     pub missing: std::collections::BTreeMap<String, u64>,
+    /// Party following ([`crate::follow`]).
+    pub follow: crate::follow::Follow,
 }
 
 /// What the presentation layer shows of an entity.
@@ -430,6 +432,7 @@ impl Sim {
     /// / `LeftTrigger(character, trigger)` on each change.
     pub fn update_stage(&mut self, dt: f64) {
         self.advance_moves(dt as f32);
+        self.update_followers(dt as f32);
         self.check_triggers();
     }
 

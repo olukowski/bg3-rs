@@ -505,7 +505,7 @@ shows, and what to fix next:
 | Observation | Likely cause |
 |---|---|
 | The helm was 3 separate fights with one devil each, plus the mind flayers and a dead body (`Helm_MindFlayer_Dead_01`) | **fixed**, see "The helm fight" below: characters placed dead (`DefaultState`) were alive, `CanFight 0` was ignored, narrative combat was missing |
-| Lae'zel stays on the lower deck | the sim has no party following (and no `SetNoFollowFlag`); the viewer has the same gap |
+| Lae'zel stays on the lower deck | **partly fixed**, see "Party following" below: she follows on foot, but not past the leg the avatar teleports over |
 | The missing-functions list grew from 39 to 55 | the fight scripts. The most-called ones are now implemented (see "Fight queries"); the list is 55 again because the helm fight now runs further: `IsInDangerOfAttackOfOpportunity`, `GetHandlingCrimeID`, `GetItemByTagInInventory`, `AppearAt`, … |
 | The lower deck → transformation chamber leg has no path | climbing/jump links, doors (navigation fidelity, roadmap M5) |
 
@@ -545,6 +545,25 @@ Three sim changes give this structure:
 With the route above (teleporting past the lower deck), the helm now runs as one fight. The
 mind flayer and Zhalk start it, the avatar joins, then the three `DevilBackUp`s join. The
 avatar fights alone (Lae'zel doesn't follow) and is downed by round 10.
+
+### Party following (2026-10-24)
+
+`crate::follow`, live games (the viewer and `bg3x play` alike). In the engine a follower runs
+`esv::BSFollowCharacter` (behaviour states `FollowLeader`, `WaitForLeaderToApproach`,
+`WaitForLeaderToClimb`, `JumpFollow…`) and walks to its slot of a formation behind the leader,
+`(anonymous namespace)::GetFormationPosition`. Read from that function: with one follower its slot
+is 2 m behind the leader. With two followers the slots come from a 2-entry table; with more,
+from a 14-entry table indexed by the follower's index modulo 14. The table entries, as local
+(x sideways, z forward), are (∓0.5, −1), (0, −2), (∓1, −2), (∓2, −2), (0, −3), (∓0.5, −3), (∓1.5, −3),
+(∓2.5, −3). They are doubled and turned by the leader's orientation (`bg3_sim::follow::FORMATION`).
+`SetNoFollowFlag` raises or clears a character flag, and `HasNoFollowFlag` reads it.
+
+*Approximate*: the leader is the host character. Its heading is its last movement direction,
+since the sim keeps no orientation. Followers path on the AI grid straight to the slot at the
+default run speed, with no breadcrumbs or jump-follow. They start once more than 1.5 m from the
+slot and stay put while the leader is in a fight or dialog. The thresholds and the state
+machine's rules were not read. In `bg3x play`, Lae'zel walks after the avatar from the imp
+fight to the lower deck's far end and stops about 2.9 m behind it.
 
 ### Fight queries (2026-10-24)
 

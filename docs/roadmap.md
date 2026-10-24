@@ -71,8 +71,8 @@ First playable target: **the Nautiloid prologue** (self-contained, introduces mo
   runs into on the AI (start room → lab → lower deck with the imp fight; the helm with
   teleports). Findings: `docs/research/osiris-engine-api.md`, "Walking the prologue headless"
 - [ ] Live game gaps: character creation (the avatar gets the trace avatar's class), perception
-  (noticing is distance + AI-grid line of sight), party following (Lae'zel stays on the lower
-  deck), narrative-combat request details, the rest of the AI (see M3) and AI path finding, attack/death
+  (noticing is distance + AI-grid line of sight), party following beyond the formation walk
+  (breadcrumbs, jump-follow; `crate::follow`), narrative-combat request details, the rest of the AI (see M3) and AI path finding, attack/death
   animations, spell choices and ground-targeted spells, path-found scripted moves, the story
   functions `bg3x play` lists as missing
 
