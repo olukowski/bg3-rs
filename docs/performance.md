@@ -288,6 +288,10 @@ each frame, so no caching was added. Two alternating rounds against `BG3_BEVY_CA
 combat 16.5–17.0 vs 17.6–17.9 ms, wide 19.1 vs 18.9–20.1, start pod 14.5–15.0 vs 15.6–16.0. The
 wide view's cascades get 231, 689, 1844 and 3455 casters (Bevy's: 330, 971, 2097, 3387). The deck
 and wide static shots look the same (mean luma difference 0.00).
+The game also culls each cascade's casters against the camera frustum planes that face away
+from the sun (`ShadowCullStage::Cull`). A port of that (tried, removed) dropped no casters on the
+Nautiloid: with the sun 21° up, only one camera plane faces away from it, and the sphere-fitted
+box already ends `r` beyond the slice centre. Frame times were unchanged.
 
 ## Switches
 
