@@ -806,6 +806,68 @@ fn hostiles_in_sight_start_a_fight() {
     assert_eq!(s.start_combat_on_sight(), None, "everyone is in the fight");
 }
 
+#[test]
+fn characters_placed_dead_or_kept_out_of_fights_dont_fight() {
+    assert_eq!(death_type(11), Some("Dead_Physical"));
+    assert_eq!(death_type(0), None);
+    assert_eq!(death_type(17), None);
+    let mut d = data();
+    // IMP1 lies dead on the floor (`DefaultState` 11), like the helm's bodies.
+    d.combat.objects.get_mut(&g(IMP1)).unwrap().default_state = Some(11);
+    let mut s = Sim::with_data(Arc::new(d));
+    s.party = vec![g(HERO1), g(HERO2)];
+    s.take_events();
+    s.entities.get_mut(g(IMP1)).unwrap().position = [3.0, 0.0, 0.0];
+    s.entities.get_mut(g(IMP2)).unwrap().position = [40.0, 0.0, 0.0];
+    assert!(s.ensure_combatant(g(IMP1)));
+    let c = s.combatant(g(IMP1)).unwrap();
+    assert!(c.dead);
+    assert_eq!(c.death_type, Some("Dead_Physical"));
+    assert_eq!(
+        s.start_combat_on_sight(),
+        None,
+        "a body doesn't notice anyone"
+    );
+    // `SetCanFight(x, 0)` keeps a living hostile out as well.
+    s.entities.get_mut(g(IMP2)).unwrap().position = [5.0, 0.0, 0.0];
+    s.entities.get_mut(g(IMP2)).unwrap().story.can_fight = Some(false);
+    assert_eq!(s.start_combat_on_sight(), None, "IMP2 can't fight");
+    s.entities.get_mut(g(IMP2)).unwrap().story.can_fight = Some(true);
+    let cid = s.start_combat_on_sight().expect("IMP2 can fight again");
+    assert!(!s.combat_by_id(cid).unwrap().participants.contains(&g(IMP1)));
+}
+
+#[test]
+fn a_narrative_combat_starts_with_its_hostile_members_and_takes_joiners() {
+    let mut s = sim(5);
+    for (id, x) in [(IMP1, 40.0), (IMP2, 50.0)] {
+        s.entities.get_mut(g(id)).unwrap().position = [x, 0.0, 0.0];
+    }
+    let cid = s.create_narrative_combat();
+    assert!(s.set_in_narrative_combat(g(HERO1), cid, true));
+    assert!(s.combat_by_id(cid).is_none(), "one side only: not started");
+    assert!(s.is_in_narrative_combat(g(HERO1), cid));
+    assert!(s.set_in_narrative_combat(g(IMP1), cid, true));
+    // Started with exactly its members: no ally or combat group pulled in.
+    assert_eq!(
+        s.combat_by_id(cid).unwrap().participants,
+        [g(HERO1), g(IMP1)]
+    );
+    assert!(s.set_in_narrative_combat(g(HERO2), cid, true));
+    assert!(
+        s.combat_by_id(cid)
+            .unwrap()
+            .participants
+            .contains(&g(HERO2))
+    );
+    assert!(s.is_in_narrative_combat(g(HERO2), cid));
+    assert!(!s.is_in_narrative_combat(g(IMP2), cid));
+    assert!(
+        !s.set_in_narrative_combat(g(IMP2), g(IMP2), true),
+        "not a narrative combat"
+    );
+}
+
 struct WallPath;
 
 impl Pathfinder for WallPath {

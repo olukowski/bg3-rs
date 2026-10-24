@@ -28,7 +28,8 @@ pub struct CharacterProps {
     pub stats: Option<String>,
     /// `EquipmentRace`: GUID selecting race-specific equipment visuals.
     pub equipment_race: Option<String>,
-    /// `DefaultState` (observed 11 on dead thralls; meaning not yet traced).
+    /// `DefaultState`: the death type it is placed with (1–16, `Dead_Acid` … `Dead_Disintegrate`,
+    /// see `bg3_sim::combat::DEATH_TYPES`; 0 or absent = alive).
     pub default_state: Option<i64>,
     /// `MovementSpeedRun` in m/s (default [`DEFAULT_MOVEMENT_SPEED_RUN`]).
     pub movement_speed_run: Option<f32>,

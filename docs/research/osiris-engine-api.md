@@ -504,10 +504,66 @@ shows, and what to fix next:
 
 | Observation | Likely cause |
 |---|---|
-| The helm is 3 separate fights with one devil each, plus the mind flayers and a dead body (`Helm_MindFlayer_Dead_01`) | noticing starts a fight with the nearest hostile only. Combat groups (`GetCombatGroupID`, missing), joining nearby combatants and excluding the dead are not modelled |
+| The helm was 3 separate fights with one devil each, plus the mind flayers and a dead body (`Helm_MindFlayer_Dead_01`) | **fixed**, see "The helm fight" below: characters placed dead (`DefaultState`) were alive, `CanFight 0` was ignored, narrative combat was missing |
 | Lae'zel stays on the lower deck | the sim has no party following (and no `SetNoFollowFlag`); the viewer has the same gap |
-| The missing-functions list grows from 39 to 55 | fight scripts: `IsBoss` (47 calls), `GetHitpointsPercentage` (29), `IsControlled` (26), `IsOnStage` (24), `GetCombatGroupID` (20), `GetHandlingCrimeID` (20), `GetDistanceTo` (17), `IsAlly`, `GetEnterCombatRange`, `CreateNarrativeCombat`, `AppearAtPosition`, `StartVoiceBark` |
+| The missing-functions list grew from 39 to 55 | the fight scripts. The most-called ones are now implemented (see "Fight queries"); the list is 55 again because the helm fight now runs further: `IsInDangerOfAttackOfOpportunity`, `GetHandlingCrimeID`, `GetItemByTagInInventory`, `AppearAt`, … |
 | The lower deck → transformation chamber leg has no path | climbing/jump links, doors (navigation fidelity, roadmap M5) |
+
+### The helm fight (2026-10-24)
+
+The helm's fight is a *narrative combat* set up by the story, not a fight the engine starts
+on sight. `PROC_TUT_Helm_Init` sets Zhalk (`S_TUT_Helm_Devil_005`) and the mind flayer
+`CanFight 0`. When `TUT_Helm_MindflayerCall` ends, `PROC_TUT_Helm_StartFinalCombat` runs
+`PROC_GLO_NarrativeCombat_StartCombat("TUT_Helm_FinalCombat")`: `CreateNarrativeCombat`,
+then both get `CanFight 1` and `SetInNarrativeCombat(x, combat, 1)`. Characters seen by a
+participant (`DB_Sees`) or entering `S_TUT_Helm_HelmNarrativeCombatRegion` join the same way;
+the cambion back-ups join when the story brings them in.
+
+Three sim changes give this structure:
+
+- **Characters placed dead.** A level character's `DefaultState` is its death type: 1–16 index
+  `Dead_Acid`, `Dead_Chasm`, `Dead_DoT`, `Dead_Electrocution`, `Dead_Explode`, `Dead_Falling`,
+  `Dead_Incinerate`, `Dead_KnockedDown`, `Dead_Lifetime`, `Dead_Necrotic`, `Dead_Physical`,
+  `Dead_Psychic`, `Dead_Radiant`, `Dead_CinematicDeath`, `Dead_Cold`, `Dead_Disintegrate`; 0 is
+  alive (`GetDefaultState` answers `""`). Read from the table
+  `esv::OsirisCharacterFunctions::GetDefaultState` indexes. *Verified by trace*: all 31
+  `GetDefaultState` answers in the replay agree. The Nautiloid has 21 such characters (18 with
+  11, 3 with 7), most of them at the helm. They start dead (`Combatant::dead`,
+  `death_type`) and never notice or join a fight.
+- **`CanFight`.** A character with `CanFight` false (story or data) neither notices nor is
+  pulled into a fight (*approximate*: where the engine checks it was not read).
+- **Narrative combat** (`crate::combat::narrative`, live games only). In the engine
+  `CreateNarrativeCombat` draws a random GUID and queues a create request,
+  `SetInNarrativeCombat` a join/leave request, both processed by
+  `esv::combat::System::ProcessNarrativeCombatRequests`; `IsInNarrativeCombat` compares the
+  participant component's combat with the GUID. *Approximate*: the request processing was not
+  read. The sim starts the fight once two members are hostile to each other, with exactly its
+  members; later members join the running fight; leaving a running fight is not modelled.
+  `bg3x play` plays only fights with a party member in them, standing in for the engine
+  pausing a narrative combat no player is in (`IsCombatPausedComponent`, not read).
+
+With the route above (teleporting past the lower deck), the helm now runs as one fight. The
+mind flayer and Zhalk start it, the avatar joins, then the three `DevilBackUp`s join. The
+avatar fights alone (Lae'zel doesn't follow) and is downed by round 10.
+
+### Fight queries (2026-10-24)
+
+`crate::combat::story`, live games; the level-data ones (`GetDefaultState`, `IsBoss`,
+`GetCombatGroupID`) in replays too. From `objdump` of the arm64 slice:
+
+| Query | Engine | Sim |
+|---|---|---|
+| `IsBoss(x, [out] bool)` | bit 2 of `eoc::combat::ParticipantComponent` flags; fails without the component | `IsBoss` of the placed object / template chain |
+| `GetHitpointsPercentage(x, [out] real)` | (hp + temp hp) × 100 / (max hp + temp hp), `eoc::HealthComponent` | hp × 100 / max hp (no temporary hit points) |
+| `IsOnStage(x, [out] bool)` | the game object's on-stage flag | `SetOnStage` state |
+| `GetDistanceTo(a, b, [out] real)` | 3D distance of the two transforms | positions |
+| `GetCombatGroupID(x, [out] string)` | participant component's group, `""` without one | `CombatGroupID` |
+| `GetDefaultState(x, [out] string)` | see above | `DefaultState` |
+| `IsAlly(a, b, [out] bool)` | `eoc::relation::LEGACY_GetRelation(a, b) == 100` (`IsEnemy`: `== 0`) | `Sim::relation` |
+| `IsControlled(x, [out] bool)` | the character is its user's controlled character | *approximate*: has a user and is the host character |
+
+`GetEnterCombatRange` reads a stats `Data.txt` value by a fixed-string key (default 1.0); the
+key was not identified, so it stays unimplemented.
 
 ## RE notes (symbols, 4.1.1.7631656)
 

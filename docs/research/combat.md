@@ -79,6 +79,11 @@ story teleports the party into the imp room (`IsInTrigger`), and the imps notice
 - Characters the story took off stage (`SetOnStage(x, 0)`, live) don't join fights; test
   `live_imp_fight` checks the trace's line-up (avatar and Lae'zel sharing the first turn, three
   imps).
+- Characters placed dead (level `DefaultState` 1–16, a death type; *verified by trace* through
+  `GetDefaultState`) start dead, and characters with `CanFight` false neither notice nor join.
+- **Narrative combats** (`combat/narrative.rs`, *approximate*): fights the story builds with
+  `CreateNarrativeCombat` / `SetInNarrativeCombat`, like the helm's. See
+  `docs/research/osiris-engine-api.md`, "The helm fight".
 
 ## Initiative
 

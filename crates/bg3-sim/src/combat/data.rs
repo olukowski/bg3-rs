@@ -226,6 +226,15 @@ pub struct ObjectCombat {
     pub combat_group: Option<String>,
     /// `Archetype`: the AI archetype (`Public/<Module>/AI/Archetypes/<name>.txt`).
     pub archetype: Option<String>,
+    /// `DefaultState`: the death type a character is placed with (1–16, `Dead_Acid` …
+    /// `Dead_Disintegrate`; 0 or absent = alive).
+    // bg3: esv::OsirisCharacterFunctions::GetDefaultState (4.1.1.7631656) maps the byte at
+    // the character's +0xc8 → +0x518 minus one into a table of 16 `Dead_*` names.
+    pub default_state: Option<u8>,
+    /// `IsBoss`: the combat participant's boss flag.
+    // bg3: esv::OsirisGameFunctions::IsBoss (4.1.1.7631656) reads bit 2 of
+    // eoc::combat::ParticipantComponent's flags.
+    pub is_boss: Option<bool>,
 }
 
 /// Everything combat reads from the install.
@@ -888,6 +897,11 @@ fn read_combat_objects(
             skills,
             combat_group: s(n, "CombatGroupID"),
             archetype: s(n, "Archetype").filter(|a| !a.is_empty()),
+            default_state: n
+                .attr("DefaultState")
+                .and_then(|v| v.as_i64())
+                .and_then(|v| u8::try_from(v).ok()),
+            is_boss: n.attr("IsBoss").and_then(|v| v.as_bool()),
         };
         if c != ObjectCombat::default() {
             out.insert(id, c);

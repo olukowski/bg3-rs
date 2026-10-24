@@ -19,9 +19,11 @@ pub mod action;
 pub mod ai;
 pub mod data;
 pub mod game;
+pub mod narrative;
 pub mod notice;
 pub mod path;
 pub mod resources;
+pub mod story;
 
 #[cfg(test)]
 mod tests;
@@ -84,6 +86,37 @@ pub struct Combatant {
     pub downed: bool,
     pub death_saves: (u8, u8),
     pub dead: bool,
+    /// The death type it is dead with (`Dead_Physical`, …): its `DefaultState` for
+    /// characters placed dead (see [`data::ObjectCombat::default_state`]).
+    pub death_type: Option<&'static str>,
+    pub is_boss: bool,
+}
+
+/// The death types a character can be placed with, by `DefaultState` (1-based).
+// bg3: the table esv::OsirisCharacterFunctions::GetDefaultState (4.1.1.7631656) indexes.
+pub const DEATH_TYPES: [&str; 16] = [
+    "Dead_Acid",
+    "Dead_Chasm",
+    "Dead_DoT",
+    "Dead_Electrocution",
+    "Dead_Explode",
+    "Dead_Falling",
+    "Dead_Incinerate",
+    "Dead_KnockedDown",
+    "Dead_Lifetime",
+    "Dead_Necrotic",
+    "Dead_Physical",
+    "Dead_Psychic",
+    "Dead_Radiant",
+    "Dead_CinematicDeath",
+    "Dead_Cold",
+    "Dead_Disintegrate",
+];
+
+/// `DefaultState` → death type; 0 and out-of-range values are alive (`GetDefaultState`
+/// answers an empty string for them).
+pub fn death_type(state: u8) -> Option<&'static str> {
+    DEATH_TYPES.get(usize::from(state).checked_sub(1)?).copied()
 }
 
 /// How turns are shared: consecutive entries with the same non-`None` key act as one group.
@@ -254,6 +287,11 @@ pub struct CombatState {
     pub created_characters: HashMap<Guid, crate::cc::CreatedCharacter>,
     /// Drawn/sheathed weapon state (`eoc::unsheath::StateComponent`); absent = sheathed.
     pub unsheath: HashMap<Guid, UnsheathState>,
+    /// Narrative combats the story created that have not started yet: id → members
+    /// ([`narrative`]).
+    pub narrative: Vec<(Guid, Vec<Guid>)>,
+    /// Ids of narrative combats (started or not).
+    pub narrative_ids: std::collections::HashSet<Guid>,
 }
 
 /// `ActionResource(Name, amount, level)` boosts of a progression (unconditional, fixed
@@ -309,7 +347,7 @@ impl Sim {
 
     /// The `ObjectCombat` fields of an entity: its own, falling back field by field along its
     /// template chain.
-    fn object_combat(&self, id: Guid) -> data::ObjectCombat {
+    pub(crate) fn object_combat(&self, id: Guid) -> data::ObjectCombat {
         let d = &self.data.combat;
         let e = self.entity(id);
         let mut out = d.objects.get(&id).cloned().unwrap_or_default();
@@ -330,6 +368,12 @@ impl Sim {
                 }
                 if out.archetype.is_none() {
                     out.archetype = c.archetype.clone();
+                }
+                if out.default_state.is_none() {
+                    out.default_state = c.default_state;
+                }
+                if out.is_boss.is_none() {
+                    out.is_boss = c.is_boss;
                 }
             }
         }
@@ -366,6 +410,7 @@ impl Sim {
             .and_then(|s| self.data.characters.get(s))
             .map_or(sheet.armor_class, |c| c.armor);
         let oc = self.object_combat(id);
+        let placed_dead = oc.default_state.and_then(death_type);
         let mut equipment = Equipment {
             weapon_set: oc
                 .equipment
@@ -508,9 +553,11 @@ impl Sim {
             base_initiative: def.initiative,
             ac_boosts: def.ac_boosts,
             combat_group: oc.combat_group,
+            is_boss: oc.is_boss.unwrap_or(false),
             downed: false,
             death_saves: (0, 0),
-            dead: sheet.hp <= 0,
+            dead: sheet.hp <= 0 || placed_dead.is_some(),
+            death_type: placed_dead,
         };
         if let Some(cc) = self.combat.created_characters.get(&id) {
             crate::cc::apply::combat_setup(d, cc, &mut c);
@@ -771,6 +818,7 @@ impl Sim {
                     || !self.on_stage(c)
                     || !self.ensure_combatant(c)
                     || !self.alive(c)
+                    || self.can_fight(c) == Some(false)
                 {
                     continue;
                 }
@@ -927,8 +975,20 @@ impl Sim {
         if participants.len() < 2 {
             return None;
         }
+        let cid = self.new_combat_id();
+        self.start_combat(cid, participants);
+        Some(cid)
+    }
+
+    /// A fresh combat GUID (deterministic: a counter).
+    pub(crate) fn new_combat_id(&mut self) -> Guid {
         self.combat.next_id += 1;
-        let cid = Guid(0xC0BA_7000_0000_4000_8000_0000_0000_0000 | self.combat.next_id as u128);
+        Guid(0xC0BA_7000_0000_4000_8000_0000_0000_0000 | self.combat.next_id as u128)
+    }
+
+    /// Start fight `cid` with `participants`: initiative, turn order, the story's
+    /// `EnteredCombat` / `CombatStarted` / `CombatRoundStarted`, the first group's turn.
+    pub(crate) fn start_combat(&mut self, cid: Guid, participants: Vec<Guid>) {
         for &p in &participants {
             if let Some(c) = self.combatant_mut(p) {
                 c.combat = Some(cid);
@@ -971,7 +1031,6 @@ impl Sim {
             round: 1,
         });
         self.start_group(cid);
-        Some(cid)
     }
 
     /// Add a character to a running fight: initiative is rolled and it is placed in the

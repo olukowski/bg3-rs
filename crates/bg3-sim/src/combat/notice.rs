@@ -51,6 +51,11 @@ impl Sim {
         if e.sheet.as_ref().is_some_and(|s| s.hp <= 0) {
             return false;
         }
+        // `SetCanFight(x, 0)` keeps a character out of fights (the helm's Zhalk until the
+        // story's narrative combat).
+        if self.can_fight(id) == Some(false) {
+            return false;
+        }
         self.ensure_combatant(id) && self.combatant(id).is_some_and(|c| !c.dead && !c.downed)
     }
 
