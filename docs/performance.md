@@ -317,14 +317,12 @@ allocator, but `ExtendedMaterial` keeps `StandardMaterial`'s 64-entry binding ar
 layout, and wgpu rejects the bind group ("declared with at most 64 items, but 188 items were
 provided").
 
-Measured with a local, **uncommitted** patch of `bevy_render` that sets the macOS limit to 512
-(a copy of the crate in `.cache/patched/bevy_render` and a `[patch.crates-io]` entry). Shadow
-batch sets went from 633 to 250 and main from 66 to 30, with no validation errors. Two
-alternating rounds, stock → patched: combat 17.1–17.2 → 14.6–14.9 ms, wide 19.2–19.3 → 17.5–17.6,
-start pod 14.6–15.0 → 13.3. Static wide and deck shots match (mean luma difference ≤ 0.01).
-Shipping it needs either a vendored `bevy_render` (an ADR), an upstream change (a configurable
-slab limit, or `ExtendedMaterial` sizing the shared arrays from the combined limit), or base
-materials of our own instead of `StandardMaterial`.
+**Fix: a vendored `bevy_render` with the macOS limit at 512** (`vendor/bevy_render`,
+`docs/adr/0002-vendored-bevy-render.md`). Shadow batch sets fell from 633 to 250 and main from
+66 to 30, with no validation errors. Two alternating rounds, stock → patched: combat 17.1–17.2 →
+14.6–14.9 ms, wide 19.2–19.3 → 17.5–17.6, start pod 14.6–15.0 → 13.3. The vendored build gives the
+same: combat 14.5–14.7, wide 17.6, start pod 13.2–13.4. Static wide and deck shots match (mean
+luma difference ≤ 0.01). Other platforms already had 2048.
 
 ## Switches
 

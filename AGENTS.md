@@ -160,6 +160,9 @@ Full rationale: `docs/adr/0001-provenance-and-extraction.md`. Short version:
 ## Code conventions
 
 - Rust stable, Cargo workspace. `cargo fmt`, `cargo clippy --workspace -- -D warnings` must pass.
+- `vendor/` holds third-party crates patched through `[patch.crates-io]` (outside the workspace;
+  don't format or lint them). Each patch has an ADR; currently `bevy_render`'s macOS bindless slab
+  limit (`docs/adr/0002-vendored-bevy-render.md`). Re-vendor on every Bevy upgrade.
 - Format/parsing crates (`bg3-pak`, `bg3-lsf`, …) must not depend on Bevy. Bevy lives in the
   game/viewer layer. Generic pieces with no BG3 dependency (e.g. a XAML→Bevy UI layer) are kept in
   their own crates so they can be published standalone later.

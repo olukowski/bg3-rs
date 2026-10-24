@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "tools/*", "viewer"]
-exclude = ["tools/osiris-trace"]
+exclude = ["tools/osiris-trace", "vendor"]
 
 [workspace.package]
 version = "0.0.0"
@@ -55,3 +55,7 @@ opt-level = 3
 
 [profile.dev]
 opt-level = 1
+
+# Vendored crates with local patches: docs/adr/0002-vendored-bevy-render.md.
+[patch.crates-io]
+bevy_render = { path = "vendor/bevy_render" }
