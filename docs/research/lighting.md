@@ -277,8 +277,11 @@ renders no point or spot shadow maps). Notes and approximations:
   lights. `BG3_NO_BOX_LIGHTS=1`, `BG3_BOX_ONLY=<name substring>` and `BG3_NO_BOX_SHADOWS=1` are
   A/B switches.
 - The sun's atmospheric transmittance is taken as 1 (the `Atmos_Transmittance` precompute and its
-  units are not ported). The sun casts Bevy cascaded shadows up to `ShadowFarPlane`; point and
-  spot lights cast none. Bevy's volumetric fog uses Bevy's falloff, not the patched one.
+  units are not ported). The sun casts cascaded shadows up to `ShadowFarPlane` with the game's
+  `CascadeCount`, split scheme (`CascadeSpread`) and sphere fit with texel snapping
+  (`lights::fit_sun_cascades`, `docs/research/shadows.md`) in Bevy's shadow pass and filter (the
+  game's filter and `ShadowFade` are not ported); point and spot lights cast none. Bevy's
+  volumetric fog uses Bevy's falloff, not the patched one.
 - Not handled: light channels (surface channels aren't known), lights without `PreExpose`,
   `IntensityOffset`/flicker, cookies, the falloff-exponent modifier (0 at load).
 - `--light-scale` (default 1) multiplies local lights for A/B comparisons.

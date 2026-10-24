@@ -279,12 +279,23 @@ cascade's list (tried, removed) gained ≤ 1.4 ms in combat and *lost* 2–5 ms 
 That is probably bin churn from rewriting the lists every frame. The game's cascade split and
 caching rules are the next lever (`docs/research/shadows.md`).
 
+**The game's cascades.** The sun now uses the game's `CascadeCount`, split distances
+(`CascadeSpread` between uniform and logarithmic splits) and sphere fit with texel snapping
+(`lights::fit_sun_cascades`). On the Nautiloid (`LTN_Default_EV10_Avernus_Ext`: 4 cascades,
+spread 0.733, 0.1–100 m) the splits are 7.1, 15.7, 33.1 and 100 m against Bevy's 10, 21.5, 46.4
+and 100. The game does not cache sun shadows: every cascade is re-fitted, re-culled and redrawn
+each frame, so no caching was added. Two alternating rounds against `BG3_BEVY_CASCADES=1`:
+combat 16.5–17.0 vs 17.6–17.9 ms, wide 19.1 vs 18.9–20.1, start pod 14.5–15.0 vs 15.6–16.0. The
+wide view's cascades get 231, 689, 1844 and 3455 casters (Bevy's: 330, 971, 2097, 3387). The deck
+and wide static shots look the same (mean luma difference 0.00).
+
 ## Switches
 
 - `BG3_BOX_SHADOW_CASCADES=1`: box light shadows on Bevy's four camera cascades, with casters
   culled to the boxes (`cull_box_shadow_casters`), instead of one map per box. Sharper near the
   camera, 10–25 % slower; the look before this change.
-- `BG3_SUN_CASCADES=<n>`: number of sun cascades (default 4). `BG3_SHADOW_MAP=<n>`: directional
+- `BG3_BEVY_CASCADES=1`: Bevy's split scheme and frustum-slice cascades for the sun instead of
+  the game's. `BG3_SUN_CASCADES=<n>`: number of sun cascades (default: the level's `CascadeCount`). `BG3_SHADOW_MAP=<n>`: directional
   shadow map size for the sun and box carriers (default 2048). `BG3_SHADOW_STATS=1`: log the sun
   cascades' casters every second.
 - `BG3_LOD_SCALE=<f>`: multiplier on the level's LOD switch distances (default 1; 0 draws LOD 0

@@ -408,6 +408,9 @@ fn main() -> Result<()> {
             lights::assign_box_shadow_carriers
                 .after(bevy::camera::visibility::VisibilitySystems::UpdateFrusta)
                 .before(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades),
+            lights::fit_sun_cascades
+                .after(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades)
+                .before(bevy::light::SimulationLightSystems::UpdateLightFrusta),
             lights::fit_box_shadow_cascades
                 .after(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades)
                 .before(bevy::light::SimulationLightSystems::UpdateLightFrusta),

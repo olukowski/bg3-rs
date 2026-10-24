@@ -481,9 +481,40 @@ pub fn spawn_lights(
                 sun.intensity,
             ),
         };
+        // `BG3_SUN_CASCADES=<n>` overrides the count (A/B, `docs/performance.md`);
+        // `BG3_BEVY_CASCADES=1` puts Bevy's split scheme and frustum-slice fit back.
+        let count = std::env::var("BG3_SUN_CASCADES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(sun.cascade_count);
+        let bevy_cascades = std::env::var_os("BG3_BEVY_CASCADES").is_some();
+        let cascade_config = if bevy_cascades {
+            bevy::light::CascadeShadowConfigBuilder {
+                maximum_distance: sun.shadow_far_plane,
+                num_cascades: count.max(1) as usize,
+                ..default()
+            }
+            .build()
+        } else {
+            let splits = cascade_splits(
+                count,
+                sun.shadow_near_plane,
+                sun.shadow_far_plane,
+                sun.cascade_spread,
+            );
+            bevy::light::CascadeShadowConfig {
+                minimum_distance: splits[0],
+                bounds: splits[1..].to_vec(),
+                // No blend band between cascades on the CPU side (`docs/research/shadows.md`).
+                overlap_proportion: 0.0,
+            }
+        };
         let mut e = commands.spawn((
             Name::new("sun"),
-            Sun,
+            Sun {
+                light_distance: sun.light_distance,
+                bevy_cascades,
+            },
             DirectionalLight {
                 color: color(c),
                 illuminance: lux,
@@ -497,16 +528,7 @@ pub fn spawn_lights(
                 },
                 ..default()
             },
-            bevy::light::CascadeShadowConfigBuilder {
-                maximum_distance: sun.shadow_far_plane,
-                // A/B switch for attributing the cascades' cost (`docs/performance.md`).
-                num_cascades: std::env::var("BG3_SUN_CASCADES")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(4),
-                ..default()
-            }
-            .build(),
+            cascade_config,
             Transform::default().looking_to(-to_sun, Vec3::Y),
         ));
         if volumetric && sun.shadow {
@@ -1142,9 +1164,116 @@ pub fn follow_camera_triggers(
     }
 }
 
-/// The level's sun (its cascaded shadows: [`sun_shadow_stats`]).
+/// The level's sun and how its cascades are fitted ([`fit_sun_cascades`]).
 #[derive(Component)]
-pub struct Sun;
+pub struct Sun {
+    /// `LightDistance`: how far towards the sun each cascade's camera sits (m).
+    pub light_distance: f32,
+    /// `BG3_BEVY_CASCADES`: keep Bevy's frustum-slice cascades.
+    pub bevy_cascades: bool,
+}
+
+/// The sun's cascade split distances: `count + 1` view depths from the near plane to
+/// `ShadowFarPlane`, each a blend of a uniform and a logarithmic split by `CascadeSpread`
+/// (the practical split scheme). `count` is clamped to 1–4 as in the game.
+// bg3: ls::CascadedShadowBufferStage::StartRecording, ::OnStateChanged (4.1.1.7631656)
+pub fn cascade_splits(count: u8, near: f32, far: f32, spread: f32) -> Vec<f32> {
+    let count = count.clamp(1, 4);
+    let n = near.max(0.01);
+    let mut out = vec![n];
+    for i in 1..=count {
+        let t = f32::from(i) / f32::from(count);
+        let uniform = n + (far - n) * t;
+        let log = n * (far / n).powf(t);
+        out.push(uniform + spread * (log - uniform));
+    }
+    out
+}
+
+/// One sun cascade the way the game fits it (`docs/research/shadows.md`): the smallest sphere
+/// around the view frustum slice `[near, far]` (centre on the view axis, no farther than the
+/// slice's far plane), its centre snapped to whole texels in the light's frame, and an
+/// orthographic box `±r` across that reaches `light_distance` towards the sun and `r` beyond
+/// the centre. `tan_half_fov` is vertical; `rotation` is the light's (it looks along −Z).
+// bg3: ls::CascadedShadowBufferStage::StartRecording (4.1.1.7631656)
+pub fn sphere_cascade(
+    rotation: Quat,
+    camera: &GlobalTransform,
+    tan_half_fov: f32,
+    aspect: f32,
+    (near, far): (f32, f32),
+    light_distance: f32,
+    size: f32,
+) -> bevy::light::cascade::Cascade {
+    // Squared distance from the view axis of a slice corner at unit depth.
+    let h2 = tan_half_fov * tan_half_fov * (1.0 + aspect * aspect);
+    let depth = ((far + near) * 0.5 * (1.0 + h2)).min(far);
+    let radius = ((far - depth).powi(2) + far * far * h2).sqrt();
+    let centre = camera.translation() + camera.forward() * depth;
+    let world_from_light = Mat4::from_quat(rotation);
+    let light_from_world = world_from_light.transpose();
+    let texel = 2.0 * radius / size;
+    let c = light_from_world.transform_point3(centre);
+    let c = ((c.truncate() / texel).floor() * texel).extend(c.z + light_distance);
+    let clip_from_cascade = ortho_clip_from_light(
+        Vec3::new(-radius, -radius, -(light_distance + radius)),
+        Vec3::new(radius, radius, 0.0),
+    );
+    let cascade_from_world = Mat4::from_translation(-c) * light_from_world;
+    bevy::light::cascade::Cascade {
+        world_from_cascade: world_from_light * Mat4::from_translation(c),
+        clip_from_cascade,
+        clip_from_world: clip_from_cascade * cascade_from_world,
+        texel_size: texel,
+    }
+}
+
+/// Replace the sun's cascades (Bevy fits them to frustum slices) with the game's sphere fit
+/// over the same split distances. Runs after Bevy builds the cascades and before it derives
+/// the culling frusta from them.
+pub fn fit_sun_cascades(
+    map: Res<bevy::light::DirectionalLightShadowMap>,
+    views: Query<(Entity, &GlobalTransform, &Projection, &Camera)>,
+    mut sun: Query<(
+        &Sun,
+        &GlobalTransform,
+        &bevy::light::CascadeShadowConfig,
+        &mut bevy::light::Cascades,
+    )>,
+) {
+    for (sun, transform, config, mut cascades) in &mut sun {
+        if sun.bevy_cascades {
+            continue;
+        }
+        for (view, camera_transform, projection, camera) in &views {
+            let Projection::Perspective(p) = projection else {
+                continue;
+            };
+            if !camera.is_active {
+                continue;
+            }
+            let Some(list) = cascades.cascades.get_mut(&view) else {
+                continue;
+            };
+            let nears =
+                std::iter::once(config.minimum_distance).chain(config.bounds.iter().copied());
+            *list = nears
+                .zip(config.bounds.iter().copied())
+                .map(|slice| {
+                    sphere_cascade(
+                        transform.rotation(),
+                        camera_transform,
+                        (p.fov * 0.5).tan(),
+                        p.aspect_ratio,
+                        slice,
+                        sun.light_distance,
+                        map.size as f32,
+                    )
+                })
+                .collect();
+        }
+    }
+}
 
 /// `BG3_SHADOW_STATS=1`: log, once a second, each sun cascade's texel size, its shadow casters
 /// and how many of them cover less than 1, 2, 4 and 8 texels (bounding sphere diameter over the
@@ -1377,6 +1506,42 @@ mod box_light_tests {
         assert!(frustum.intersects_obb(&inside, &id, false, true));
         assert!(!frustum.intersects_obb(&beside, &id, false, true));
         assert!(!frustum.intersects_obb(&beyond, &id, false, true));
+    }
+
+    #[test]
+    fn cascade_splits_blend_uniform_and_log() {
+        let s = cascade_splits(4, 0.1, 100.0, 0.0);
+        assert!((s[1] - 25.075).abs() < 1e-3 && (s[4] - 100.0).abs() < 1e-3);
+        let s = cascade_splits(4, 0.1, 100.0, 1.0);
+        assert!((s[2] - 0.1 * 1000f32.sqrt()).abs() < 1e-3);
+        let s = cascade_splits(2, 0.0, 50.0, 0.5);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0], 0.01);
+        assert_eq!(cascade_splits(9, 0.1, 10.0, 0.5).len(), 5);
+    }
+
+    #[test]
+    fn sphere_cascade_contains_its_slice() {
+        let camera = GlobalTransform::from(
+            Transform::from_xyz(3.0, 5.0, -7.0).looking_at(Vec3::new(10.0, 0.0, 4.0), Vec3::Y),
+        );
+        let rotation = Transform::default()
+            .looking_to(Vec3::new(-0.3, -1.0, 0.4), Vec3::Y)
+            .rotation;
+        let (tan, aspect, near, far) = (0.4f32, 16.0 / 9.0, 2.0, 9.0);
+        let c = sphere_cascade(rotation, &camera, tan, aspect, (near, far), 250.0, 2048.0);
+        for d in [near, far] {
+            for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                let local = Vec3::new(x * d * tan * aspect, y * d * tan, -d);
+                let p = c
+                    .clip_from_world
+                    .project_point3(camera.transform_point(local));
+                assert!(p.x.abs() <= 1.0 && p.y.abs() <= 1.0, "{p}");
+                assert!((0.0..=1.0).contains(&p.z), "{p}");
+            }
+        }
+        let composed = c.clip_from_cascade * c.world_from_cascade.inverse();
+        assert!(composed.abs_diff_eq(c.clip_from_world, 1e-3));
     }
 
     #[test]

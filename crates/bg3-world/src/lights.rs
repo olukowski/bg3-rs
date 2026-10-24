@@ -366,6 +366,14 @@ pub struct Sun {
     pub shadow: bool,
     /// Distance covered by the sun's shadow cascades (m).
     pub shadow_far_plane: f32,
+    /// Nearest distance of the first cascade (m).
+    pub shadow_near_plane: f32,
+    /// Number of cascades, 1–4.
+    pub cascade_count: u8,
+    /// Blend of the cascade splits between uniform (0) and logarithmic (1).
+    pub cascade_spread: f32,
+    /// How far towards the sun each cascade's shadow camera sits (m).
+    pub light_distance: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -728,6 +736,10 @@ impl LevelLighting {
             use_temperature: bool_attr(s, "UseTemperature").unwrap_or(false),
             shadow: bool_attr(s, "ShadowEnabled").unwrap_or(false),
             shadow_far_plane: f32_attr(s, "ShadowFarPlane").unwrap_or(100.0),
+            shadow_near_plane: f32_attr(s, "ShadowNearPlane").unwrap_or(0.1),
+            cascade_count: f32_attr(s, "CascadeCount").map_or(4, |v| v as u8),
+            cascade_spread: f32_attr(s, "CascadeSpread").unwrap_or(0.0),
+            light_distance: f32_attr(s, "LightDistance").unwrap_or(250.0),
         });
         self.sky = l.child("SkyLight").map(|s| SkyLight {
             color: vec_attr(s, "Color").unwrap_or([1.0; 3]),
